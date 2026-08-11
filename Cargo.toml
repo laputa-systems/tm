@@ -1,0 +1,15 @@
+[package]
+name = "tm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A small Unix terminal multiplexer with a tmux-shaped core"
+
+[dependencies]
+libc = "0.2"
+rustix = { version = "1.1.4", features = ["termios"] }
+vt100 = "0.16.2"
+
+[[bin]]
+name = "tm"
+path = "src/main.rs"
