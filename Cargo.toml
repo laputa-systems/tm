@@ -13,3 +13,10 @@ vt100 = "0.16.2"
 [[bin]]
 name = "tm"
 path = "src/main.rs"
+
+# A deterministic child process for the real-PTY integration tests. Keeping
+# this fixture as a binary avoids making the tests depend on shell buffering,
+# startup behavior, or a platform's `script` implementation.
+[[bin]]
+name = "tm-pty-fixture"
+path = "tests/support/pty_fixture.rs"

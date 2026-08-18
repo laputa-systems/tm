@@ -138,6 +138,12 @@ pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
 }
 
 fn handle_connection(mut stream: UnixStream, shared: SharedState) {
+    // `run_daemon` keeps the listener nonblocking for its accept loop. On
+    // platforms where accepted Unix sockets inherit that flag, an attached
+    // client's input reader would observe EAGAIN before the first key and
+    // tear down an otherwise healthy session. Requests and the long-lived
+    // attach stream are intentionally blocking at this boundary.
+    let _ = stream.set_nonblocking(false);
     let request = match read_request(&mut stream) {
         Ok(request) => request,
         Err(_) => return,
@@ -9120,7 +9126,10 @@ fn execute_request(
             pane.history_floor = pane.parser.screen().scrollback();
             pane.parser.screen_mut().set_scrollback(saved_scrollback);
             pane.parser.screen_mut().set_scrollback(0);
-            pane.raw_output.clear();
+            // Keep a replayable checkpoint instead of leaving raw_output empty:
+            // later copy/format paths must reconstruct the same visible state
+            // (including cursor and terminal modes) as the live parser.
+            checkpoint_raw_output(pane);
             pane.copy_mode = None;
             pane.copy_source = None;
             Ok(String::new())
@@ -9471,6 +9480,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                     Ok(length) => {
                         if let Ok(mut state) = shared.lock() {
                             let mut updated = false;
+                            let mut audible_bell = false;
                             let pipe = state
                                 .pane_pipes
                                 .get(&pane_id)
@@ -9487,17 +9497,14 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                         let _ = stdin.write_all(&buffer[..length]);
                                     }
                                 }
-                                pane.raw_output.extend_from_slice(&buffer[..length]);
-                                const RAW_OUTPUT_LIMIT: usize = 1 << 20;
-                                if pane.raw_output.len() > RAW_OUTPUT_LIMIT {
-                                    let excess = pane.raw_output.len() - RAW_OUTPUT_LIMIT;
-                                    pane.raw_output.drain(..excess);
-                                }
+                                retain_raw_output(pane, &buffer[..length]);
                                 if let Some(path) = terminal_path(&pane.raw_output) {
                                     pane.current_path = Some(path);
                                 }
+                                let title = terminal_title(&pane.raw_output);
                                 pane.output_state
                                     .process(&mut pane.parser, &buffer[..length]);
+                                audible_bell |= pane.output_state.take_audible_bell();
                                 let refresh_live = pane.copy_source.is_none()
                                     && pane
                                         .copy_mode
@@ -9509,12 +9516,12 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                         mode.refresh_live(&mut pane.parser, &raw_output);
                                     }
                                 }
-                                if let Some(title) = terminal_title(&pane.raw_output) {
+                                if let Some(title) = title {
                                     pane.title = title;
                                 }
                                 updated = true;
                             }
-                            if updated && buffer[..length].contains(&0x07) {
+                            if updated && audible_bell {
                                 let global_monitor_bell =
                                     state.global_options.get("monitor-bell").cloned();
                                 for session in &mut state.sessions {
@@ -9572,6 +9579,32 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
             Pty::reap(pid);
         })
         .ok();
+}
+
+const RAW_OUTPUT_LIMIT: usize = 1 << 20;
+
+fn retain_raw_output(pane: &mut Pane, bytes: &[u8]) {
+    pane.raw_output.extend_from_slice(bytes);
+    if pane.raw_output.len() > RAW_OUTPUT_LIMIT {
+        checkpoint_raw_output(pane);
+    }
+}
+
+/// Replace an overgrown retained stream with a replayable terminal snapshot.
+/// Dropping an arbitrary byte prefix can cut a UTF-8 scalar or control string,
+/// making replay disagree with the live parser. `Screen::state_formatted`
+/// produces a complete visible-state checkpoint, so future replay remains
+/// well-formed even after the bounded history window rolls forward.
+fn checkpoint_raw_output(pane: &mut Pane) {
+    let screen = pane.parser.screen();
+    let mut checkpoint = Vec::new();
+    if screen.alternate_screen() {
+        checkpoint.extend_from_slice(b"\x1b[?1049h");
+    }
+    checkpoint.extend_from_slice(&screen.state_formatted());
+    checkpoint.extend_from_slice(&screen.cursor_state_formatted());
+    pane.raw_output = checkpoint;
+    pane.output_state = terminal::OutputState::default();
 }
 
 /// Extract the most recent OSC 2 title from the bytes retained for a pane.
@@ -16494,6 +16527,91 @@ bind -r Right next-window
                 .list_windows(Some("swap-config"), Some("#{window_index}:#{window_name}"))
                 .expect("list swapped windows"),
             "0:second\n1:first"
+        );
+    }
+
+    #[test]
+    fn raw_output_checkpoint_replays_the_live_terminal_state() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("checkpoint"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(20, 4),
+            )
+            .expect("create checkpoint session");
+        let pane_id = state.sessions[0].windows[0].panes[0].id;
+        let pane = state.find_pane_mut(pane_id).expect("checkpoint pane");
+        pane.parser
+            .process(b"\x1b[31mred\x1b[0m\r\nsecond\x1b[2;4Htail");
+        let expected_contents = pane.parser.screen().contents();
+        let expected_cursor = pane.parser.screen().cursor_position();
+        checkpoint_raw_output(pane);
+
+        assert!(!pane.raw_output.is_empty());
+        let mut replayed = Parser::new(4, 20, 100);
+        terminal::replay(&mut replayed, &pane.raw_output);
+        assert_eq!(replayed.screen().contents(), expected_contents);
+        assert_eq!(replayed.screen().cursor_position(), expected_cursor);
+
+        pane.history_floor = 7;
+        pane.parser.process(b"\x1b[2J\x1b[Hcheckpoint");
+        retain_raw_output(pane, &vec![b'x'; RAW_OUTPUT_LIMIT + 1]);
+        assert!(pane.raw_output.len() < RAW_OUTPUT_LIMIT);
+        assert_eq!(pane.history_floor, 7);
+        let mut replayed = Parser::new(4, 20, 100);
+        terminal::replay(&mut replayed, &pane.raw_output);
+        assert_eq!(replayed.screen().contents(), pane.parser.screen().contents());
+    }
+
+    #[test]
+    fn clear_history_keeps_live_and_replayed_terminal_state_aligned() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("clear-history"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(20, 4),
+            )
+            .expect("create clear-history session");
+        let pane_id = state.sessions[0].windows[0].panes[0].id;
+        let pane = state.find_pane_mut(pane_id).expect("clear-history pane");
+        let output = b"old-0\r\nold-1\r\nold-2\r\nold-3\r\nvisible\x1b[2;4Htail";
+        pane.parser.process(output);
+        pane.raw_output = output.to_vec();
+
+        execute_request(
+            &mut state,
+            &shared,
+            Request::ClearHistory {
+                target: Some("clear-history:0.0".to_owned()),
+            },
+        )
+        .expect("clear history");
+
+        let pane = state.find_pane(pane_id).expect("cleared pane");
+        let mut replayed = Parser::new(4, 20, 100);
+        terminal::replay(&mut replayed, &pane.raw_output);
+        assert_eq!(replayed.screen().contents(), pane.parser.screen().contents());
+        assert_eq!(
+            replayed.screen().cursor_position(),
+            pane.parser.screen().cursor_position()
         );
     }
 }

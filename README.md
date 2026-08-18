@@ -43,12 +43,15 @@ size, and PTY resize use `rustix::termios`.
 
 ## Compatibility checks
 
-The tests are headless contracts for the implemented core and for the user's
-configuration. They cover session, target, pane, window, PTY, buffer, capture,
-copy-mode, chooser-mode, format, client-registry, and run-shell behavior, plus isolated
-startup/config loading. `tests/tmux_copy_mode_compat.rs` covers the Emacs and Vi
-copy-mode flows used by the core. Every integration test owns a private
-`TM_SOCKET`; the suite never contacts tmux or any existing tmux session.
+The tests are deterministic contracts for the implemented core and for the user's
+configuration. The headless suites cover session, target, pane, window, PTY, buffer,
+capture, copy-mode, chooser-mode, format, client-registry, and run-shell behavior,
+plus isolated startup/config loading. `tests/attached_client_pty.rs` is the real
+terminal boundary: it launches `tm attach-session` through `openpty`, drives input
+and resize events, and parses rendered output with `vt100`. Its fixture is
+`tests/support/pty_fixture.rs`; it uses marker barriers and never invokes the
+platform `script` utility. Every integration test owns a private `TM_SOCKET`; the
+suite never contacts tmux or any existing tmux session.
 
 Run the tm-only checks with:
 
