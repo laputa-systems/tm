@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Write};
@@ -6,7 +7,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::model::Size;
-use rustix::termios::{tcsetwinsize, Winsize};
+use rustix::termios::{Winsize, tcsetwinsize};
 
 /// One Unix PTY master and the process group it owns.
 pub(crate) struct Pty {
@@ -37,12 +38,23 @@ impl Pty {
         cwd: Option<&Path>,
         size: Size,
         terminal: Option<&str>,
+        environment: &HashMap<String, String>,
     ) -> io::Result<Self> {
         let (program, arguments) = command_line(command)?;
         let program_c = CString::new(program.as_bytes()).map_err(invalid_command)?;
         let argument_c = arguments
             .iter()
             .map(|argument| CString::new(argument.as_bytes()).map_err(invalid_command))
+            .collect::<io::Result<Vec<_>>>()?;
+        // Environment overrides (from `set-environment`) are converted before
+        // the fork so the child only touches already-built data before exec.
+        let environment_c = environment
+            .iter()
+            .map(|(name, value)| {
+                let name = CString::new(name.as_bytes()).map_err(invalid_command)?;
+                let value = CString::new(value.as_bytes()).map_err(invalid_command)?;
+                Ok((name, value))
+            })
             .collect::<io::Result<Vec<_>>>()?;
         let mut argv = Vec::with_capacity(argument_c.len() + 2);
         argv.push(program_c.as_ptr());
@@ -85,7 +97,7 @@ impl Pty {
         }
 
         if pid == 0 {
-            child_setup(slave, master, &argv, cwd_c.as_ref(), terminal);
+            child_setup(slave, master, &argv, cwd_c.as_ref(), terminal, &environment_c);
         }
 
         close_fd(slave);
@@ -191,6 +203,7 @@ fn child_setup(
     argv: &[*const i8],
     cwd: Option<&CString>,
     terminal: Option<&str>,
+    environment: &[(CString, CString)],
 ) -> ! {
     // SAFETY: this branch is the child immediately after fork. It performs
     // only the Unix session/descriptor operations needed before exec.
@@ -213,6 +226,11 @@ fn child_setup(
             .and_then(|value| CString::new(value).ok())
             .unwrap_or_else(|| CString::new("screen-256color").expect("static value is valid"));
         libc::setenv(term.as_ptr(), terminal.as_ptr(), 1);
+        // Apply `set-environment` overrides on top of the inherited process
+        // environment so later panes observe them, matching tmux semantics.
+        for (name, value) in environment {
+            libc::setenv(name.as_ptr(), value.as_ptr(), 1);
+        }
         libc::execvp(argv[0], argv.as_ptr());
         libc::_exit(127);
     }
@@ -228,5 +246,5 @@ fn invalid_command(error: std::ffi::NulError) -> io::Error {
 }
 
 fn poisoned() -> io::Error {
-    io::Error::new(io::ErrorKind::Other, "PTY lock is poisoned")
+    io::Error::other("PTY lock is poisoned")
 }

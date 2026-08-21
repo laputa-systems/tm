@@ -606,18 +606,18 @@ impl CopyModeState {
             }
             CopyAction::StopSelection => self.selection_active = false,
             CopyAction::OtherEnd => {
-                if repeat % 2 != 0 {
-                    if let Some(anchor) = self.anchor {
-                        if self.selection_active {
-                            let cursor = self.cursor;
-                            self.cursor = anchor;
-                            self.anchor = Some(cursor);
-                        } else {
-                            // tmux keeps the selection endpoints while stopping
-                            // the drag. The first `other-end` resumes the end
-                            // endpoint; the next one moves to the opposite end.
-                            self.selection_active = true;
-                        }
+                if !repeat.is_multiple_of(2)
+                    && let Some(anchor) = self.anchor
+                {
+                    if self.selection_active {
+                        let cursor = self.cursor;
+                        self.cursor = anchor;
+                        self.anchor = Some(cursor);
+                    } else {
+                        // tmux keeps the selection endpoints while stopping
+                        // the drag. The first `other-end` resumes the end
+                        // endpoint; the next one moves to the opposite end.
+                        self.selection_active = true;
                     }
                 }
             }
@@ -1285,13 +1285,15 @@ impl CopyModeState {
                 | CopyPromptKind::SearchBackwardIncremental
         )
         .then_some(self.cursor);
-        let input = incremental_search
-            .then(|| {
+        let input = if incremental_search {
+            {
                 self.last_search
                     .as_ref()
                     .map_or_else(Vec::new, |(search, _, _)| search.as_bytes().to_vec())
-            })
-            .unwrap_or_default();
+            }
+        } else {
+            Default::default()
+        };
         self.prompt = Some(CopyPrompt {
             kind,
             cursor: input.len(),

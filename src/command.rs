@@ -433,7 +433,7 @@ fn parse_new_window(arguments: &[String]) -> Result<InvocationSpec, String> {
             empty = true;
             Ok(())
         }
-        other => return Err(format!("unknown new-window option: {other}")),
+        other => Err(format!("unknown new-window option: {other}")),
     })?;
     let (command, empty) = if command.len() == 1 && command[0].is_empty() {
         (Vec::new(), true)
@@ -510,7 +510,7 @@ fn parse_split_window(arguments: &[String]) -> Result<InvocationSpec, String> {
             empty = true;
             Ok(())
         }
-        other => return Err(format!("unknown split-window option: {other}")),
+        other => Err(format!("unknown split-window option: {other}")),
     })?;
     let (command, empty) = if command.len() == 1 && command[0].is_empty() {
         (Vec::new(), true)
@@ -2212,7 +2212,7 @@ fn optional_target(arguments: &[String]) -> Result<Option<String>, String> {
             }
             "--" => break,
             value if value.starts_with('-') => {
-                return Err(format!("unknown target option: {value}"))
+                return Err(format!("unknown target option: {value}"));
             }
             value => target = Some(value.to_owned()),
         }

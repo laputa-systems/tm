@@ -27,7 +27,9 @@ struct TestServer {
 }
 
 impl TestServer {
-    fn new(socket: String) -> Self { Self { socket } }
+    fn new(socket: String) -> Self {
+        Self { socket }
+    }
 
     fn create_fixture_session(&self) {
         let fixture = env!("CARGO_BIN_EXE_tm-pty-fixture");
@@ -107,54 +109,68 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
     let baseline = terminal.terminal_baseline();
 
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "fixture ready", |screen| {
-            screen.contains("VT_FIXTURE_READY")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "fixture ready",
+            |screen| screen.contains("VT_FIXTURE_READY"),
+        )
         .expect("attached client readiness");
 
     terminal
         .send_text(terminal.deadline(Duration::from_secs(3)), "input\n")
         .expect("send fixture input through client");
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "input acknowledgement", |screen| {
-            screen.contains("INPUT_ACK")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "input acknowledgement",
+            |screen| screen.contains("INPUT_ACK"),
+        )
         .expect("fixture input acknowledgement");
 
     terminal
         .send_text(terminal.deadline(Duration::from_secs(3)), "begin-resize\n")
         .expect("start resize barrier");
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "resize barrier", |screen| {
-            screen.contains("RESIZE_WAIT")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "resize barrier",
+            |screen| screen.contains("RESIZE_WAIT"),
+        )
         .expect("fixture resize barrier");
     terminal
         .resize(Size::new(50, 10).expect("constant resized PTY size"))
         .expect("resize outer test PTY");
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "resize signal", |screen| {
-            screen.contains("RESIZE_SIGNAL")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "resize signal",
+            |screen| screen.contains("RESIZE_SIGNAL"),
+        )
         .expect("foreground resize signal");
     terminal
         .send_text(terminal.deadline(Duration::from_secs(3)), "measure\n")
         .expect("measure resized fixture PTY");
     terminal
-        .wait_for_screen(terminal.deadline(Duration::from_secs(3)), "resized fixture size", |screen| {
-            screen.contains("RESIZE_ACK:10x50")
-        })
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "resized fixture size",
+            |screen| screen.contains("RESIZE_ACK:10x50"),
+        )
         .expect("nested PTY resize propagation");
 
     terminal
         .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x02d")
         .expect("send detach sequence");
     assert_eq!(
-        terminal.wait_for_exit(terminal.deadline(Duration::from_secs(3))).expect("wait for clean detach"),
+        terminal
+            .wait_for_exit(terminal.deadline(Duration::from_secs(3)))
+            .expect("wait for clean detach"),
         ExitStatus::Code(0)
     );
     terminal
         .assert_terminal_restored(&baseline)
         .expect("attached client restores applicable terminal modes");
-    terminal.finish(terminal.deadline(Duration::from_secs(3))).expect("reap attached client");
+    terminal
+        .finish(terminal.deadline(Duration::from_secs(3)))
+        .expect("reap attached client");
 }

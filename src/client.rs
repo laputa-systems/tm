@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::command::Invocation;
 use crate::model::Size;
 use crate::protocol::{
-    read_server_message, write_client_message, write_request, ClientMessage, ServerMessage,
+    ClientMessage, ServerMessage, read_server_message, write_client_message, write_request,
 };
 use crate::terminal::{self, RawTerminal};
 

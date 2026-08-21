@@ -3,7 +3,7 @@ use std::os::fd::AsFd;
 
 use crate::model::Size;
 use rustix::termios::{
-    tcgetattr, tcgetwinsize, tcsetattr, OptionalActions, SpecialCodeIndex, Termios,
+    OptionalActions, SpecialCodeIndex, Termios, tcgetattr, tcgetwinsize, tcsetattr,
 };
 use vt100::Parser;
 
@@ -139,36 +139,36 @@ fn replay_terminal_bytes(
 ) {
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == 0x1b {
-            if let Some(end) = escape_end(bytes, index) {
-                let sequence = &bytes[index..end];
-                if sequence == b"\x1b#8" {
-                    parser.process(&screen_alignment(parser));
-                } else if let Some(mode) = wrap_mode(sequence) {
-                    // vt100 intentionally leaves DECAWM to its caller.  It
-                    // still needs to see other private modes in a combined
-                    // sequence (for example ?7;25h), so process the escape
-                    // first and then update our local mode bit.
-                    parser.process(sequence);
-                    *wrap = mode;
-                } else if sequence == b"\x1bc" {
-                    // RIS reconstructs vt100's Screen, including its mode
-                    // state. Keep the local DECAWM and REP state in lockstep.
-                    parser.process(sequence);
-                    *wrap = true;
-                    *last_printed = None;
-                } else if let Some(count) = repeat_count(sequence) {
-                    if let Some(character) = last_printed.as_ref() {
-                        for _ in 0..count {
-                            write_terminal_character(parser, character, *wrap);
-                        }
+        if bytes[index] == 0x1b
+            && let Some(end) = escape_end(bytes, index)
+        {
+            let sequence = &bytes[index..end];
+            if sequence == b"\x1b#8" {
+                parser.process(&screen_alignment(parser));
+            } else if let Some(mode) = wrap_mode(sequence) {
+                // vt100 intentionally leaves DECAWM to its caller.  It
+                // still needs to see other private modes in a combined
+                // sequence (for example ?7;25h), so process the escape
+                // first and then update our local mode bit.
+                parser.process(sequence);
+                *wrap = mode;
+            } else if sequence == b"\x1bc" {
+                // RIS reconstructs vt100's Screen, including its mode
+                // state. Keep the local DECAWM and REP state in lockstep.
+                parser.process(sequence);
+                *wrap = true;
+                *last_printed = None;
+            } else if let Some(count) = repeat_count(sequence) {
+                if let Some(character) = last_printed.as_ref() {
+                    for _ in 0..count {
+                        write_terminal_character(parser, character, *wrap);
                     }
-                } else {
-                    parser.process(sequence);
                 }
-                index = end;
-                continue;
+            } else {
+                parser.process(sequence);
             }
+            index = end;
+            continue;
         }
 
         let Some(character) = bytes.get(index).copied() else {

@@ -109,12 +109,14 @@ fn copy_mode_source_pane_drives_selection_in_a_different_target_pane_headlessly(
         "-c",
         "printf 'TARGET LINE\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("source:0.0", "SOURCE LINE")
-        .contains("SOURCE LINE"));
-    assert!(tm
-        .capture_until("source:0.1", "TARGET LINE")
-        .contains("TARGET LINE"));
+    assert!(
+        tm.capture_until("source:0.0", "SOURCE LINE")
+            .contains("SOURCE LINE")
+    );
+    assert!(
+        tm.capture_until("source:0.1", "TARGET LINE")
+            .contains("TARGET LINE")
+    );
 
     tm.ok(&["copy-mode", "-s", "source:0.0", "-t", "source:0.1"]);
     assert_eq!(
@@ -137,9 +139,10 @@ fn copy_mode_source_pane_drives_selection_in_a_different_target_pane_headlessly(
     }
     tm.ok(&["send-keys", "-X", "copy-selection", "-t", "source:0.1"]);
     assert_eq!(tm.body(&["show-buffer"]), "SOURCE LINE");
-    assert!(tm
-        .body(&["capture-pane", "-t", "source:0.1"])
-        .contains("TARGET LINE"));
+    assert!(
+        tm.body(&["capture-pane", "-t", "source:0.1"])
+            .contains("TARGET LINE")
+    );
 }
 
 #[test]
@@ -157,9 +160,10 @@ fn copy_mode_selection_prefix_creates_a_named_automatic_buffer_headlessly() {
         "-c",
         "printf 'named line\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("named-copy", "named line")
-        .contains("named line"));
+    assert!(
+        tm.capture_until("named-copy", "named line")
+            .contains("named line")
+    );
 
     tm.ok(&["copy-mode", "-t", "named-copy"]);
     for action in [
@@ -198,9 +202,10 @@ fn copy_mode_copy_paste_flag_suppresses_buffer_storage_headlessly() {
         "-c",
         "printf 'flag line\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("copy-flags", "flag line")
-        .contains("flag line"));
+    assert!(
+        tm.capture_until("copy-flags", "flag line")
+            .contains("flag line")
+    );
 
     tm.ok(&["copy-mode", "-t", "copy-flags"]);
     for action in [
@@ -739,9 +744,7 @@ fn attached_emacs_copy_mode_bindings_match_tmux_headlessly() {
         "-c",
         "printf 'abcdef\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("emacs-keys", "abcdef")
-        .contains("abcdef"));
+    assert!(tm.capture_until("emacs-keys", "abcdef").contains("abcdef"));
     tm.ok(&["set-window-option", "-g", "mode-keys", "emacs"]);
     tm.ok(&["copy-mode", "-t", "emacs-keys"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "emacs-keys"]);
@@ -775,9 +778,10 @@ fn copy_mode_emacs_search_is_incremental_before_enter_headlessly() {
         "-c",
         "printf 'first\\nneedle target\\nlast\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("incremental-search", "needle target")
-        .contains("needle target"));
+    assert!(
+        tm.capture_until("incremental-search", "needle target")
+            .contains("needle target")
+    );
     tm.ok(&["set-window-option", "-g", "mode-keys", "emacs"]);
     tm.ok(&["copy-mode", "-t", "incremental-search"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "incremental-search"]);
@@ -977,9 +981,10 @@ fn copy_mode_search_rectangle_and_append_selection_are_headless() {
         "-c",
         "printf 'alpha one\\nbeta two\\nalpha three\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("advanced", "alpha three")
-        .contains("alpha three"));
+    assert!(
+        tm.capture_until("advanced", "alpha three")
+            .contains("alpha three")
+    );
 
     tm.ok(&["copy-mode", "-t", "advanced"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "advanced"]);
@@ -1032,9 +1037,10 @@ fn copy_mode_extended_command_table_is_headless() {
         "-c",
         "printf 'one (two)\\ntwo three\\nthree four\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("commands", "three four")
-        .contains("three four"));
+    assert!(
+        tm.capture_until("commands", "three four")
+            .contains("three four")
+    );
 
     tm.ok(&["copy-mode", "-t", "commands"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "commands"]);
@@ -1156,9 +1162,10 @@ fn copy_mode_vi_search_keys_are_headless() {
         "-c",
         "printf 'alpha\\nbeta target\\ngamma\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("searchkeys", "beta target")
-        .contains("beta target"));
+    assert!(
+        tm.capture_until("searchkeys", "beta target")
+            .contains("beta target")
+    );
     tm.ok(&["set-window-option", "-g", "mode-keys", "vi"]);
     tm.ok(&["copy-mode", "-t", "searchkeys"]);
     tm.ok(&["send-keys", "-t", "searchkeys", "g", "0", "/"]);
@@ -1258,9 +1265,7 @@ fn copy_mode_regex_and_literal_search_are_distinct_headlessly() {
         "-c",
         "printf 'start\\nα-123\\nα-[0-9]+|α-xyz\\nα-xyz\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("search-kinds", "α-xyz")
-        .contains("α-xyz"));
+    assert!(tm.capture_until("search-kinds", "α-xyz").contains("α-xyz"));
     tm.ok(&["copy-mode", "-t", "search-kinds"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "search-kinds"]);
     tm.ok(&[
@@ -1440,9 +1445,7 @@ fn copy_mode_search_respects_wrap_search_off_headlessly() {
         "-c",
         "printf 'alpha\\nbeta\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("search-no-wrap", "beta")
-        .contains("beta"));
+    assert!(tm.capture_until("search-no-wrap", "beta").contains("beta"));
     tm.ok(&["set-window-option", "-g", "wrap-search", "off"]);
     tm.ok(&["copy-mode", "-t", "search-no-wrap"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "search-no-wrap"]);
@@ -1482,9 +1485,10 @@ fn copy_mode_search_reverse_keeps_reversing_the_original_direction_headlessly() 
         "-c",
         "printf 'x x x\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("search-reverse", "x x x")
-        .contains("x x x"));
+    assert!(
+        tm.capture_until("search-reverse", "x x x")
+            .contains("x x x")
+    );
     tm.ok(&["copy-mode", "-t", "search-reverse"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "search-reverse"]);
     tm.ok(&[
@@ -1535,9 +1539,10 @@ fn copy_mode_backward_regex_search_preserves_overlapping_matches_headlessly() {
         "-c",
         "printf 'ababa\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("search-overlap", "ababa")
-        .contains("ababa"));
+    assert!(
+        tm.capture_until("search-overlap", "ababa")
+            .contains("ababa")
+    );
     tm.ok(&["copy-mode", "-t", "search-overlap"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "search-overlap"]);
     tm.ok(&["send-keys", "-X", "end-of-line", "-t", "search-overlap"]);
@@ -1638,9 +1643,10 @@ fn copy_mode_prompts_preserve_utf8_search_input_headlessly() {
         "-c",
         "printf 'alpha βeta\\ngamma\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("unicode-prompt", "alpha βeta")
-        .contains("alpha βeta"));
+    assert!(
+        tm.capture_until("unicode-prompt", "alpha βeta")
+            .contains("alpha βeta")
+    );
     tm.ok(&["set-window-option", "-g", "mode-keys", "vi"]);
     tm.ok(&["copy-mode", "-t", "unicode-prompt"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "unicode-prompt"]);
@@ -1674,9 +1680,10 @@ fn copy_mode_vi_word_search_and_goto_line_keys_are_headless() {
         "-c",
         "printf 'alpha one\\nbeta two alpha\\ngamma three\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("vi-keys", "gamma three")
-        .contains("gamma three"));
+    assert!(
+        tm.capture_until("vi-keys", "gamma three")
+            .contains("gamma three")
+    );
     tm.ok(&["set-window-option", "-g", "mode-keys", "vi"]);
     tm.ok(&["copy-mode", "-t", "vi-keys"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "vi-keys"]);
@@ -1734,9 +1741,10 @@ fn copy_mode_jump_prompt_keys_are_headless() {
         "-c",
         "printf 'abc def ghi\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("jump-keys", "abc def ghi")
-        .contains("abc def ghi"));
+    assert!(
+        tm.capture_until("jump-keys", "abc def ghi")
+            .contains("abc def ghi")
+    );
     tm.ok(&["copy-mode", "-t", "jump-keys"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "jump-keys"]);
     tm.ok(&["send-keys", "-X", "start-of-line", "-t", "jump-keys"]);
@@ -1780,9 +1788,10 @@ fn copy_mode_jump_repeat_prefixes_match_tmux_headlessly() {
         "-c",
         "printf 'a x b x c x\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("jump-repeat", "a x b x c x")
-        .contains("a x b x c x"));
+    assert!(
+        tm.capture_until("jump-repeat", "a x b x c x")
+            .contains("a x b x c x")
+    );
     tm.ok(&["copy-mode", "-t", "jump-repeat"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "jump-repeat"]);
     tm.ok(&["send-keys", "-X", "start-of-line", "-t", "jump-repeat"]);
@@ -1851,9 +1860,7 @@ fn copy_mode_search_repeat_prefixes_match_tmux_headlessly() {
         "-c",
         "printf 'x x x\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("search-repeat", "x x x")
-        .contains("x x x"));
+    assert!(tm.capture_until("search-repeat", "x x x").contains("x x x"));
     tm.ok(&["copy-mode", "-t", "search-repeat"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "search-repeat"]);
     tm.ok(&[
@@ -1966,9 +1973,10 @@ fn copy_mode_vi_next_bracket_handles_a_closing_bracket_headlessly() {
         "-c",
         "printf 'foo (bar) baz\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("bracket-vi", "foo (bar) baz")
-        .contains("foo (bar) baz"));
+    assert!(
+        tm.capture_until("bracket-vi", "foo (bar) baz")
+            .contains("foo (bar) baz")
+    );
     tm.ok(&["set-window-option", "-g", "mode-keys", "vi"]);
     tm.ok(&["copy-mode", "-t", "bracket-vi"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "bracket-vi"]);
@@ -2009,9 +2017,10 @@ fn copy_mode_pipe_and_remaining_command_table_are_headless() {
         "-c",
         "printf 'first line\\nsecond line\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until("pipe", "second line")
-        .contains("second line"));
+    assert!(
+        tm.capture_until("pipe", "second line")
+            .contains("second line")
+    );
 
     tm.ok(&["copy-mode", "-t", "pipe"]);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "pipe"]);

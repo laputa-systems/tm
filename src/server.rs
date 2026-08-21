@@ -13,14 +13,14 @@ use vt100::Parser;
 
 use crate::config::{self, ConfigLine};
 use crate::copy_mode::{
-    display_column_to_char_index, display_prompt_input, history_rows, scrollbar_geometry_for,
-    scrollbar_hit_for, CopyAction, CopyLineNumberMode, CopyModeKeys, CopyModeState, CopyPromptKind,
-    CopyScrollbarHit, SelectionMode, DEFAULT_WORD_SEPARATORS,
+    CopyAction, CopyLineNumberMode, CopyModeKeys, CopyModeState, CopyPromptKind, CopyScrollbarHit,
+    DEFAULT_WORD_SEPARATORS, SelectionMode, display_column_to_char_index, display_prompt_input,
+    history_rows, scrollbar_geometry_for, scrollbar_hit_for,
 };
 use crate::model::{Axis, CopySource, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
-    read_client_message, read_request, write_server_message, ClientMessage, OptionScope,
-    PaneDirection, Request, ServerMessage,
+    ClientMessage, OptionScope, PaneDirection, Request, ServerMessage, read_client_message,
+    read_request, write_server_message,
 };
 use crate::pty::Pty;
 use crate::terminal;
@@ -107,10 +107,10 @@ pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
     // Tests and explicitly isolated sockets must not inherit the user's
     // interactive configuration. The ordinary default socket does, matching
     // tmux's startup contract while keeping headless regressions hermetic.
-    if std::env::var_os("TM_SOCKET").is_none() || std::env::var_os("TM_CONFIG").is_some() {
-        if let Some(config_path) = config_path() {
-            initial_state.load_config(&config_path);
-        }
+    if (std::env::var_os("TM_SOCKET").is_none() || std::env::var_os("TM_CONFIG").is_some())
+        && let Some(config_path) = config_path()
+    {
+        initial_state.load_config(&config_path);
     }
     let state = Arc::new(Mutex::new(initial_state));
 
@@ -796,14 +796,13 @@ impl ServerState {
             ),
             None => self.next_session_name(),
         };
-        if attach_existing {
-            if let Some(session) = self
+        if attach_existing
+            && let Some(session) = self
                 .sessions
                 .iter()
                 .find(|session| session.name == session_name)
-            {
-                return Ok(format_session_result(session, format));
-            }
+        {
+            return Ok(format_session_result(session, format));
         }
         if self
             .sessions
@@ -924,20 +923,18 @@ impl ServerState {
         cwd: Option<&str>,
     ) -> CommandResult {
         let session_index = self.resolve_session_index(target)?;
-        if select_existing {
-            if let Some(name) = name {
-                if let Some(window) = self.sessions[session_index]
-                    .windows
-                    .iter()
-                    .find(|window| window.name == name)
-                {
-                    let index = window.index;
-                    if !detached {
-                        self.sessions[session_index].select_window(index);
-                    }
-                    return Ok(String::new());
-                }
+        if select_existing
+            && let Some(name) = name
+            && let Some(window) = self.sessions[session_index]
+                .windows
+                .iter()
+                .find(|window| window.name == name)
+        {
+            let index = window.index;
+            if !detached {
+                self.sessions[session_index].select_window(index);
             }
+            return Ok(String::new());
         }
         let requested_index = requested_index.or_else(|| {
             target
@@ -966,10 +963,10 @@ impl ServerState {
             if active_window >= index {
                 self.sessions[session_index].active_window = active_window.saturating_add(1);
             }
-            if let Some(last_window) = self.sessions[session_index].last_window {
-                if last_window >= index {
-                    self.sessions[session_index].last_window = Some(last_window.saturating_add(1));
-                }
+            if let Some(last_window) = self.sessions[session_index].last_window
+                && last_window >= index
+            {
+                self.sessions[session_index].last_window = Some(last_window.saturating_add(1));
             }
         }
         let (session_id, size, window_index, session_cwd) = {
@@ -1173,7 +1170,7 @@ impl ServerState {
             .global_options
             .get("default-terminal")
             .map(String::as_str);
-        let pty = Pty::spawn(command, cwd.map(Path::new), size, terminal)
+        let pty = Pty::spawn(command, cwd.map(Path::new), size, terminal, &self.environment)
             .map_err(|error| error.to_string())?;
         let reader = pty.reader().map_err(|error| error.to_string())?;
         let pid = pty.pid();
@@ -1603,11 +1600,12 @@ impl ServerState {
             if let Some(client) = self.clients.get_mut(&client_id) {
                 client.mouse_drag_button = Some(base_button);
             }
-        } else if release && dragging_button.is_some() {
-            if let Some(client) = self.clients.get_mut(&client_id) {
-                client.mouse_drag_button = None;
-                client.mouse_slider_offset = None;
-            }
+        } else if release
+            && dragging_button.is_some()
+            && let Some(client) = self.clients.get_mut(&client_id)
+        {
+            client.mouse_drag_button = None;
+            client.mouse_slider_offset = None;
         }
         if let Some(hit) = scrollbar_hit {
             if !motion && !release && matches!(hit, CopyScrollbarHit::Slider) {
@@ -1690,8 +1688,8 @@ impl ServerState {
         } else {
             "root"
         };
-        if let Some(binding_name) = binding_name.as_deref() {
-            if let Some(binding) = self
+        if let Some(binding_name) = binding_name.as_deref()
+            && let Some(binding) = self
                 .mouse_bindings
                 .get(&(table.to_owned(), binding_name.to_owned()))
                 .or_else(|| {
@@ -1699,14 +1697,13 @@ impl ServerState {
                         .get(&("root".to_owned(), binding_name.to_owned()))
                 })
                 .cloned()
-            {
-                let context = self.mouse_context_for_pane(pane, local_row, local_col, button);
-                self.mouse_context = Some(context);
-                let result = self.execute_bound_commands(client_id, session_id, binding, shared);
-                self.mouse_context = None;
-                let _ = result;
-                return;
-            }
+        {
+            let context = self.mouse_context_for_pane(pane, local_row, local_col, button);
+            self.mouse_context = Some(context);
+            let result = self.execute_bound_commands(client_id, session_id, binding, shared);
+            self.mouse_context = None;
+            let _ = result;
+            return;
         }
         if !release && !motion && base_button == 0 && (click_count == 2 || click_count >= 3) {
             let target = format!("%{pane_id}");
@@ -2184,10 +2181,8 @@ impl ServerState {
         } else {
             self.kill_session(Some(&format!("${}", entry.session_id)), false)
         };
-        if result.is_ok() {
-            if self.clients.contains_key(&client_id) {
-                self.rebuild_tree_mode(client_id);
-            }
+        if result.is_ok() && self.clients.contains_key(&client_id) {
+            self.rebuild_tree_mode(client_id);
         }
     }
 
@@ -2240,23 +2235,22 @@ impl ServerState {
             .iter_mut()
             .find(|session| session.id == entry.session_id)
         {
-            if let Some(window_id) = entry.window_id {
-                if let Some(window) = session.windows.iter().find(|window| window.id == window_id) {
-                    session.active_window = window.index;
-                }
+            if let Some(window_id) = entry.window_id
+                && let Some(window) = session.windows.iter().find(|window| window.id == window_id)
+            {
+                session.active_window = window.index;
             }
-            if let Some(pane_id) = entry.pane_id {
-                if let Some(window) = session.active_window() {
-                    if window.panes.iter().any(|pane| pane.id == pane_id) {
-                        let window_index = window.index;
-                        if let Some(window) = session
-                            .windows
-                            .iter_mut()
-                            .find(|window| window.index == window_index)
-                        {
-                            window.active_pane = pane_id;
-                        }
-                    }
+            if let Some(pane_id) = entry.pane_id
+                && let Some(window) = session.active_window()
+                && window.panes.iter().any(|pane| pane.id == pane_id)
+            {
+                let window_index = window.index;
+                if let Some(window) = session
+                    .windows
+                    .iter_mut()
+                    .find(|window| window.index == window_index)
+                {
+                    window.active_pane = pane_id;
                 }
             }
         }
@@ -3136,41 +3130,39 @@ impl ServerState {
                     }
                 }
             }
-            if !command.iter().any(|value| value == "-t") {
-                if let Some(target) = self
+            if !command.iter().any(|value| value == "-t")
+                && let Some(target) = self
                     .sessions
                     .iter()
                     .find(|session| session.id == session_id)
                     .map(|session| format!("{}:", session.name))
-                {
-                    if matches!(
-                        command[0].as_str(),
-                        "break-pane"
-                            | "capture-pane"
-                            | "clear-history"
-                            | "copy-mode"
-                            | "copy-mode-and-page"
-                            | "kill-pane"
-                            | "kill-window"
-                            | "join-pane"
-                            | "new-window"
-                            | "next-window"
-                            | "previous-window"
-                            | "rename-window"
-                            | "resize-pane"
-                            | "respawn-pane"
-                            | "respawn-window"
-                            | "rotate-window"
-                            | "select-pane"
-                            | "send"
-                            | "send-keys"
-                            | "split-window"
-                            | "swap-pane"
-                            | "swap-window"
-                    ) {
-                        command.extend(["-t".to_owned(), target]);
-                    }
-                }
+                && matches!(
+                    command[0].as_str(),
+                    "break-pane"
+                        | "capture-pane"
+                        | "clear-history"
+                        | "copy-mode"
+                        | "copy-mode-and-page"
+                        | "kill-pane"
+                        | "kill-window"
+                        | "join-pane"
+                        | "new-window"
+                        | "next-window"
+                        | "previous-window"
+                        | "rename-window"
+                        | "resize-pane"
+                        | "respawn-pane"
+                        | "respawn-window"
+                        | "rotate-window"
+                        | "select-pane"
+                        | "send"
+                        | "send-keys"
+                        | "split-window"
+                        | "swap-pane"
+                        | "swap-window"
+                )
+            {
+                command.extend(["-t".to_owned(), target]);
             }
             let invocation = crate::command::parse(&command)?;
             execute_request(self, shared, invocation.request)?;
@@ -3293,10 +3285,10 @@ impl ServerState {
             }
             "display" | "display-message" => {}
             "select-layout" => {
-                if let Some(client) = self.clients.get(&client_id) {
-                    if let Some(layout) = line.tokens.get(1) {
-                        self.select_layout(client.session_id, layout);
-                    }
+                if let Some(client) = self.clients.get(&client_id)
+                    && let Some(layout) = line.tokens.get(1)
+                {
+                    self.select_layout(client.session_id, layout);
                 }
             }
             "set" | "set-option" | "setw" | "set-window-option" => {
@@ -3332,10 +3324,10 @@ impl ServerState {
             .get(index)
             .ok_or_else(|| "bind requires a key".to_owned())?;
         let mut commands = Vec::new();
-        if let Some(command) = tokens.get(index + 1..) {
-            if !command.is_empty() {
-                commands.push(command.to_vec());
-            }
+        if let Some(command) = tokens.get(index + 1..)
+            && !command.is_empty()
+        {
+            commands.push(command.to_vec());
         }
         commands.extend(chained.iter().cloned());
         let binding = ConfigBinding {
@@ -3544,15 +3536,13 @@ impl ServerState {
         if let Some(mode) = pane.copy_mode.as_mut() {
             mode.set_line_number_mode(line_number_mode);
         }
-        if page {
-            if let Some(pane) = self.find_pane_mut(pane_id) {
-                let mut source_parser = copy_source_parser(pane, history_limit);
-                if let Some(mode) = pane.copy_mode.as_mut() {
-                    let parser = source_parser
-                        .as_mut()
-                        .map_or(&mut pane.parser, |parser| parser);
-                    let _ = mode.execute(parser, CopyAction::PageUp, 1);
-                }
+        if page && let Some(pane) = self.find_pane_mut(pane_id) {
+            let mut source_parser = copy_source_parser(pane, history_limit);
+            if let Some(mode) = pane.copy_mode.as_mut() {
+                let parser = source_parser
+                    .as_mut()
+                    .map_or(&mut pane.parser, |parser| parser);
+                let _ = mode.execute(parser, CopyAction::PageUp, 1);
             }
         }
         Ok(String::new())
@@ -3600,9 +3590,7 @@ impl ServerState {
         let (source_session, source_window, _) = source
             .map(|source| self.resolve_pane_target(Some(source)))
             .transpose()?
-            .map_or((target_session, target_window, target_pane), |location| {
-                location
-            });
+            .unwrap_or((target_session, target_window, target_pane));
         if source_session != target_session {
             return Err("display-panes source and target must share a session".to_owned());
         }
@@ -3918,7 +3906,7 @@ impl ServerState {
             .buffers
             .iter()
             .filter(|buffer| {
-                filter.map_or(true, |filter| {
+                filter.is_none_or(|filter| {
                     let value = render_format_with_options(
                         filter,
                         &buffer_values(buffer),
@@ -4025,7 +4013,7 @@ impl ServerState {
             .iter()
             .filter_map(|(id, client)| {
                 let values = self.client_mode_values(**id, client)?;
-                let matches = filter.map_or(true, |filter| {
+                let matches = filter.is_none_or(|filter| {
                     let value = render_format_with_options(filter, &values, &self.global_options);
                     !value.is_empty() && value != "0" && value != "false"
                 });
@@ -4387,7 +4375,7 @@ impl ServerState {
                     self.store_copy_buffer(buffer_prefix, data.clone());
                 }
                 if !command.is_empty() {
-                    run_copy_pipe(&command, &data)?;
+                    run_copy_pipe(&command, &data, &self.environment)?;
                 }
             } else if append {
                 self.append_buffer(data);
@@ -5211,13 +5199,19 @@ impl ServerState {
         if name.is_empty() || name.contains('=') || name.contains('\0') {
             return Err("invalid environment variable name".to_owned());
         }
+        // The process environment itself is never mutated: `std::env::set_var`
+        // is unsafe in edition 2024 because setenv races with getenv in a
+        // multithreaded process, and rustix deliberately offers no replacement
+        // (it is not a syscall). Instead `self.environment` is applied
+        // explicitly to spawned children: pane PTYs receive it in
+        // `Pty::spawn`, and each helper `Command::new("/bin/sh")` site passes
+        // it via `.envs`, preserving tmux's "affects future spawned shells"
+        // semantics.
         if remove {
             self.environment.remove(name);
-            std::env::remove_var(name);
         } else {
             let value = value.ok_or_else(|| "set-environment requires a value".to_owned())?;
             self.environment.insert(name.to_owned(), value.to_owned());
-            std::env::set_var(name, value);
         }
         Ok(String::new())
     }
@@ -5256,6 +5250,7 @@ impl ServerState {
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(command)
+            .envs(self.environment.iter())
             .stdin(Stdio::piped())
             .spawn()
             .map_err(|error| format!("pipe-pane: {error}"))?;
@@ -5488,6 +5483,7 @@ impl ServerState {
             Command::new("/bin/sh")
                 .arg("-c")
                 .arg(command)
+                .envs(self.environment.iter())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -5498,6 +5494,7 @@ impl ServerState {
         let output = Command::new("/bin/sh")
             .arg("-c")
             .arg(command)
+            .envs(self.environment.iter())
             .output()
             .map_err(|error| format!("run-shell: {error}"))?;
         if target.is_some() {
@@ -5663,8 +5660,7 @@ impl ServerState {
                     window
                         .panes
                         .iter()
-                        .enumerate()
-                        .map(|(_index, pane)| {
+                        .map(|pane| {
                             let values = vec![
                                 ("session_name", session.name.clone()),
                                 ("window_index", window.index.to_string()),
@@ -6342,15 +6338,15 @@ impl ServerState {
                 self.marked_pane = None;
             }
         }
-        if let Some(title) = title {
-            if let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected) {
-                pane.title = title;
-            }
+        if let Some(title) = title
+            && let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected)
+        {
+            pane.title = title;
         }
-        if let Some(enabled) = enabled {
-            if let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected) {
-                pane.enabled = enabled;
-            }
+        if let Some(enabled) = enabled
+            && let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected)
+        {
+            pane.enabled = enabled;
         }
         Ok(String::new())
     }
@@ -6719,6 +6715,7 @@ impl ServerState {
                 self.global_options
                     .get("default-terminal")
                     .map(String::as_str),
+                &self.environment,
             )
             .map_err(|error| error.to_string())?
         };
@@ -7281,29 +7278,30 @@ impl ServerState {
                 history_limit,
             );
         }
-        if let Some(message) = pane_prompt_message {
-            if let Some(active) = window
+        if let Some(message) = pane_prompt_message
+            && let Some(active) = window
                 .panes
                 .iter()
                 .find(|pane| pane.id == window.active_pane)
-            {
-                output.extend_from_slice(
-                    format!(
-                        "\x1b[{};{}H\x1b[K{}",
-                        active.rect.y
-                            + if !self.global_options.get("status").is_some_and(|value| {
-                                parse_on_off(value).unwrap_or(true) == false
-                            }) {
-                                active.rect.rows.saturating_sub(1)
-                            } else {
-                                active.rect.rows
-                            },
-                        active.rect.x + 1,
-                        message
-                    )
-                    .as_bytes(),
-                );
-            }
+        {
+            output.extend_from_slice(
+                format!(
+                    "\x1b[{};{}H\x1b[K{}",
+                    active.rect.y
+                        + if !self
+                            .global_options
+                            .get("status")
+                            .is_some_and(|value| { !parse_on_off(value).unwrap_or(true) })
+                        {
+                            active.rect.rows.saturating_sub(1)
+                        } else {
+                            active.rect.rows
+                        },
+                    active.rect.x + 1,
+                    message
+                )
+                .as_bytes(),
+            );
         }
         if let Some(active) = window
             .panes
@@ -7652,14 +7650,13 @@ impl ServerState {
                 .map(|index| (session_index, index))
                 .ok_or_else(|| format!("window not found: @{id}"));
         }
-        if let Ok(index) = target.parse::<u32>() {
-            if let Some(position) = session
+        if let Ok(index) = target.parse::<u32>()
+            && let Some(position) = session
                 .windows
                 .iter()
                 .position(|window| window.index == index)
-            {
-                return Ok((session_index, position));
-            }
+        {
+            return Ok((session_index, position));
         }
         let exact = target.strip_prefix('=').unwrap_or(target);
         let matches = session
@@ -7976,24 +7973,26 @@ fn mouse_hyperlink_at(output: &[u8], target_row: usize, target_col: usize, rect:
     let mut hyperlink = String::new();
     let mut index = 0usize;
     while index < output.len() {
-        if output[index] == 0x1b && output.get(index + 1) == Some(&b']') {
-            if let Some((end, body)) = parse_osc_sequence(&output[index..]) {
-                if let Some(uri) = body
-                    .strip_prefix("8;")
-                    .and_then(|value| value.split_once(';').map(|(_, uri)| uri.to_owned()))
-                {
-                    hyperlink = uri;
-                }
-                index += end;
-                continue;
+        if output[index] == 0x1b
+            && output.get(index + 1) == Some(&b']')
+            && let Some((end, body)) = parse_osc_sequence(&output[index..])
+        {
+            if let Some(uri) = body
+                .strip_prefix("8;")
+                .and_then(|value| value.split_once(';').map(|(_, uri)| uri.to_owned()))
+            {
+                hyperlink = uri;
             }
+            index += end;
+            continue;
         }
-        if output[index] == 0x1b && output.get(index + 1) == Some(&b'[') {
-            if let Some((end, body, final_byte)) = parse_csi_sequence(&output[index..]) {
-                apply_mouse_csi(&mut row, &mut col, body, final_byte, rows, cols);
-                index += end;
-                continue;
-            }
+        if output[index] == 0x1b
+            && output.get(index + 1) == Some(&b'[')
+            && let Some((end, body, final_byte)) = parse_csi_sequence(&output[index..])
+        {
+            apply_mouse_csi(&mut row, &mut col, body, final_byte, rows, cols);
+            index += end;
+            continue;
         }
         let byte = output[index];
         match byte {
@@ -8519,11 +8518,11 @@ fn strip_status_styles(value: &str) -> String {
     let mut output = String::new();
     let mut index = 0;
     while index < value.len() {
-        if value[index..].starts_with("#[") {
-            if let Some(end) = value[index + 2..].find(']') {
-                index += end + 3;
-                continue;
-            }
+        if value[index..].starts_with("#[")
+            && let Some(end) = value[index + 2..].find(']')
+        {
+            index += end + 3;
+            continue;
         }
         let character = value[index..]
             .chars()
@@ -8546,7 +8545,7 @@ fn render_status_line(
 ) {
     if options
         .get("status")
-        .is_some_and(|value| parse_on_off(value).unwrap_or(true) == false)
+        .is_some_and(|value| !parse_on_off(value).unwrap_or(true))
     {
         return;
     }
@@ -8680,21 +8679,21 @@ fn render_status_styles(value: &str) -> String {
     let mut output = String::new();
     let mut index = 0;
     while index < value.len() {
-        if value[index..].starts_with("#[") {
-            if let Some(end) = value[index + 2..].find(']') {
-                let style = &value[index + 2..index + 2 + end];
-                output.push_str(match style {
-                    "dim" => "\x1b[2m",
-                    "fg=green" => "\x1b[32m",
-                    "fg=yellow" => "\x1b[33m",
-                    "fg=red" => "\x1b[31m",
-                    "fg=white" => "\x1b[37m",
-                    "default" => "\x1b[0m",
-                    _ => "",
-                });
-                index += end + 3;
-                continue;
-            }
+        if value[index..].starts_with("#[")
+            && let Some(end) = value[index + 2..].find(']')
+        {
+            let style = &value[index + 2..index + 2 + end];
+            output.push_str(match style {
+                "dim" => "\x1b[2m",
+                "fg=green" => "\x1b[32m",
+                "fg=yellow" => "\x1b[33m",
+                "fg=red" => "\x1b[31m",
+                "fg=white" => "\x1b[37m",
+                "default" => "\x1b[0m",
+                _ => "",
+            });
+            index += end + 3;
+            continue;
         }
         let character = value[index..]
             .chars()
@@ -9143,13 +9142,11 @@ fn execute_request(
             if state.find_pane(pane_id).is_none() {
                 return Err("target pane no longer exists".to_owned());
             }
-            if reset {
-                if let Some(pane) = state.find_pane_mut(pane_id) {
-                    pane.copy_mode = None;
-                    pane.copy_source = None;
-                    pane.output_state = terminal::OutputState::default();
-                    pane.parser.process(b"\x1bc");
-                }
+            if reset && let Some(pane) = state.find_pane_mut(pane_id) {
+                pane.copy_mode = None;
+                pane.copy_source = None;
+                pane.output_state = terminal::OutputState::default();
+                pane.parser.process(b"\x1bc");
             }
             state.write_pane(pane_id, &bytes);
             Ok(String::new())
@@ -9492,10 +9489,10 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                 .flat_map(|window| &mut window.panes)
                                 .filter(|pane| pane.pty.pid() == pid)
                             {
-                                if let Some(pipe) = pipe.as_ref() {
-                                    if let Ok(mut stdin) = pipe.lock() {
-                                        let _ = stdin.write_all(&buffer[..length]);
-                                    }
+                                if let Some(pipe) = pipe.as_ref()
+                                    && let Ok(mut stdin) = pipe.lock()
+                                {
+                                    let _ = stdin.write_all(&buffer[..length]);
                                 }
                                 retain_raw_output(pane, &buffer[..length]);
                                 if let Some(path) = terminal_path(&pane.raw_output) {
@@ -9533,7 +9530,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                             .options
                                             .get("monitor-bell")
                                             .or(global_monitor_bell.as_ref())
-                                            .map_or(true, |value| {
+                                            .is_none_or(|value| {
                                                 parse_on_off(value).unwrap_or(true)
                                             });
                                         if monitor_bell {
@@ -9801,15 +9798,15 @@ fn expand_format_token(body: &str, values: &[(&str, String)]) -> String {
     if body.starts_with("c:") || body.starts_with("c/f:") || body.starts_with("c/b:") {
         return format_colour_modifier(body, values).unwrap_or_default();
     }
-    if body.starts_with('N') {
-        if let Some(value) = format_name_exists(body, values) {
-            return value;
-        }
+    if body.starts_with('N')
+        && let Some(value) = format_name_exists(body, values)
+    {
+        return value;
     }
-    if body.starts_with('C') {
-        if let Some(value) = format_content_search(body, values) {
-            return value;
-        }
+    if body.starts_with('C')
+        && let Some(value) = format_content_search(body, values)
+    {
+        return value;
     }
     if let Some(value) = body.strip_prefix("T:") {
         let value = evaluate_format_argument(value, values);
@@ -9861,10 +9858,10 @@ fn expand_format_token(body: &str, values: &[(&str, String)]) -> String {
     if body.starts_with("t:") || body.starts_with("t/") {
         return format_time_modifier(body, values).unwrap_or_default();
     }
-    if body.starts_with('s') {
-        if let Some(value) = format_substitute(body, values) {
-            return value;
-        }
+    if body.starts_with('s')
+        && let Some(value) = format_substitute(body, values)
+    {
+        return value;
     }
     if let Some(value) = body.strip_prefix("n:") {
         return evaluate_format_argument(value, values).len().to_string();
@@ -11039,42 +11036,42 @@ fn format_arithmetic(body: &str, values: &[(&str, String)]) -> Option<String> {
                     (left == right)
                         .then_some("1".to_owned())
                         .unwrap_or_else(|| "0".to_owned()),
-                )
+                );
             }
             "!=" => {
                 return Some(
                     (left != right)
                         .then_some("1".to_owned())
                         .unwrap_or_else(|| "0".to_owned()),
-                )
+                );
             }
             "<" => {
                 return Some(
                     (left < right)
                         .then_some("1".to_owned())
                         .unwrap_or_else(|| "0".to_owned()),
-                )
+                );
             }
             ">" => {
                 return Some(
                     (left > right)
                         .then_some("1".to_owned())
                         .unwrap_or_else(|| "0".to_owned()),
-                )
+                );
             }
             "<=" => {
                 return Some(
                     (left <= right)
                         .then_some("1".to_owned())
                         .unwrap_or_else(|| "0".to_owned()),
-                )
+                );
             }
             ">=" => {
                 return Some(
                     (left >= right)
                         .then_some("1".to_owned())
                         .unwrap_or_else(|| "0".to_owned()),
-                )
+                );
             }
             _ => return None,
         };
@@ -11093,42 +11090,42 @@ fn format_arithmetic(body: &str, values: &[(&str, String)]) -> Option<String> {
                 (left == right)
                     .then_some("1".to_owned())
                     .unwrap_or_else(|| "0".to_owned()),
-            )
+            );
         }
         "!=" => {
             return Some(
                 (left != right)
                     .then_some("1".to_owned())
                     .unwrap_or_else(|| "0".to_owned()),
-            )
+            );
         }
         "<" => {
             return Some(
                 (left < right)
                     .then_some("1".to_owned())
                     .unwrap_or_else(|| "0".to_owned()),
-            )
+            );
         }
         ">" => {
             return Some(
                 (left > right)
                     .then_some("1".to_owned())
                     .unwrap_or_else(|| "0".to_owned()),
-            )
+            );
         }
         "<=" => {
             return Some(
                 (left <= right)
                     .then_some("1".to_owned())
                     .unwrap_or_else(|| "0".to_owned()),
-            )
+            );
         }
         ">=" => {
             return Some(
                 (left >= right)
                     .then_some("1".to_owned())
                     .unwrap_or_else(|| "0".to_owned()),
-            )
+            );
         }
         _ => return None,
     };
@@ -12358,10 +12355,15 @@ fn parse_incremental_search_action(
     })
 }
 
-fn run_copy_pipe(command: &str, data: &[u8]) -> CommandResult {
+fn run_copy_pipe(
+    command: &str,
+    data: &[u8],
+    environment: &HashMap<String, String>,
+) -> CommandResult {
     let mut child = Command::new("/bin/sh")
         .arg("-c")
         .arg(command)
+        .envs(environment.iter())
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|error| format!("copy pipe: {error}"))?;
@@ -12773,7 +12775,7 @@ impl PaneSize for Pane {
 }
 
 fn poisoned() -> io::Error {
-    io::Error::new(io::ErrorKind::Other, "server state lock is poisoned")
+    io::Error::other("server state lock is poisoned")
 }
 
 #[cfg(test)]
@@ -12866,9 +12868,11 @@ mod tests {
                 .count(),
             3
         );
-        assert!(!rendered
-            .windows(b"zzz:F".len())
-            .any(|window| window == b"zzz:F"));
+        assert!(
+            !rendered
+                .windows(b"zzz:F".len())
+                .any(|window| window == b"zzz:F")
+        );
 
         state.handle_client_input(client_id, b"q", &shared);
         assert!(state.clients[&client_id].tree_mode.is_none());
@@ -12934,9 +12938,11 @@ mod tests {
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render no-match tree mode");
-        assert!(rendered
-            .windows(b"no matches".len())
-            .any(|window| window == b"no matches"));
+        assert!(
+            rendered
+                .windows(b"no matches".len())
+                .any(|window| window == b"no matches")
+        );
         state.handle_client_input(client_id, b"g\r", &shared);
         assert_eq!(state.clients[&client_id].session_id, state.sessions[0].id);
         assert!(state.clients[&client_id].tree_mode.is_none());
@@ -12975,9 +12981,11 @@ mod tests {
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render tree confirmation");
-        assert!(rendered
-            .windows(b"Kill window 1".len())
-            .any(|window| window == b"Kill window 1"));
+        assert!(
+            rendered
+                .windows(b"Kill window 1".len())
+                .any(|window| window == b"Kill window 1")
+        );
         state.handle_client_input(client_id, b"y", &shared);
         assert_eq!(state.sessions[0].windows.len(), 1);
         let rendered = state
@@ -13049,12 +13057,16 @@ mod tests {
         let rendered = state
             .render_session(session_id, Some(client_a))
             .expect("render buffer mode");
-        assert!(rendered
-            .windows(b"bufa: B".len())
-            .any(|window| window == b"bufa: B"));
-        assert!(!rendered
-            .windows(b"bufz: B".len())
-            .any(|window| window == b"bufz: B"));
+        assert!(
+            rendered
+                .windows(b"bufa: B".len())
+                .any(|window| window == b"bufa: B")
+        );
+        assert!(
+            !rendered
+                .windows(b"bufz: B".len())
+                .any(|window| window == b"bufz: B")
+        );
         state.handle_client_input(client_a, b"q", &shared);
 
         state
@@ -13071,9 +13083,11 @@ mod tests {
         let rendered = state
             .render_session(session_id, Some(client_a))
             .expect("render no-match buffer mode");
-        assert!(rendered
-            .windows(b"no matches".len())
-            .any(|window| window == b"no matches"));
+        assert!(
+            rendered
+                .windows(b"no matches".len())
+                .any(|window| window == b"no matches")
+        );
         state.handle_client_input(client_a, b"\x14D", &shared);
         assert!(state.buffers.is_empty());
         state.handle_client_input(client_a, b"q", &shared);
@@ -13097,9 +13111,11 @@ mod tests {
         let rendered = state
             .render_session(session_id, Some(client_a))
             .expect("render client mode");
-        assert!(rendered
-            .windows(b"client1: C=bbb".len())
-            .any(|window| window == b"client1: C=bbb"));
+        assert!(
+            rendered
+                .windows(b"client1: C=bbb".len())
+                .any(|window| window == b"client1: C=bbb")
+        );
         state.handle_client_input(client_a, b"\r", &shared);
         assert!(!state.clients.contains_key(&client_b));
         assert!(state.clients[&client_a].client_mode.is_none());
@@ -13160,12 +13176,16 @@ mod tests {
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render panes mode");
-        assert!(rendered
-            .windows(b"P0:".len())
-            .any(|window| window == b"P0:"));
-        assert!(rendered
-            .windows(b"P1:".len())
-            .any(|window| window == b"P1:"));
+        assert!(
+            rendered
+                .windows(b"P0:".len())
+                .any(|window| window == b"P0:")
+        );
+        assert!(
+            rendered
+                .windows(b"P1:".len())
+                .any(|window| window == b"P1:")
+        );
         assert_eq!(
             state
                 .display_message(Some("panes:0.0"), "#{pane_mode} #{pane_in_mode}")
@@ -13221,9 +13241,11 @@ mod tests {
             "panes-mode"
         );
         state.handle_client_input(client_id, b"q", &shared);
-        assert!(state
-            .find_pane(pane0)
-            .is_some_and(|pane| { !pane.panes_mode && pane.copy_mode.is_some() }));
+        assert!(
+            state
+                .find_pane(pane0)
+                .is_some_and(|pane| { !pane.panes_mode && pane.copy_mode.is_some() })
+        );
         state
             .execute_copy_action(pane0, CopyAction::Cancel, 1)
             .expect("cancel stacked copy mode");
@@ -13233,9 +13255,11 @@ mod tests {
         state
             .enter_copy_mode(Some(&target), None, false, false, false, false)
             .expect("replace panes mode with copy mode");
-        assert!(state
-            .find_pane(pane0)
-            .is_some_and(|pane| { !pane.panes_mode && pane.copy_mode.is_some() }));
+        assert!(
+            state
+                .find_pane(pane0)
+                .is_some_and(|pane| { !pane.panes_mode && pane.copy_mode.is_some() })
+        );
         state
             .execute_copy_action(pane0, CopyAction::Cancel, 1)
             .expect("cancel copy replacement");
@@ -13437,10 +13461,12 @@ mod tests {
         state
             .switch_client(Some(&format!("client{client_id}")), "two")
             .expect("switch client");
-        assert!(state
-            .list_clients(Some("#{client_session}"))
-            .expect("list switched client")
-            .contains("two"));
+        assert!(
+            state
+                .list_clients(Some("#{client_session}"))
+                .expect("list switched client")
+                .contains("two")
+        );
         state
             .detach_client(Some(&format!("client{client_id}")), false)
             .expect("detach client");
@@ -13494,24 +13520,32 @@ mod tests {
             .expect("render copy mode");
         assert!(rendered.windows(8).any(|window| window == b"o\x1b[27mne"));
         assert!(rendered.windows(4).any(|window| window == b"\x1b[7m"));
-        assert!(rendered
-            .windows(b"[23/100-LONGTAIL]".len())
-            .any(|window| window == b"[23/100-LONGTAIL]"));
-        assert!(rendered
-            .windows(b"\x1b[2m  1 \x1b[0m".len())
-            .any(|window| window == b"\x1b[2m  1 \x1b[0m"));
+        assert!(
+            rendered
+                .windows(b"[23/100-LONGTAIL]".len())
+                .any(|window| window == b"[23/100-LONGTAIL]")
+        );
+        assert!(
+            rendered
+                .windows(b"\x1b[2m  1 \x1b[0m".len())
+                .any(|window| window == b"\x1b[2m  1 \x1b[0m")
+        );
         state
             .set_global_option("copy-mode-position-format", "#[align=right][1/100]", false)
             .expect("shrink copy position format");
         let rendered = state
             .render_session(session_id, None)
             .expect("rerender copy mode");
-        assert!(rendered
-            .windows(b"[1/100]".len())
-            .any(|window| window == b"[1/100]"));
-        assert!(!rendered
-            .windows(b"LONGTAIL".len())
-            .any(|window| window == b"LONGTAIL"));
+        assert!(
+            rendered
+                .windows(b"[1/100]".len())
+                .any(|window| window == b"[1/100]")
+        );
+        assert!(
+            !rendered
+                .windows(b"LONGTAIL".len())
+                .any(|window| window == b"LONGTAIL")
+        );
     }
 
     #[test]
@@ -13563,12 +13597,14 @@ mod tests {
             .expect("render long redraw row");
         let mut terminal = Parser::new(5, 30, 10_000);
         terminal.process(&rendered);
-        assert!(terminal
-            .screen()
-            .contents()
-            .lines()
-            .next()
-            .is_some_and(|line| line.starts_with("LONGTAIL-")));
+        assert!(
+            terminal
+                .screen()
+                .contents()
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("LONGTAIL-"))
+        );
 
         state
             .execute_copy_action(pane_id, CopyAction::ScrollDown, 1)
@@ -13652,9 +13688,11 @@ mod tests {
             .filter(|window| *window == b"SOURCE LINE")
             .count();
         assert!(source_occurrences >= 2, "{rendered:?}");
-        assert!(!rendered
-            .windows(b"TARGET LINE".len())
-            .any(|window| window == b"TARGET LINE"));
+        assert!(
+            !rendered
+                .windows(b"TARGET LINE".len())
+                .any(|window| window == b"TARGET LINE")
+        );
     }
 
     #[test]
@@ -13734,9 +13772,11 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render absolute line numbers");
-        assert!(rendered
-            .windows(b"\x1b[2m  1 \x1b[0m".len())
-            .any(|window| window == b"\x1b[2m  1 \x1b[0m"));
+        assert!(
+            rendered
+                .windows(b"\x1b[2m  1 \x1b[0m".len())
+                .any(|window| window == b"\x1b[2m  1 \x1b[0m")
+        );
 
         state
             .set_global_option("copy-mode-line-numbers", "relative", false)
@@ -13753,9 +13793,11 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render relative line numbers");
-        assert!(rendered
-            .windows(b"\x1b[2m  0 \x1b[0m".len())
-            .any(|window| window == b"\x1b[2m  0 \x1b[0m"));
+        assert!(
+            rendered
+                .windows(b"\x1b[2m  0 \x1b[0m".len())
+                .any(|window| window == b"\x1b[2m  0 \x1b[0m")
+        );
 
         state
             .set_global_option("copy-mode-line-numbers", "hybrid", false)
@@ -13772,9 +13814,11 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render hybrid line numbers");
-        assert!(rendered
-            .windows(b"\x1b[2m  2 \x1b[0m".len())
-            .any(|window| window == b"\x1b[2m  2 \x1b[0m"));
+        assert!(
+            rendered
+                .windows(b"\x1b[2m  2 \x1b[0m".len())
+                .any(|window| window == b"\x1b[2m  2 \x1b[0m")
+        );
     }
 
     #[test]
@@ -13863,15 +13907,19 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render clipboard event");
-        assert!(rendered
-            .windows(b"\x1b]52;c;Y29weSBtZQ==\x07".len())
-            .any(|window| window == b"\x1b]52;c;Y29weSBtZQ==\x07"));
+        assert!(
+            rendered
+                .windows(b"\x1b]52;c;Y29weSBtZQ==\x07".len())
+                .any(|window| window == b"\x1b]52;c;Y29weSBtZQ==\x07")
+        );
         let next_render = state
             .render_session(session_id, None)
             .expect("render after clipboard event");
-        assert!(!next_render
-            .windows(b"Y29weSBtZQ==".len())
-            .any(|window| window == b"Y29weSBtZQ=="));
+        assert!(
+            !next_render
+                .windows(b"Y29weSBtZQ==".len())
+                .any(|window| window == b"Y29weSBtZQ==")
+        );
     }
 
     #[test]
@@ -14037,10 +14085,8 @@ mod tests {
 
     #[test]
     fn user_config_binding_vocabulary_loads_headlessly() {
-        let path = std::env::temp_dir().join(format!(
-            "tm-config-vocabulary-{}.conf",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("tm-config-vocabulary-{}.conf", std::process::id()));
         std::fs::write(
             &path,
             r###"set -g prefix C-a
@@ -14155,9 +14201,11 @@ set -g status-right ""
         let zoom_render = state
             .render_session(session_id, Some(client_id))
             .expect("render configured zoom status");
-        assert!(zoom_render
-            .windows(b"(Z)".len())
-            .any(|window| window == b"(Z)"));
+        assert!(
+            zoom_render
+                .windows(b"(Z)".len())
+                .any(|window| window == b"(Z)")
+        );
         state.handle_client_input(client_id, b"\x01z", &shared);
         assert!(!state.sessions[0].windows[0].zoomed);
 
@@ -14175,9 +14223,11 @@ set -g status-right ""
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render configured prefix status");
-        assert!(rendered
-            .windows(b"\x1b[33m(configured-keys)".len())
-            .any(|window| { window == b"\x1b[33m(configured-keys)" }));
+        assert!(
+            rendered
+                .windows(b"\x1b[33m(configured-keys)".len())
+                .any(|window| { window == b"\x1b[33m(configured-keys)" })
+        );
         state
             .clients
             .get_mut(&client_id)
@@ -14315,9 +14365,11 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
         let prompt_render = state
             .render_session(session_id, Some(client_id))
             .expect("render prompt");
-        assert!(prompt_render
-            .windows(b"name of new window:".len())
-            .any(|window| window == b"name of new window:"));
+        assert!(
+            prompt_render
+                .windows(b"name of new window:".len())
+                .any(|window| window == b"name of new window:")
+        );
         state.handle_client_input(client_id, b"renamed\r", &shared);
         assert_eq!(
             state
@@ -14329,10 +14381,8 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
 
     #[test]
     fn command_prompt_supports_cursor_editing_headlessly() {
-        let path = std::env::temp_dir().join(format!(
-            "tm-config-prompt-edit-{}.conf",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("tm-config-prompt-edit-{}.conf", std::process::id()));
         std::fs::write(
             &path,
             r###"set -g prefix C-a
@@ -14772,9 +14822,11 @@ bind -T copy-mode C-a send -X end-of-line
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render copy prompt");
-        assert!(rendered
-            .windows(b"(search) ZabXcdY".len())
-            .any(|window| window == b"(search) ZabXcdY"));
+        assert!(
+            rendered
+                .windows(b"(search) ZabXcdY".len())
+                .any(|window| window == b"(search) ZabXcdY")
+        );
         assert_eq!(
             state
                 .find_pane(pane_id)
@@ -15205,10 +15257,12 @@ bind -T copy-mode C-a send -X end-of-line
 
         state.handle_client_input(client_id, b"R", &shared);
 
-        assert!(!state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_some_and(|mode| mode.rectangle_selection()));
+        assert!(
+            !state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_some_and(|mode| mode.rectangle_selection())
+        );
     }
 
     #[test]
@@ -15358,51 +15412,71 @@ bind -r Right next-window
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render mouse client");
-        assert!(rendered
-            .windows(b"\x1b[?1000h".len())
-            .any(|window| window == b"\x1b[?1000h"));
-        assert!(rendered
-            .windows(b"\x1b[?1002h".len())
-            .any(|window| window == b"\x1b[?1002h"));
-        assert!(rendered
-            .windows(b"\x1b[?1006h".len())
-            .any(|window| window == b"\x1b[?1006h"));
-        assert!(rendered
-            .windows(b"\x1b[?1004h".len())
-            .any(|window| window == b"\x1b[?1004h"));
-        assert!(rendered
-            .windows(b"\x1b[>1u".len())
-            .any(|window| window == b"\x1b[>1u"));
+        assert!(
+            rendered
+                .windows(b"\x1b[?1000h".len())
+                .any(|window| window == b"\x1b[?1000h")
+        );
+        assert!(
+            rendered
+                .windows(b"\x1b[?1002h".len())
+                .any(|window| window == b"\x1b[?1002h")
+        );
+        assert!(
+            rendered
+                .windows(b"\x1b[?1006h".len())
+                .any(|window| window == b"\x1b[?1006h")
+        );
+        assert!(
+            rendered
+                .windows(b"\x1b[?1004h".len())
+                .any(|window| window == b"\x1b[?1004h")
+        );
+        assert!(
+            rendered
+                .windows(b"\x1b[>1u".len())
+                .any(|window| window == b"\x1b[>1u")
+        );
         state.last_message = Some("configuration reloaded.".to_owned());
         let message_render = state
             .render_session(session_id, Some(client_id))
             .expect("render display message");
-        assert!(message_render
-            .windows(b"configuration reloaded.".len())
-            .any(|window| window == b"configuration reloaded."));
+        assert!(
+            message_render
+                .windows(b"configuration reloaded.".len())
+                .any(|window| window == b"configuration reloaded.")
+        );
 
         state.handle_client_input(client_id, b"\x1b[<64;1;1M", &shared);
-        assert!(state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_some_and(|mode| mode.scroll_position() > 0));
+        assert!(
+            state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_some_and(|mode| mode.scroll_position() > 0)
+        );
         state.handle_client_input(client_id, b"\x1b[<0;1;1M", &shared);
-        assert!(!state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_some_and(CopyModeState::selection_is_active));
-        assert!(!state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_some_and(CopyModeState::selection_present));
+        assert!(
+            !state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_some_and(CopyModeState::selection_is_active)
+        );
+        assert!(
+            !state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_some_and(CopyModeState::selection_present)
+        );
         state.handle_client_input(client_id, b"\x1b[<32;6;2M", &shared);
         state.handle_client_input(client_id, b"\x1b[<0;6;2m", &shared);
         let buffer = state.show_buffer(None).expect("mouse selection buffer");
         assert!(!buffer.is_empty());
-        assert!(state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_none());
+        assert!(
+            state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_none()
+        );
     }
 
     #[test]
@@ -15880,10 +15954,12 @@ bind -r Right next-window
             },
         )
         .expect("start copy mode at mouse");
-        assert!(state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_some_and(CopyModeState::selection_is_active));
+        assert!(
+            state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_some_and(CopyModeState::selection_is_active)
+        );
 
         state
             .execute_copy_action(pane_id, CopyAction::Cancel, 1)
@@ -15906,10 +15982,12 @@ bind -r Right next-window
             },
         )
         .expect("scroll copy mode at mouse");
-        assert!(state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_some_and(|mode| mode.scroll_position() > 0));
+        assert!(
+            state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_some_and(|mode| mode.scroll_position() > 0)
+        );
         state.mouse_context = None;
     }
 
@@ -15981,8 +16059,7 @@ bind -r Right next-window
 
     #[test]
     fn copy_pipe_keys_use_global_copy_command_headlessly() {
-        let path =
-            std::env::temp_dir().join(format!("tm-copy-command-{}.txt", std::process::id()));
+        let path = std::env::temp_dir().join(format!("tm-copy-command-{}.txt", std::process::id()));
         let _ = fs::remove_file(&path);
         let command = format!("cat > {}", path.display());
         let shared = Arc::new(Mutex::new(ServerState::new()));
@@ -16035,9 +16112,11 @@ bind -r Right next-window
             state.show_buffer(None).expect("copy command buffer"),
             "alpha beta"
         );
-        assert!(state
-            .find_pane(pane_id)
-            .is_some_and(|pane| pane.copy_mode.is_none()));
+        assert!(
+            state
+                .find_pane(pane_id)
+                .is_some_and(|pane| pane.copy_mode.is_none())
+        );
         let _ = fs::remove_file(path);
     }
 
@@ -16179,18 +16258,22 @@ bind -r Right next-window
 
         state.handle_client_input(client_id, b"\x1b[<0;3;1M", &shared);
         state.handle_client_input(client_id, b"\x1b[<32;3;1M", &shared);
-        assert!(state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_some());
+        assert!(
+            state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_some()
+        );
         state.handle_client_input(client_id, b"\x1b[<32;8;1M", &shared);
         state.handle_client_input(client_id, b"\x1b[<0;8;1m", &shared);
 
         assert_eq!(state.show_buffer(None).expect("drag buffer"), "pha b");
-        assert!(state
-            .find_pane(pane_id)
-            .and_then(|pane| pane.copy_mode.as_ref())
-            .is_none());
+        assert!(
+            state
+                .find_pane(pane_id)
+                .and_then(|pane| pane.copy_mode.as_ref())
+                .is_none()
+        );
     }
 
     #[test]
@@ -16348,9 +16431,11 @@ bind -r Right next-window
             first_rect.y.saturating_add(1)
         );
         state.handle_client_input(client_id, wheel.as_bytes(), &shared);
-        assert!(state
-            .find_pane(first_pane)
-            .is_some_and(|pane| pane.copy_mode.is_some()));
+        assert!(
+            state
+                .find_pane(first_pane)
+                .is_some_and(|pane| pane.copy_mode.is_some())
+        );
     }
 
     #[test]
@@ -16389,7 +16474,9 @@ bind -r Right next-window
         .expect("parse mouse binding");
         assert_eq!(
             line.tokens.last().map(String::as_str),
-            Some("x=#{mouse_x} y=#{mouse_y} word=#{mouse_word} line=#{mouse_line} pane=#{mouse_pane}")
+            Some(
+                "x=#{mouse_x} y=#{mouse_y} word=#{mouse_word} line=#{mouse_line} pane=#{mouse_pane}"
+            )
         );
         state
             .execute_config_line(client_id, line, &shared)
@@ -16569,7 +16656,10 @@ bind -r Right next-window
         assert_eq!(pane.history_floor, 7);
         let mut replayed = Parser::new(4, 20, 100);
         terminal::replay(&mut replayed, &pane.raw_output);
-        assert_eq!(replayed.screen().contents(), pane.parser.screen().contents());
+        assert_eq!(
+            replayed.screen().contents(),
+            pane.parser.screen().contents()
+        );
     }
 
     #[test]
@@ -16608,7 +16698,10 @@ bind -r Right next-window
         let pane = state.find_pane(pane_id).expect("cleared pane");
         let mut replayed = Parser::new(4, 20, 100);
         terminal::replay(&mut replayed, &pane.raw_output);
-        assert_eq!(replayed.screen().contents(), pane.parser.screen().contents());
+        assert_eq!(
+            replayed.screen().contents(),
+            pane.parser.screen().contents()
+        );
         assert_eq!(
             replayed.screen().cursor_position(),
             pane.parser.screen().cursor_position()

@@ -96,10 +96,11 @@ fn buffers_match_the_headless_tmux_command_contract() {
         ]),
         "buffer1:3:hit\nbuffer0:3:miss"
     );
-    assert!(tm
-        .body(&["list-buffers", "-F", "#{buffer_created}"])
-        .lines()
-        .all(|value| value.parse::<i64>().is_ok()));
+    assert!(
+        tm.body(&["list-buffers", "-F", "#{buffer_created}"])
+            .lines()
+            .all(|value| value.parse::<i64>().is_ok())
+    );
     assert_eq!(tm.body(&["show-buffer"]), "two");
     assert_eq!(tm.body(&["show-buffer", "-b", "buffer0"]), "one");
 
@@ -138,9 +139,10 @@ fn buffers_match_the_headless_tmux_command_contract() {
 
     tm.ok(&["set-buffer", "-b", "paste", "bracketed"]);
     tm.ok(&["paste-buffer", "-p", "-b", "paste", "-t", "B:0.0"]);
-    assert!(tm
-        .capture_until("B:0.0", "^[[200~bracketed^[[201~")
-        .contains("^[[200~bracketed^[[201~"));
+    assert!(
+        tm.capture_until("B:0.0", "^[[200~bracketed^[[201~")
+            .contains("^[[200~bracketed^[[201~")
+    );
 
     let source = std::env::temp_dir().join(format!("tm-buffer-source-{}", std::process::id()));
     let saved = std::env::temp_dir().join(format!("tm-buffer-saved-{}", std::process::id()));

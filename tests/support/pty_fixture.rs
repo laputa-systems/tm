@@ -31,7 +31,10 @@ fn main() -> io::Result<()> {
         if !read_line_with_resize(&mut input)? {
             return Ok(());
         }
-        while input.last().is_some_and(|byte| matches!(byte, b'\n' | b'\r')) {
+        while input
+            .last()
+            .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
+        {
             input.pop();
         }
         match input.as_slice() {
@@ -102,9 +105,7 @@ fn read_line_with_resize(buffer: &mut Vec<u8>) -> io::Result<bool> {
             return Ok(false);
         }
         let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted
-            || error.kind() == io::ErrorKind::WouldBlock
-        {
+        if error.kind() == io::ErrorKind::Interrupted || error.kind() == io::ErrorKind::WouldBlock {
             continue;
         }
         // macOS reports a PTY peer disappearing as EIO rather than EOF.
@@ -141,7 +142,7 @@ fn winsize(fd: RawFd) -> io::Result<(u16, u16)> {
         ws_ypixel: 0,
     };
     // SAFETY: `size` is valid writable storage for TIOCGWINSZ.
-    let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ.into(), &mut size) };
+    let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) };
     if result == -1 {
         return Err(io::Error::last_os_error());
     }

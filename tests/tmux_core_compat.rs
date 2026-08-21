@@ -170,10 +170,7 @@ fn kill_all_keeps_only_the_explicit_headless_target() {
         "sleep 30",
     ]);
     tm.ok(&["kill-session", "-a", "-t", "keep"]);
-    assert_eq!(
-        tm.ok(&["list-sessions", "-F", "#{session_name}"]),
-        "keep\n"
-    );
+    assert_eq!(tm.ok(&["list-sessions", "-F", "#{session_name}"]), "keep\n");
 
     tm.ok(&[
         "new-window",
@@ -239,9 +236,10 @@ fn targets_and_pane_ops_port_the_stable_pane_target_flow() {
     assert!(tm.capture(pane_ids[1]).contains("second"));
 
     tm.ok(&["select-pane", "-R", "-t", pane_ids[0]]);
-    assert!(tm
-        .ok(&["list-panes", "-t", "P:0"])
-        .contains(&format!("{}: 1 *", pane_ids[1].trim_start_matches('%'))));
+    assert!(
+        tm.ok(&["list-panes", "-t", "P:0"])
+            .contains(&format!("{}: 1 *", pane_ids[1].trim_start_matches('%')))
+    );
     tm.ok(&["select-pane", "-m", "-T", "marked", "-t", pane_ids[1]]);
     assert_eq!(
         tm.ok(&[
@@ -342,7 +340,7 @@ fn session_and_window_target_tokens_match_headless_tmux() {
     };
 
     assert_eq!(window(&format!("{session_id}:")), "0");
-    assert_eq!(window(&format!("{window_id}")), "editing");
+    assert_eq!(window(&window_id.to_string()), "editing");
     assert_eq!(window("targets:editi"), "editing");
     assert_eq!(window("targets:sh*"), "shell");
     assert_eq!(window("targets:^"), "0");
@@ -446,26 +444,27 @@ fn grouped_sessions_share_headless_windows_but_track_active_window() {
         "shared\nsecond\n"
     );
     tm.ok(&["select-window", "-t", "group-two:1"]);
-    assert!(tm
-        .ok(&["list-windows", "-t", "group-two"])
-        .contains("1: second *"));
-    assert!(tm
-        .ok(&["list-windows", "-t", "group-one"])
-        .contains("0: shared *"));
+    assert!(
+        tm.ok(&["list-windows", "-t", "group-two"])
+            .contains("1: second *")
+    );
+    assert!(
+        tm.ok(&["list-windows", "-t", "group-one"])
+            .contains("0: shared *")
+    );
     tm.ok(&["kill-session", "-t", "group-two"]);
     assert_eq!(
-        tm.ok(&["list-windows", "-t", "group-one"])
-            .lines()
-            .count(),
+        tm.ok(&["list-windows", "-t", "group-one"]).lines().count(),
         2
     );
-    assert!(tm
-        .ok(&[
+    assert!(
+        tm.ok(&[
             "list-sessions",
             "-F",
             "#{session_grouped}:#{session_group_size}"
         ])
-        .contains("0:1"));
+        .contains("0:1")
+    );
 }
 
 #[test]
@@ -490,9 +489,10 @@ fn bell_output_sets_and_selection_clears_the_window_bell_flag_headlessly() {
         thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(bell.trim(), "1");
-    assert!(tm
-        .ok(&["display-message", "-p", "-t", "bell", "#{window_flags}"])
-        .contains('!'));
+    assert!(
+        tm.ok(&["display-message", "-p", "-t", "bell", "#{window_flags}"])
+            .contains('!')
+    );
     tm.ok(&["select-window", "-t", "bell:0"]);
     assert_eq!(
         tm.ok(&["display-message", "-p", "-t", "bell", "#{window_bell_flag}"])
@@ -552,9 +552,7 @@ fn window_ops_port_new_select_and_kill_window_behavior() {
     assert!(windows.contains("0: 0"));
     assert!(windows.contains("1: second"));
     tm.ok(&["select-window", "-t", "W:1"]);
-    assert!(tm
-        .ok(&["list-windows", "-t", "W"])
-        .contains("1: second *"));
+    assert!(tm.ok(&["list-windows", "-t", "W"]).contains("1: second *"));
     tm.ok(&["next-window", "-t", "W"]);
     assert!(tm.ok(&["list-windows", "-t", "W"]).contains("0: 0 *"));
     tm.ok(&["kill-window", "-t", "W:1"]);
@@ -933,8 +931,7 @@ fn input_cursor_regressions_match_tmux_headlessly() {
             &format!("printf '{sequence}'; sleep 30"),
         ]);
         assert!(
-            tm.capture_until_contains(name, expected)
-                .contains(expected),
+            tm.capture_until_contains(name, expected).contains(expected),
             "capture for {name} did not contain {expected:?}"
         );
         assert_eq!(
@@ -1029,9 +1026,10 @@ fn capture_pane_preserves_osc8_hyperlinks_headlessly() {
         "-c",
         "printf '\\033]8;id=1;https://example.com\\033\\\\linked\\033]8;;\\033\\\\\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until_contains("hyperlink", "linked")
-        .contains("linked"));
+    assert!(
+        tm.capture_until_contains("hyperlink", "linked")
+            .contains("linked")
+    );
     let escaped = tm.ok(&["capture-pane", "-p", "-e", "-S0", "-E1", "-t", "hyperlink"]);
     assert_eq!(
         escaped.trim_end_matches('\n'),
@@ -1106,9 +1104,10 @@ fn capture_pane_ranges_include_scrollback_headlessly() {
         "-c",
         "i=0; while [ $i -lt 8 ]; do printf 'row%d\\n' $i; i=$((i + 1)); done; sleep 30",
     ]);
-    assert!(tm
-        .capture_until_contains("history", "row7")
-        .contains("row7"));
+    assert!(
+        tm.capture_until_contains("history", "row7")
+            .contains("row7")
+    );
     assert_eq!(
         tm.ok(&[
             "capture-pane",
@@ -1191,25 +1190,27 @@ fn split_window_honors_cell_and_percent_sizes_headlessly() {
     assert!(heights.contains("2:59x6"), "pane heights: {heights:?}");
     assert!(heights.contains("0:59x17"), "pane heights: {heights:?}");
     tm.ok(&["resize-pane", "-x", "20", "-t", "G:0.0"]);
-    assert!(tm
-        .ok(&[
+    assert!(
+        tm.ok(&[
             "list-panes",
             "-t",
             "G:0",
             "-F",
             "#{pane_index}:#{pane_width}"
         ])
-        .contains("0:20"));
+        .contains("0:20")
+    );
     tm.ok(&["resize-pane", "-R", "2", "-t", "G:0.0"]);
-    assert!(tm
-        .ok(&[
+    assert!(
+        tm.ok(&[
             "list-panes",
             "-t",
             "G:0",
             "-F",
             "#{pane_index}:#{pane_width}"
         ])
-        .contains("0:22"));
+        .contains("0:22")
+    );
     tm.ok(&["resize-pane", "-Z", "-t", "G:0.0"]);
     assert_eq!(
         tm.ok(&[
@@ -1430,9 +1431,10 @@ fn dead_panes_can_be_respawned_headlessly() {
         "-c",
         "printf respawned; sleep 30",
     ]);
-    assert!(tm
-        .capture_until_contains("R:0.0", "respawned")
-        .contains("respawned"));
+    assert!(
+        tm.capture_until_contains("R:0.0", "respawned")
+            .contains("respawned")
+    );
 }
 
 #[test]
@@ -1496,9 +1498,10 @@ fn respawn_window_replaces_all_panes_headlessly() {
         tm.ok(&["display-message", "-p", "-t", "rw:0.0", "#{pane_dead}"]),
         "0\n"
     );
-    assert!(tm
-        .capture_until_contains("rw:0.0", "replaced")
-        .contains("replaced"));
+    assert!(
+        tm.capture_until_contains("rw:0.0", "replaced")
+            .contains("replaced")
+    );
 }
 
 #[test]
@@ -1557,15 +1560,16 @@ fn new_window_supports_explicit_indices_force_and_print_formats_headlessly() {
         "-c",
         "sleep 30",
     ]);
-    assert!(tm
-        .ok(&[
+    assert!(
+        tm.ok(&[
             "list-windows",
             "-t",
             "nw",
             "-F",
             "#{window_index}:#{window_name}"
         ])
-        .contains("9:replaced"));
+        .contains("9:replaced")
+    );
 
     tm.ok(&[
         "new-window",
@@ -1580,15 +1584,16 @@ fn new_window_supports_explicit_indices_force_and_print_formats_headlessly() {
         "-c",
         "sleep 30",
     ]);
-    assert!(tm
-        .ok(&[
+    assert!(
+        tm.ok(&[
             "list-windows",
             "-t",
             "nw",
             "-F",
             "#{window_index}:#{window_name}"
         ])
-        .contains("1:after"));
+        .contains("1:after")
+    );
     tm.ok(&["select-window", "-t", "nw:0"]);
     tm.ok(&["new-window", "-S", "-d", "-t", "nw:", "-n", "after"]);
     assert_eq!(
@@ -1632,9 +1637,7 @@ fn empty_panes_never_spawn_or_accept_pty_input_headlessly() {
 
     tm.ok(&["split-window", "-d", "-E", "-t", "empty:blank.0"]);
     assert_eq!(
-        tm.ok(&["list-panes", "-t", "empty:blank"])
-            .lines()
-            .count(),
+        tm.ok(&["list-panes", "-t", "empty:blank"]).lines().count(),
         2
     );
     let split_empty = tm
@@ -1771,10 +1774,11 @@ fn show_options_round_trips_global_and_window_state_headlessly() {
         ]),
         "vi\n"
     );
-    assert!(tm
-        .ok(&["show-options", "-g"])
-        .lines()
-        .any(|line| line == "@words \"two words\""));
+    assert!(
+        tm.ok(&["show-options", "-g"])
+            .lines()
+            .any(|line| line == "@words \"two words\"")
+    );
 }
 
 #[test]
@@ -1814,9 +1818,10 @@ fn environment_commands_reach_subsequently_spawned_panes_headlessly() {
         "-c",
         &format!("printf \"${name}\"; sleep 30"),
     ]);
-    assert!(tm
-        .capture_until_contains("environment:1", "from-tm")
-        .contains("from-tm"));
+    assert!(
+        tm.capture_until_contains("environment:1", "from-tm")
+            .contains("from-tm")
+    );
     tm.ok(&["set-environment", "-r", &name]);
     tm.fail(&["show-environment", &name]);
 }
@@ -1834,9 +1839,10 @@ fn pane_current_path_tracks_osc7_directory_reports_headlessly() {
         "-c",
         "printf '\\033]7;file://localhost/tmp/tm-path\\033\\\\ready'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until_contains("paths:0.0", "ready")
-        .contains("ready"));
+    assert!(
+        tm.capture_until_contains("paths:0.0", "ready")
+            .contains("ready")
+    );
     assert_eq!(
         tm.ok(&[
             "display-message",
@@ -1972,10 +1978,7 @@ fn format_modifiers_match_tmux_headlessly_without_extra_dependencies() {
     ];
     for (format, expected) in cases {
         if expected == "__NONEMPTY__" {
-            assert!(!tm
-                .ok(&["display-message", "-p", format])
-                .trim()
-                .is_empty());
+            assert!(!tm.ok(&["display-message", "-p", format]).trim().is_empty());
             continue;
         }
         if expected == "__EMPTY__" {
@@ -2092,9 +2095,10 @@ fn format_name_and_content_modifiers_match_tmux_headlessly() {
         "-c",
         "printf 'Zebra_Marker_42\\nsecond row\\n'; sleep 30",
     ]);
-    assert!(tm
-        .capture_until_contains("search:", "Zebra_Marker_42")
-        .contains("Zebra_Marker_42"));
+    assert!(
+        tm.capture_until_contains("search:", "Zebra_Marker_42")
+            .contains("Zebra_Marker_42")
+    );
     assert_eq!(
         tm.ok(&[
             "display-message",
@@ -2120,9 +2124,10 @@ fn format_name_and_content_modifiers_match_tmux_headlessly() {
         "-c",
         "i=0; while [ $i -lt 8 ]; do printf 'history-row-%d\\n' $i; i=$((i + 1)); done; sleep 30",
     ]);
-    assert!(tm
-        .capture_until_contains("search-history:", "history-row-7")
-        .contains("history-row-7"));
+    assert!(
+        tm.capture_until_contains("search-history:", "history-row-7")
+            .contains("history-row-7")
+    );
     assert_eq!(
         tm.ok(&[
             "display-message",
@@ -2210,11 +2215,9 @@ fn run_shell_matches_headless_stdout_and_background_contract() {
         tm.ok(&["run-shell", "--", "printf", "shell-output"]),
         "shell-output\n"
     );
-    assert!(tm
-        .ok(&["run-shell", "-b", "--", "sleep", "0.1"])
-        .is_empty());
-    assert!(tm
-        .ok(&[
+    assert!(tm.ok(&["run-shell", "-b", "--", "sleep", "0.1"]).is_empty());
+    assert!(
+        tm.ok(&[
             "run-shell",
             "-t",
             "run:0.0",
@@ -2222,5 +2225,6 @@ fn run_shell_matches_headless_stdout_and_background_contract() {
             "printf",
             "not-client-output"
         ])
-        .is_empty());
+        .is_empty()
+    );
 }
