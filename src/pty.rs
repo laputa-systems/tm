@@ -200,7 +200,7 @@ fn command_line(command: &[String]) -> io::Result<(String, Vec<String>)> {
 fn child_setup(
     slave: RawFd,
     master: RawFd,
-    argv: &[*const i8],
+    argv: &[*const libc::c_char],
     cwd: Option<&CString>,
     terminal: Option<&str>,
     environment: &[(CString, CString)],
