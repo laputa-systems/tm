@@ -10,7 +10,7 @@ rustix = { version = "1.1.4", features = ["termios"] }
 vt100 = "0.16.2"
 
 [dev-dependencies]
-ptytest = { path = "../ptytest" }
+laputa-ptytest = "0.1"
 
 [[bin]]
 name = "tm"

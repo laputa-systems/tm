@@ -31,6 +31,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "laputa-ptytest"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8125ac34092fe1c8464b74641e39073d66ebc95e8174647d0ca9510e27bb40ba"
+dependencies = [
+ "libc",
+ "vt100",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -49,14 +59,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "ptytest"
-version = "0.1.0"
-dependencies = [
- "libc",
- "vt100",
-]
-
-[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -73,8 +75,8 @@ dependencies = [
 name = "tm"
 version = "0.0.0"
 dependencies = [
+ "laputa-ptytest",
  "libc",
- "ptytest",
  "rustix",
  "vt100",
 ]
