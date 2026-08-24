@@ -32,6 +32,10 @@ cargo run -- attach-session -t work
 The daemon socket defaults to `$TMPDIR/tm-$UID.sock`. Set `TM_SOCKET` or
 use `-S path` to choose another local socket.
 
+The daemon persists independently of the client process. After rebuilding `tm`,
+stop an existing daemon (`tm kill-server`) before starting a new session so the
+attached client is served by the rebuilt renderer and key table.
+
 The normal daemon starts with the settings and bindings from `src/config.rs`.
 An explicit `TM_SOCKET` starts an isolated vanilla daemon for tooling and test
 harnesses. `TM_CONFIG` is ignored; tm never reads a tmux configuration file.

@@ -39,6 +39,17 @@ pub(crate) enum Axis {
     Vertical,
 }
 
+/// A separator cell in the layout tree. `path` identifies the split node from
+/// the root (`false` descends into the first child, `true` into the second),
+/// which lets pointer-driven resizing update the exact border the user hit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LayoutSeparator {
+    pub axis: Axis,
+    pub path: Vec<bool>,
+    pub first_size: u16,
+    pub coordinate: u16,
+}
+
 /// A small layout tree. A split owns the separator cell, which keeps panes
 /// from painting over one another and makes geometry changes deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,7 +119,13 @@ impl Layout {
             Axis::Horizontal => rect.cols.saturating_sub(1),
             Axis::Vertical => rect.rows.saturating_sub(1),
         };
-        let current_first = first_size.unwrap_or(available / 2).min(available);
+        // tmux gives the extra cell to the first side of a horizontal split;
+        // its vertical/full-axis layout keeps the lower side at the floor.
+        let default_first = match split_axis {
+            Axis::Horizontal => available.saturating_add(1) / 2,
+            Axis::Vertical => available / 2,
+        };
+        let current_first = first_size.unwrap_or(default_first).min(available);
         let first_rect = match split_axis {
             Axis::Horizontal => Rect {
                 cols: current_first,
@@ -235,7 +252,9 @@ impl Layout {
             } => match axis {
                 Axis::Horizontal => {
                     let available = rect.cols.saturating_sub(1);
-                    let first_cols = first_size.unwrap_or(available / 2).min(available);
+                    let first_cols = first_size
+                        .unwrap_or(available.saturating_add(1) / 2)
+                        .min(available);
                     let second_cols = available.saturating_sub(first_cols);
                     first.rectangles(
                         Rect {
@@ -274,6 +293,253 @@ impl Layout {
                     );
                 }
             },
+        }
+    }
+
+    pub(crate) fn separators(&self, rect: Rect, output: &mut Vec<(u16, u16, Axis)>) {
+        let Self::Split {
+            axis,
+            first,
+            second,
+            first_size,
+        } = self
+        else {
+            return;
+        };
+        match axis {
+            Axis::Horizontal => {
+                let available = rect.cols.saturating_sub(1);
+                let first_cols = first_size
+                    .unwrap_or(available.saturating_add(1) / 2)
+                    .min(available);
+                let x = rect.x.saturating_add(first_cols);
+                for y in rect.y..rect.y.saturating_add(rect.rows) {
+                    output.push((x, y, *axis));
+                }
+                first.separators(
+                    Rect {
+                        cols: first_cols,
+                        ..rect
+                    },
+                    output,
+                );
+                second.separators(
+                    Rect {
+                        x: x.saturating_add(1),
+                        cols: available.saturating_sub(first_cols),
+                        ..rect
+                    },
+                    output,
+                );
+            }
+            Axis::Vertical => {
+                let available = rect.rows.saturating_sub(1);
+                let first_rows = first_size.unwrap_or(available / 2).min(available);
+                let y = rect.y.saturating_add(first_rows);
+                for x in rect.x..rect.x.saturating_add(rect.cols) {
+                    output.push((x, y, *axis));
+                }
+                first.separators(
+                    Rect {
+                        rows: first_rows,
+                        ..rect
+                    },
+                    output,
+                );
+                second.separators(
+                    Rect {
+                        y: y.saturating_add(1),
+                        rows: available.saturating_sub(first_rows),
+                        ..rect
+                    },
+                    output,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn separator_at(
+        &self,
+        rect: Rect,
+        x: u16,
+        y: u16,
+    ) -> Option<LayoutSeparator> {
+        let mut path = Vec::new();
+        self.separator_at_with_path(rect, x, y, &mut path)
+    }
+
+    fn separator_at_with_path(
+        &self,
+        rect: Rect,
+        x: u16,
+        y: u16,
+        path: &mut Vec<bool>,
+    ) -> Option<LayoutSeparator> {
+        let Self::Split {
+            axis,
+            first,
+            second,
+            first_size,
+        } = self
+        else {
+            return None;
+        };
+        match axis {
+            Axis::Horizontal => {
+                let available = rect.cols.saturating_sub(1);
+                let first_cols = first_size
+                    .unwrap_or(available.saturating_add(1) / 2)
+                    .min(available);
+                let separator_x = rect.x.saturating_add(first_cols);
+                if x == separator_x
+                    && y >= rect.y
+                    && y < rect.y.saturating_add(rect.rows)
+                {
+                    return Some(LayoutSeparator {
+                        axis: *axis,
+                        path: path.clone(),
+                        first_size: first_cols,
+                        coordinate: separator_x,
+                    });
+                }
+                let first_rect = Rect {
+                    cols: first_cols,
+                    ..rect
+                };
+                let second_rect = Rect {
+                    x: separator_x.saturating_add(1),
+                    cols: available.saturating_sub(first_cols),
+                    ..rect
+                };
+                if x >= first_rect.x
+                    && x < first_rect.x.saturating_add(first_rect.cols)
+                    && y >= first_rect.y
+                    && y < first_rect.y.saturating_add(first_rect.rows)
+                {
+                    path.push(false);
+                    let result = first.separator_at_with_path(first_rect, x, y, path);
+                    path.pop();
+                    result
+                } else if x >= second_rect.x
+                    && x < second_rect.x.saturating_add(second_rect.cols)
+                    && y >= second_rect.y
+                    && y < second_rect.y.saturating_add(second_rect.rows)
+                {
+                    path.push(true);
+                    let result = second.separator_at_with_path(second_rect, x, y, path);
+                    path.pop();
+                    result
+                } else {
+                    None
+                }
+            }
+            Axis::Vertical => {
+                let available = rect.rows.saturating_sub(1);
+                let first_rows = first_size.unwrap_or(available / 2).min(available);
+                let separator_y = rect.y.saturating_add(first_rows);
+                if y == separator_y
+                    && x >= rect.x
+                    && x < rect.x.saturating_add(rect.cols)
+                {
+                    return Some(LayoutSeparator {
+                        axis: *axis,
+                        path: path.clone(),
+                        first_size: first_rows,
+                        coordinate: separator_y,
+                    });
+                }
+                let first_rect = Rect {
+                    rows: first_rows,
+                    ..rect
+                };
+                let second_rect = Rect {
+                    y: separator_y.saturating_add(1),
+                    rows: available.saturating_sub(first_rows),
+                    ..rect
+                };
+                if x >= first_rect.x
+                    && x < first_rect.x.saturating_add(first_rect.cols)
+                    && y >= first_rect.y
+                    && y < first_rect.y.saturating_add(first_rect.rows)
+                {
+                    path.push(false);
+                    let result = first.separator_at_with_path(first_rect, x, y, path);
+                    path.pop();
+                    result
+                } else if x >= second_rect.x
+                    && x < second_rect.x.saturating_add(second_rect.cols)
+                    && y >= second_rect.y
+                    && y < second_rect.y.saturating_add(second_rect.rows)
+                {
+                    path.push(true);
+                    let result = second.separator_at_with_path(second_rect, x, y, path);
+                    path.pop();
+                    result
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub(crate) fn set_separator_size(
+        &mut self,
+        rect: Rect,
+        path: &[bool],
+        axis: Axis,
+        first_size: u16,
+    ) -> bool {
+        let Self::Split {
+            axis: split_axis,
+            first,
+            second,
+            first_size: current_size,
+        } = self
+        else {
+            return false;
+        };
+        let available = match split_axis {
+            Axis::Horizontal => rect.cols.saturating_sub(1),
+            Axis::Vertical => rect.rows.saturating_sub(1),
+        };
+        if path.is_empty() {
+            if *split_axis != axis {
+                return false;
+            }
+            *current_size = Some(first_size.min(available));
+            return true;
+        }
+        let default_first = match split_axis {
+            Axis::Horizontal => available.saturating_add(1) / 2,
+            Axis::Vertical => available / 2,
+        };
+        let current_first = current_size.unwrap_or(default_first).min(available);
+        let first_rect = match split_axis {
+            Axis::Horizontal => Rect {
+                cols: current_first,
+                ..rect
+            },
+            Axis::Vertical => Rect {
+                rows: current_first,
+                ..rect
+            },
+        };
+        let second_rect = match split_axis {
+            Axis::Horizontal => Rect {
+                x: rect.x.saturating_add(current_first).saturating_add(1),
+                cols: available.saturating_sub(current_first),
+                ..rect
+            },
+            Axis::Vertical => Rect {
+                y: rect.y.saturating_add(current_first).saturating_add(1),
+                rows: available.saturating_sub(current_first),
+                ..rect
+            },
+        };
+        if path[0] {
+            second.set_separator_size(second_rect, &path[1..], axis, first_size)
+        } else {
+            first.set_separator_size(first_rect, &path[1..], axis, first_size)
         }
     }
 }
@@ -685,5 +951,56 @@ mod tests {
             &mut rectangles,
         );
         assert_eq!(rectangles.len(), 3);
+    }
+
+    #[test]
+    fn separators_follow_split_geometry_and_capture_resize_path() {
+        let mut layout = Layout::Leaf(1);
+        assert!(layout.split_with_size(1, 2, Axis::Horizontal, false, false, None));
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            cols: 20,
+            rows: 8,
+        };
+        let mut separators = Vec::new();
+        layout.separators(rect, &mut separators);
+        assert_eq!(separators.len(), 8);
+        assert!(separators.iter().all(|(x, _, axis)| {
+            *x == 10 && *axis == Axis::Horizontal
+        }));
+        let hit = layout.separator_at(rect, 10, 3).expect("vertical separator");
+        assert_eq!(hit.axis, Axis::Horizontal);
+        assert!(hit.path.is_empty());
+        assert_eq!(hit.first_size, 10);
+        assert!(layout.set_separator_size(rect, &hit.path, hit.axis, 6));
+        let mut rectangles = HashMap::new();
+        layout.rectangles(rect, &mut rectangles);
+        assert_eq!(rectangles[&1].cols, 6);
+        assert_eq!(rectangles[&2].x, 7);
+
+        let mut vertical = Layout::Leaf(3);
+        assert!(vertical.split_with_size(3, 4, Axis::Vertical, false, false, None));
+        let vertical_rect = Rect {
+            x: 0,
+            y: 0,
+            cols: 12,
+            rows: 8,
+        };
+        let hit = vertical
+            .separator_at(vertical_rect, 4, 3)
+            .expect("horizontal separator");
+        assert_eq!(hit.axis, Axis::Vertical);
+        assert_eq!(hit.coordinate, 3);
+        assert!(vertical.set_separator_size(
+            vertical_rect,
+            &hit.path,
+            hit.axis,
+            2
+        ));
+        let mut vertical_rectangles = HashMap::new();
+        vertical.rectangles(vertical_rect, &mut vertical_rectangles);
+        assert_eq!(vertical_rectangles[&3].rows, 2);
+        assert_eq!(vertical_rectangles[&4].y, 3);
     }
 }

@@ -11,7 +11,7 @@
 //! semantic terminal model. This test retains only tm's daemon/socket setup
 //! and its fixture-specific output barriers.
 
-use ptytest::{CommandSpec, ExitStatus, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
+use ptytest::{Color, CommandSpec, ExitStatus, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
 use std::fs;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -173,4 +173,194 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
     terminal
         .finish(terminal.deadline(Duration::from_secs(3)))
         .expect("reap attached client");
+}
+
+#[test]
+fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
+    let environment = TestEnv::hermetic().expect("create hermetic test environment");
+    let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+    let socket = environment
+        .paths()
+        .root()
+        .join(format!("tm-attached-panes-{number}.sock"))
+        .to_string_lossy()
+        .into_owned();
+    let server = TestServer::new(socket.clone());
+    server.create_fixture_session();
+    let fixture = env!("CARGO_BIN_EXE_tm-pty-fixture");
+    let mouse = run_tm(&socket, ["set-option", "-g", "mouse", "on"]);
+    assert!(
+        mouse.status.success(),
+        "enable mouse failed: {}",
+        String::from_utf8_lossy(&mouse.stderr)
+    );
+    let split = run_tm(
+        &socket,
+        ["split-window", "-h", "-d", "-t", "pty-e2e:0", "--", fixture],
+    );
+    assert!(
+        split.status.success(),
+        "split panes failed: {}",
+        String::from_utf8_lossy(&split.stderr)
+    );
+
+    let scenario = Scenario::new("tm attached panes")
+        .expect("valid scenario label")
+        .command(
+            CommandSpec::new(env!("CARGO_BIN_EXE_tm"))
+                .env("TM_SOCKET", &socket)
+                .args(["attach-session", "-t", "pty-e2e"]),
+        )
+        .size(Size::new(COLS, ROWS).expect("constant PTY size"))
+        .environment(environment)
+        .protocol_profile(ProtocolProfile::xterm_minimal_v1());
+    let mut terminal = PtyTest::spawn(scenario).expect("spawn attached panes PTY");
+    let baseline = terminal.terminal_baseline();
+
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "left pane fixture",
+            |screen| screen.cell(0, 0).is_some_and(|cell| cell.contents() == "V"),
+        )
+        .expect("left pane readiness");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "right pane fixture",
+            |screen| screen.cell(0, 21).is_some_and(|cell| cell.contents() == "V"),
+        )
+        .expect("right pane readiness");
+
+    let initial = terminal.screen();
+    assert_eq!(
+        initial.cell(0, 20).expect("initial pane border").contents(),
+        "│"
+    );
+    assert_eq!(
+        initial
+            .cell(0, 20)
+            .expect("initial pane border")
+            .attributes()
+            .foreground,
+        Color::Indexed(2),
+        "active pane border style was lost"
+    );
+    assert_eq!(
+        initial
+            .cell(0, 21)
+            .expect("initial right pane cell")
+            .contents(),
+        "V"
+    );
+
+    let color = run_tm(
+        &socket,
+        ["send-keys", "-t", "pty-e2e:0.0", "color", "Enter"],
+    );
+    assert!(
+        color.status.success(),
+        "send color failed: {}",
+        String::from_utf8_lossy(&color.stderr)
+    );
+    let colored = terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "colored fixture output",
+            |screen| screen.contains("COLOR_FIXTURE"),
+        )
+        .expect("colored fixture output");
+    let colored_cell = (0..usize::from(ROWS))
+        .flat_map(|row| (0..usize::from(COLS)).map(move |column| (row, column)))
+        .filter_map(|(row, column)| colored.cell(row, column))
+        .find(|cell| cell.contents() == "C")
+        .expect("colored marker cell");
+    assert_eq!(
+        colored_cell.attributes().foreground,
+        Color::Indexed(1),
+        "pane foreground color was lost"
+    );
+    assert_eq!(
+        colored_cell.attributes().background,
+        Color::Indexed(2),
+        "pane background color was lost"
+    );
+    assert!(colored_cell.attributes().bold, "pane bold style was lost");
+    terminal
+        .assert_snapshot("tests/snapshots/attached_client_panes_initial.txt")
+        .expect("initial pane capture");
+
+    let scroll = run_tm(
+        &socket,
+        ["send-keys", "-t", "pty-e2e:0.0", "scroll", "Enter"],
+    );
+    assert!(
+        scroll.status.success(),
+        "send scroll failed: {}",
+        String::from_utf8_lossy(&scroll.stderr)
+    );
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "scroll fixture output",
+            |screen| screen.contains("SCROLL_23"),
+        )
+        .expect("scroll fixture output");
+    terminal
+        .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x1b[<64;5;2M")
+        .expect("send wheel event");
+    let scrolled = terminal
+        .wait_for_screen_change(
+            terminal.deadline(Duration::from_secs(3)),
+            "mouse wheel scroll",
+        )
+        .expect("mouse wheel scroll");
+    assert!(
+        !scrolled.contains("SCROLL_23"),
+        "wheel event did not move the copy-mode viewport"
+    );
+
+    terminal
+        .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x1b[<0;21;2M")
+        .expect("press pane border");
+    terminal
+        .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x1b[<32;26;2M")
+        .expect("drag pane border");
+    terminal
+        .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x1b[<0;26;2m")
+        .expect("release pane border");
+    let resized = terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "resized pane border",
+            |screen| screen.cell(0, 25).is_some_and(|cell| cell.contents() == "│"),
+        )
+        .expect("resized pane border");
+    assert_ne!(
+        resized.cell(0, 20).expect("old pane border cell").contents(),
+        "│",
+        "the old border was not returned to pane content"
+    );
+    terminal
+        .assert_snapshot("tests/snapshots/attached_client_panes_resized.txt")
+        .expect("resized pane capture");
+
+    let shutdown = run_tm(&socket, ["kill-server"]);
+    assert!(
+        shutdown.status.success(),
+        "stop pane capture server failed: {}",
+        String::from_utf8_lossy(&shutdown.stderr)
+    );
+    assert_eq!(
+        terminal
+            .wait_for_exit(terminal.deadline(Duration::from_secs(3)))
+            .expect("wait for pane detach"),
+        ExitStatus::Code(0)
+    );
+    terminal
+        .assert_terminal_restored(&baseline)
+        .expect("restore terminal after pane capture");
+    terminal
+        .finish(terminal.deadline(Duration::from_secs(3)))
+        .expect("reap pane capture client");
 }

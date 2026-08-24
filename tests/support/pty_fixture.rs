@@ -55,6 +55,13 @@ fn main() -> io::Result<()> {
                 let message = format!("RESIZE_ACK:{rows}x{cols}\r\n");
                 emit(message.as_bytes())?;
             }
+            b"color" => emit(b"\x1b[1;31;42mCOLOR_FIXTURE\x1b[0m\r\n")?,
+            b"scroll" => {
+                for index in 0..24 {
+                    let line = format!("SCROLL_{index:02}\r\n");
+                    emit(line.as_bytes())?;
+                }
+            }
             b"quit" => {
                 emit(b"FIXTURE_DONE\r\n")?;
                 // Keep the PTY alive until the client sends its explicit

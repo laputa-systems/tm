@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vt100::Parser;
+use vt100::{Color, Parser};
 
 use crate::config;
 #[cfg(test)]
@@ -323,12 +323,22 @@ struct AttachedClient {
     mouse_buffer: Vec<u8>,
     mouse_drag_button: Option<u16>,
     mouse_slider_offset: Option<usize>,
+    mouse_resize: Option<MouseResize>,
     last_mouse_click: Option<MouseClickState>,
     prompt: Option<AttachedPrompt>,
     tree_mode: Option<TreeMode>,
     buffer_mode: Option<BufferMode>,
     client_mode: Option<ClientMode>,
     panes_mode: Option<PaneDisplayMode>,
+}
+
+#[derive(Clone, Debug)]
+struct MouseResize {
+    button: u16,
+    axis: Axis,
+    path: Vec<bool>,
+    start_coordinate: u16,
+    start_size: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -1194,6 +1204,7 @@ impl ServerState {
                 mouse_buffer: Vec::new(),
                 mouse_drag_button: None,
                 mouse_slider_offset: None,
+                mouse_resize: None,
                 last_mouse_click: None,
                 prompt: None,
                 tree_mode: None,
@@ -1555,6 +1566,70 @@ impl ServerState {
         };
         let x = col.saturating_sub(1);
         let y = row.saturating_sub(1);
+        let motion = button & 0x20 != 0;
+        let base_button = button & 0x03;
+
+        // A border is a real interactive cell even though it is not part of
+        // either pane rectangle. Keep the exact split path captured on the
+        // initial press so nested same-axis layouts resize the border that was
+        // grabbed, not merely the first matching split around the pane.
+        if let Some(resize) = self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.mouse_resize.clone())
+        {
+            if base_button != resize.button {
+                return;
+            }
+            if release {
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.mouse_resize = None;
+                    client.mouse_drag_button = None;
+                }
+                return;
+            }
+            if motion {
+                let coordinate = match resize.axis {
+                    Axis::Horizontal => x,
+                    Axis::Vertical => y,
+                };
+                let delta = i32::from(coordinate) - i32::from(resize.start_coordinate);
+                let desired = i32::from(resize.start_size)
+                    .saturating_add(delta)
+                    .clamp(0, i32::from(u16::MAX)) as u16;
+                self.resize_mouse_separator(session_id, resize, desired);
+                return;
+            }
+        }
+
+        if !window.zoomed
+            && !release
+            && !motion
+            && base_button == 0
+            && let Some(separator) = window.layout.separator_at(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    cols: window.size.cols,
+                    rows: window.size.rows,
+                },
+                x,
+                y,
+            )
+        {
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.mouse_drag_button = Some(base_button);
+                client.mouse_resize = Some(MouseResize {
+                    button: base_button,
+                    axis: separator.axis,
+                    path: separator.path,
+                    start_coordinate: separator.coordinate,
+                    start_size: separator.first_size,
+                });
+            }
+            return;
+        }
+
         let Some(pane) = window.panes.iter().find(|pane| {
             x >= pane.rect.x
                 && x < pane.rect.x.saturating_add(pane.rect.cols)
@@ -1568,8 +1643,6 @@ impl ServerState {
         let local_row = usize::from(y.saturating_sub(pane.rect.y));
         let local_col = usize::from(x.saturating_sub(pane.rect.x));
         let scrollbar_hit = self.copy_mode_scrollbar_hit(window, pane, local_col, local_row);
-        let motion = button & 0x20 != 0;
-        let base_button = button & 0x03;
         let dragging_button = self
             .clients
             .get(&client_id)
@@ -6376,6 +6449,40 @@ impl ServerState {
         Ok(String::new())
     }
 
+    fn resize_mouse_separator(
+        &mut self,
+        session_id: u64,
+        resize: MouseResize,
+        first_size: u16,
+    ) {
+        let Some(session_index) = self.sessions.iter().position(|session| session.id == session_id)
+        else {
+            return;
+        };
+        let active_window = self.sessions[session_index].active_window;
+        let Some(window) = self.sessions[session_index]
+            .windows
+            .iter_mut()
+            .find(|window| window.index == active_window)
+        else {
+            return;
+        };
+        let size = window.size;
+        let _ = window.layout.set_separator_size(
+            Rect {
+                x: 0,
+                y: 0,
+                cols: size.cols,
+                rows: size.rows,
+            },
+            &resize.path,
+            resize.axis,
+            first_size,
+        );
+        self.reflow_session(session_id);
+        self.sync_group_windows(session_index);
+    }
+
     fn swap_pane(
         &mut self,
         source: Option<&str>,
@@ -7058,7 +7165,7 @@ impl ServerState {
             .find(|window| window.index == session.active_window)?;
         let history_limit = self.history_limit;
         let mut output = Vec::new();
-        output.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H");
+        output.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H\x1b[0m");
         if let Some(data) = self.clipboard_pending.take() {
             output.extend_from_slice(b"\x1b]52;c;");
             output.extend_from_slice(base64_encode(&data).as_bytes());
@@ -7103,10 +7210,11 @@ impl ServerState {
                 let parser = source_parser
                     .as_mut()
                     .map_or(&mut pane.parser, |parser| parser);
-                let lines = parser
-                    .screen()
+                let screen = parser.screen().clone();
+                let lines = screen
                     .rows(0, content_rect.cols)
                     .collect::<Vec<_>>();
+                let mut cell_style = CellStyle::default();
                 for row in 0..content_rect.rows {
                     output.extend_from_slice(
                         format!("\x1b[{};{}H", content_rect.y + row + 1, content_rect.x + 1)
@@ -7151,6 +7259,11 @@ impl ServerState {
                         if display_col >= content_cols {
                             break;
                         }
+                        let style = screen
+                            .cell(row, u16::try_from(char_col).unwrap_or(u16::MAX))
+                            .map(CellStyle::from_cell)
+                            .unwrap_or_default();
+                        append_cell_style(&mut output, &mut cell_style, style);
                         let selected = pane
                             .copy_mode
                             .as_ref()
@@ -7165,6 +7278,9 @@ impl ServerState {
                         output.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
                         if selected || cursor {
                             output.extend_from_slice(b"\x1b[27m");
+                            if style.inverse {
+                                output.extend_from_slice(b"\x1b[7m");
+                            }
                         }
                         display_col += if is_wide_copy_character(character) {
                             2
@@ -7173,6 +7289,11 @@ impl ServerState {
                         };
                     }
                     while display_col < content_cols {
+                        let style = screen
+                            .cell(row, u16::try_from(display_col).unwrap_or(u16::MAX))
+                            .map(CellStyle::from_cell)
+                            .unwrap_or_default();
+                        append_cell_style(&mut output, &mut cell_style, style);
                         let selected = pane
                             .copy_mode
                             .as_ref()
@@ -7186,10 +7307,14 @@ impl ServerState {
                         output.push(b' ');
                         if selected || cursor {
                             output.extend_from_slice(b"\x1b[27m");
+                            if style.inverse {
+                                output.extend_from_slice(b"\x1b[7m");
+                            }
                         }
                         display_col += 1;
                     }
-                    output.extend_from_slice(b"\x1b[K");
+                    output.extend_from_slice(b"\x1b[0m\x1b[K");
+                    cell_style = CellStyle::default();
                 }
                 let position_format = window
                     .options
@@ -7212,6 +7337,7 @@ impl ServerState {
                 }
             } else {
                 let screen = pane.parser.screen();
+                let mut cell_style = CellStyle::default();
                 for row in 0..content_rect.rows {
                     output.extend_from_slice(
                         format!("\x1b[{};{}H", content_rect.y + row + 1, content_rect.x + 1)
@@ -7222,6 +7348,8 @@ impl ServerState {
                             if cell.is_wide_continuation() {
                                 continue;
                             }
+                            let style = CellStyle::from_cell(cell);
+                            append_cell_style(&mut output, &mut cell_style, style);
                             let contents = cell.contents();
                             if contents.is_empty() {
                                 output.push(b' ');
@@ -7232,7 +7360,8 @@ impl ServerState {
                             output.push(b' ');
                         }
                     }
-                    output.extend_from_slice(b"\x1b[K");
+                    output.extend_from_slice(b"\x1b[0m\x1b[K");
+                    cell_style = CellStyle::default();
                 }
             }
             render_pane_scrollbar(
@@ -7243,6 +7372,7 @@ impl ServerState {
                 history_limit,
             );
         }
+        render_layout_separators(&mut output, window);
         if let Some(message) = pane_prompt_message
             && let Some(active) = window
                 .panes
@@ -8498,6 +8628,179 @@ fn strip_status_styles(value: &str) -> String {
         index += character.len_utf8();
     }
     output
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CellStyle {
+    fg: Color,
+    bg: Color,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    inverse: bool,
+}
+
+fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
+    if window.zoomed {
+        return;
+    }
+    let mut separators = Vec::new();
+    window.layout.separators(
+        Rect {
+            x: 0,
+            y: 0,
+            cols: window.size.cols,
+            rows: window.size.rows,
+        },
+        &mut separators,
+    );
+    let mut cells = HashMap::<(u16, u16), u8>::new();
+    for (x, y, axis) in separators {
+        let bit = match axis {
+            Axis::Horizontal => 1,
+            Axis::Vertical => 2,
+        };
+        cells.entry((x, y)).and_modify(|value| *value |= bit).or_insert(bit);
+    }
+    for ((x, y), kind) in cells {
+        let glyph = match kind {
+            1 => "│",
+            2 => "─",
+            _ => "┼",
+        };
+        let active = separator_touches_active_pane(window, x, y, kind);
+        let active_color = window
+            .pane(window.active_pane)
+            .map(|pane| {
+                if pane.copy_mode.is_some() {
+                    33
+                } else if window.synchronize_panes {
+                    31
+                } else {
+                    32
+                }
+            })
+            .unwrap_or(32);
+        let style = active.then_some(active_color).map_or_else(String::new, |color| {
+            format!("\x1b[{color}m")
+        });
+        let reset = active.then_some("\x1b[39m").unwrap_or("");
+        output.extend_from_slice(
+            format!(
+                "\x1b[{};{}H\x1b[0m{}{}{}",
+                y.saturating_add(1),
+                x.saturating_add(1),
+                style,
+                glyph,
+                reset
+            )
+            .as_bytes(),
+        );
+    }
+}
+
+fn separator_touches_active_pane(window: &Window, x: u16, y: u16, kind: u8) -> bool {
+    let Some(active) = window.pane(window.active_pane).map(|pane| pane.rect) else {
+        return false;
+    };
+    match kind {
+        1 => {
+            let right_edge = active.x.saturating_add(active.cols);
+            (x == active.x.saturating_sub(1) || x == right_edge)
+                && y >= active.y
+                && y < active.y.saturating_add(active.rows)
+        }
+        2 => {
+            let bottom_edge = active.y.saturating_add(active.rows);
+            (y == active.y.saturating_sub(1) || y == bottom_edge)
+                && x >= active.x
+                && x < active.x.saturating_add(active.cols)
+        }
+        _ => {
+            separator_touches_active_pane(window, x, y, 1)
+                || separator_touches_active_pane(window, x, y, 2)
+        }
+    }
+}
+
+impl Default for CellStyle {
+    fn default() -> Self {
+        Self {
+            fg: Color::Default,
+            bg: Color::Default,
+            bold: false,
+            dim: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+        }
+    }
+}
+
+impl CellStyle {
+    fn from_cell(cell: &vt100::Cell) -> Self {
+        Self {
+            fg: cell.fgcolor(),
+            bg: cell.bgcolor(),
+            bold: cell.bold(),
+            dim: cell.dim(),
+            italic: cell.italic(),
+            underline: cell.underline(),
+            inverse: cell.inverse(),
+        }
+    }
+}
+
+fn append_color(output: &mut Vec<u8>, color: Color, foreground: bool) {
+    let (default_code, basic_base, bright_base, extended_prefix) = if foreground {
+        (39, 30, 90, 38)
+    } else {
+        (49, 40, 100, 48)
+    };
+    match color {
+        Color::Default => output.extend_from_slice(format!("\x1b[{default_code}m").as_bytes()),
+        Color::Idx(index) if index < 8 => output
+            .extend_from_slice(format!("\x1b[{}m", basic_base + u16::from(index)).as_bytes()),
+        Color::Idx(index) if index < 16 => output.extend_from_slice(
+            format!("\x1b[{}m", bright_base + u16::from(index - 8)).as_bytes(),
+        ),
+        Color::Idx(index) => output.extend_from_slice(
+            format!("\x1b[{extended_prefix};5;{index}m").as_bytes(),
+        ),
+        Color::Rgb(red, green, blue) => output.extend_from_slice(
+            format!("\x1b[{extended_prefix};2;{red};{green};{blue}m").as_bytes(),
+        ),
+    }
+}
+
+fn append_cell_style(output: &mut Vec<u8>, current: &mut CellStyle, style: CellStyle) {
+    if *current == style {
+        return;
+    }
+    output.extend_from_slice(b"\x1b[0m");
+    if style.fg != Color::Default {
+        append_color(output, style.fg, true);
+    }
+    if style.bg != Color::Default {
+        append_color(output, style.bg, false);
+    }
+    if style.bold {
+        output.extend_from_slice(b"\x1b[1m");
+    }
+    if style.dim {
+        output.extend_from_slice(b"\x1b[2m");
+    }
+    if style.italic {
+        output.extend_from_slice(b"\x1b[3m");
+    }
+    if style.underline {
+        output.extend_from_slice(b"\x1b[4m");
+    }
+    if style.inverse {
+        output.extend_from_slice(b"\x1b[7m");
+    }
+    *current = style;
 }
 
 fn render_status_line(
@@ -13229,6 +13532,130 @@ mod tests {
         state
             .execute_copy_action(pane0, CopyAction::Cancel, 1)
             .expect("cancel copy replacement");
+    }
+
+    #[test]
+    fn rendered_split_panes_preserve_cell_styles_and_draw_separators_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("render-split"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(20, 6),
+            )
+            .expect("create render split session");
+        state
+            .set_global_option("status", "off", false)
+            .expect("hide render test status");
+        state
+            .split_window(
+                &shared,
+                Some("render-split:0"),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                None,
+                &[],
+                None,
+            )
+            .expect("split render session");
+        let left = state.sessions[0].windows[0].panes[0].id;
+        let right = state.sessions[0].windows[0].panes[1].id;
+        state
+            .find_pane_mut(left)
+            .expect("left render pane")
+            .parser
+            .process(b"\x1b[1;42;31mR");
+        state
+            .find_pane_mut(right)
+            .expect("right render pane")
+            .parser
+            .process(b"B");
+        let session_id = state.sessions[0].id;
+        let rendered = state
+            .render_session(session_id, None)
+            .expect("render split session");
+        let mut terminal = Parser::new(6, 20, 100);
+        terminal.process(&rendered);
+        let screen = terminal.screen();
+        let colored = screen.cell(0, 0).expect("colored cell");
+        assert_eq!(colored.contents(), "R");
+        assert_eq!(colored.fgcolor(), Color::Idx(1));
+        assert_eq!(colored.bgcolor(), Color::Idx(2));
+        assert!(colored.bold());
+        assert_eq!(
+            screen.cell(0, 10).expect("vertical separator").contents(),
+            "│"
+        );
+        assert_eq!(
+            screen.cell(0, 10).expect("vertical separator").fgcolor(),
+            Color::Idx(2)
+        );
+        assert_eq!(screen.cell(0, 11).expect("right pane cell").contents(), "B");
+    }
+
+    #[test]
+    fn sgr_mouse_drag_resizes_the_grabbed_pane_separator_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("mouse-resize"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(20, 6),
+            )
+            .expect("create mouse resize session");
+        state
+            .split_window(
+                &shared,
+                Some("mouse-resize:0"),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                None,
+                &[],
+                None,
+            )
+            .expect("split mouse resize session");
+        state
+            .set_global_option("mouse", "on", false)
+            .expect("enable mouse resize events");
+        let session_id = state.sessions[0].id;
+        let (_, client_id) = state
+            .register_client(Some("mouse-resize"), Size::new(20, 6))
+            .expect("register mouse resize client");
+        state.handle_client_input(client_id, b"\x1b[<0;11;2M", &shared);
+        state.handle_client_input(client_id, b"\x1b[<32;14;2M", &shared);
+        state.handle_client_input(client_id, b"\x1b[<0;14;2m", &shared);
+        let window = state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| session.active_window())
+            .expect("mouse resize window");
+        assert_eq!(window.panes[0].rect.cols, 13);
+        assert_eq!(window.panes[1].rect.x, 14);
     }
 
     #[test]
