@@ -1,19 +1,218 @@
-use std::fs;
-use std::path::Path;
+/// The interactive contract is compiled into tm. These are deliberately data,
+/// rather than a parsed configuration file, so startup has no dependency on user files
+/// or environment-selected configuration paths.
+pub(crate) const COMPILED_OPTIONS: &[(&str, &str)] = &[
+    ("default-terminal", "tmux-256color"),
+    ("terminal-features", "tmux-256color:Sync:clipboard"),
+    ("set-clipboard", "external"),
+    ("extended-keys", "on"),
+    ("extended-keys-format", "csi-u"),
+    ("monitor-bell", "on"),
+    ("bell-action", "any"),
+    ("visual-bell", "off"),
+    ("escape-time", "0"),
+    ("focus-events", "on"),
+    ("prefix", "C-a"),
+    ("mouse", "on"),
+    ("history-limit", "10000"),
+    ("mode-keys", "emacs"),
+    ("base-index", "1"),
+    ("renumber-windows", "on"),
+    ("automatic-rename", "off"),
+    ("status-position", "bottom"),
+    ("status-bg", "black"),
+    ("status-fg", "white"),
+    ("window-status-format", "#[dim]#I:#W#{?window_zoomed_flag, (Z),}"),
+    (
+        "window-status-current-format",
+        "#[fg=green]#I:#W#{?window_zoomed_flag, (Z),}",
+    ),
+    ("status-left", "#{?client_prefix,#[fg=yellow],}(#S) "),
+    ("status-left-length", "32"),
+    ("status-right", ""),
+    ("monitor-activity", "off"),
+    ("set-titles", "off"),
+];
 
-/// One logical command from a tmux configuration file. A binding may have
-/// commands chained with `\;`; those are retained separately so quoted command
-/// prompt templates survive tokenization.
+/// A compiled key binding. Each inner slice is one command; multiple slices
+/// preserve tmux's chained-command behavior without runtime configuration I/O.
+pub(crate) struct CompiledBinding {
+    pub key: &'static str,
+    pub repeat: bool,
+    pub commands: &'static [&'static [&'static str]],
+}
+
+/// tmux's baseline prefix table. Isolated servers start with this table; the
+/// normal interactive daemon overlays `COMPILED_BINDINGS` below.
+pub(crate) const VANILLA_BINDINGS: &[CompiledBinding] = &[
+    CompiledBinding {
+        key: "d",
+        repeat: false,
+        commands: &[&["__detach"]],
+    },
+    CompiledBinding {
+        key: "c",
+        repeat: false,
+        commands: &[&["new-window"]],
+    },
+    CompiledBinding {
+        key: "n",
+        repeat: false,
+        commands: &[&["next-window"]],
+    },
+    CompiledBinding {
+        key: "p",
+        repeat: false,
+        commands: &[&["previous-window"]],
+    },
+    CompiledBinding {
+        key: "%",
+        repeat: false,
+        commands: &[&["split-window", "-h"]],
+    },
+    CompiledBinding {
+        key: "\"",
+        repeat: false,
+        commands: &[&["split-window", "-v"]],
+    },
+    CompiledBinding {
+        key: "x",
+        repeat: false,
+        commands: &[&["kill-pane"]],
+    },
+    CompiledBinding {
+        key: "&",
+        repeat: false,
+        commands: &[&["kill-window"]],
+    },
+    CompiledBinding {
+        key: "h",
+        repeat: false,
+        commands: &[&["select-pane", "-L"]],
+    },
+    CompiledBinding {
+        key: "j",
+        repeat: false,
+        commands: &[&["select-pane", "-D"]],
+    },
+    CompiledBinding {
+        key: "k",
+        repeat: false,
+        commands: &[&["select-pane", "-U"]],
+    },
+    CompiledBinding {
+        key: "l",
+        repeat: false,
+        commands: &[&["select-pane", "-R"]],
+    },
+    CompiledBinding {
+        key: "[",
+        repeat: false,
+        commands: &[&["copy-mode"]],
+    },
+    CompiledBinding {
+        key: "b",
+        repeat: false,
+        commands: &[&["send-prefix"]],
+    },
+];
+
+pub(crate) const COMPILED_BINDINGS: &[CompiledBinding] = &[
+    CompiledBinding {
+        key: "n",
+        repeat: false,
+        commands: &[&["command-prompt", "-p", "name of new window:", "new-window -n '%%'"]],
+    },
+    CompiledBinding {
+        key: "p",
+        repeat: false,
+        commands: &[&["display-panes"]],
+    },
+    CompiledBinding {
+        key: "Enter",
+        repeat: false,
+        commands: &[&["display", "tm configuration is compiled in."]],
+    },
+    CompiledBinding {
+        key: "C-s",
+        repeat: false,
+        commands: &[&["send", "-N", "2", "C-a"]],
+    },
+    CompiledBinding {
+        key: "/",
+        repeat: false,
+        commands: &[&["command-prompt"]],
+    },
+    CompiledBinding {
+        key: "r",
+        repeat: false,
+        commands: &[&["command-prompt", "-p", "rename window:", "rename-window '%%'"]],
+    },
+    CompiledBinding {
+        key: "C-Left",
+        repeat: true,
+        commands: &[&["previous-window"]],
+    },
+    CompiledBinding {
+        key: "C-Right",
+        repeat: true,
+        commands: &[&["next-window"]],
+    },
+    CompiledBinding {
+        key: "Left",
+        repeat: true,
+        commands: &[&["swap-window", "-t", "-1"], &["select-window", "-t", "-1"]],
+    },
+    CompiledBinding {
+        key: "Right",
+        repeat: true,
+        commands: &[&["swap-window", "-t", "+1"], &["select-window", "-t", "+1"]],
+    },
+    CompiledBinding {
+        key: "\\",
+        repeat: false,
+        commands: &[
+            &["split-window", "-h", "-c", "#{pane_current_path}"],
+            &["select-layout", "even-horizontal"],
+        ],
+    },
+    CompiledBinding {
+        key: "-",
+        repeat: false,
+        commands: &[
+            &["split-window", "-v", "-c", "#{pane_current_path}"],
+            &["select-layout", "even-vertical"],
+        ],
+    },
+    CompiledBinding {
+        key: "z",
+        repeat: false,
+        commands: &[&["resize-pane", "-Z"]],
+    },
+    CompiledBinding {
+        key: "k",
+        repeat: false,
+        commands: &[&["kill-pane"], &["display", "pane killed."]],
+    },
+    CompiledBinding {
+        key: "m",
+        repeat: false,
+        commands: &[&["command-prompt", "-p", "move pane to window #:", "join-pane -h -t '%%'"]],
+    },
+    CompiledBinding {
+        key: "C-n",
+        repeat: true,
+        commands: &[&["break-pane", "-t", ":"]],
+    },
+];
+
+/// One logical interactive command. A binding may have commands chained with
+/// `\;`; those are retained separately so quoted command-prompt templates
+/// survive tokenization.
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigLine {
     pub tokens: Vec<String>,
     pub chained: Vec<Vec<String>>,
-}
-
-pub(crate) fn read(path: &Path) -> Result<Vec<ConfigLine>, String> {
-    let contents =
-        fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    Ok(parse(&contents))
 }
 
 pub(crate) fn parse(contents: &str) -> Vec<ConfigLine> {
@@ -37,8 +236,8 @@ pub(crate) fn parse(contents: &str) -> Vec<ConfigLine> {
 }
 
 /// Convert a tmux key name into the bytes a terminal normally sends for it.
-/// The set is intentionally the set used by the user's configuration, with a
-/// few common aliases retained for future config migrations.
+/// The set covers the compiled interactive bindings plus common aliases used
+/// by supported command prompts.
 pub(crate) fn key_bytes(value: &str) -> Option<Vec<u8>> {
     let value = value.strip_prefix("=").unwrap_or(value);
     match value {
@@ -204,7 +403,7 @@ mod tests {
     #[test]
     fn config_parser_preserves_chained_and_quoted_commands() {
         let lines = parse(
-            r###"bind Enter source-file ~/.config/tmux/tmux.conf \; display 'configuration reloaded.'
+            r###"bind Enter display 'configuration is compiled in.' \; display 'configuration reloaded.'
 bind r command-prompt -p "rename window:" "rename-window '%%'"
 set -g status-left "#{?client_prefix,#[fg=yellow],}(#S) " # comment
 "###,

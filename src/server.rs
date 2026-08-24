@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use vt100::Parser;
 
-use crate::config::{self, ConfigLine};
+use crate::config;
+#[cfg(test)]
+use crate::config::ConfigLine;
 use crate::copy_mode::{
     CopyAction, CopyLineNumberMode, CopyModeKeys, CopyModeState, CopyPromptKind, CopyScrollbarHit,
     DEFAULT_WORD_SEPARATORS, SelectionMode, display_column_to_char_index, display_prompt_input,
@@ -39,56 +41,26 @@ pub(crate) fn socket_path(explicit: Option<&Path>) -> PathBuf {
     std::env::temp_dir().join(format!("tm-{uid}.sock"))
 }
 
-fn config_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("TM_CONFIG") {
-        return Some(PathBuf::from(path));
-    }
-    std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join(".config")
-            .join("tmux")
-            .join("tmux.conf")
-    })
-}
-
-fn expand_config_path(value: &str) -> Option<PathBuf> {
-    if value == "~" {
-        return std::env::var_os("HOME").map(PathBuf::from);
-    }
-    if let Some(rest) = value.strip_prefix("~/") {
-        return std::env::var_os("HOME").map(|home| PathBuf::from(home).join(rest));
-    }
-    Some(PathBuf::from(value))
-}
-
-fn default_bindings() -> HashMap<Vec<u8>, ConfigBinding> {
-    let mut bindings = HashMap::new();
-    let mut add = |key: &str, command: &[&str]| {
-        if let Some(key) = config::key_bytes(key) {
-            bindings.insert(
+fn binding_table(bindings: &[config::CompiledBinding]) -> HashMap<Vec<u8>, ConfigBinding> {
+    bindings
+        .iter()
+        .map(|binding| {
+            let key = config::key_bytes(binding.key)
+                .expect("compiled binding must use a supported terminal key");
+            let commands = binding
+                .commands
+                .iter()
+                .map(|command| command.iter().map(|value| (*value).to_owned()).collect())
+                .collect();
+            (
                 key,
                 ConfigBinding {
-                    _repeat: false,
-                    commands: vec![command.iter().map(|value| (*value).to_owned()).collect()],
+                    _repeat: binding.repeat,
+                    commands,
                 },
-            );
-        }
-    };
-    add("d", &["__detach"]);
-    add("c", &["new-window"]);
-    add("n", &["next-window"]);
-    add("p", &["previous-window"]);
-    add("%", &["split-window", "-h"]);
-    add("\"", &["split-window", "-v"]);
-    add("x", &["kill-pane"]);
-    add("&", &["kill-window"]);
-    add("h", &["select-pane", "-L"]);
-    add("j", &["select-pane", "-D"]);
-    add("k", &["select-pane", "-U"]);
-    add("l", &["select-pane", "-R"]);
-    add("[", &["copy-mode"]);
-    add("b", &["send-prefix"]);
-    bindings
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
@@ -104,13 +76,10 @@ pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
     let listener = UnixListener::bind(path)?;
     listener.set_nonblocking(true)?;
     let mut initial_state = ServerState::new();
-    // Tests and explicitly isolated sockets must not inherit the user's
-    // interactive configuration. The ordinary default socket does, matching
-    // tmux's startup contract while keeping headless regressions hermetic.
-    if (std::env::var_os("TM_SOCKET").is_none() || std::env::var_os("TM_CONFIG").is_some())
-        && let Some(config_path) = config_path()
-    {
-        initial_state.load_config(&config_path);
+    // A private `TM_SOCKET` remains an isolated vanilla server for tests and
+    // tooling. The normal daemon overlays the compiled interactive profile.
+    if std::env::var_os("TM_SOCKET").is_none() {
+        initial_state.apply_compiled_interactive_config();
     }
     let state = Arc::new(Mutex::new(initial_state));
 
@@ -694,7 +663,6 @@ impl AttachedPrompt {
             "show-messages",
             "show-options",
             "show-window-options",
-            "source-file",
             "split-window",
             "swap-pane",
             "swap-window",
@@ -764,7 +732,7 @@ impl ServerState {
             synchronize_panes: false,
             shutdown: false,
             prefix: vec![2],
-            bindings: default_bindings(),
+            bindings: binding_table(config::VANILLA_BINDINGS),
             history_limit: 10_000,
             prompt_history: HashMap::new(),
             last_message: None,
@@ -773,6 +741,17 @@ impl ServerState {
             mouse_bindings: HashMap::new(),
             mouse_context: None,
         }
+    }
+
+    fn apply_compiled_interactive_config(&mut self) {
+        // `config::COMPILED_OPTIONS` is the sole source of interactive
+        // startup settings. Startup must never inspect tmux.conf or TM_CONFIG.
+        for &(key, value) in config::COMPILED_OPTIONS {
+            self
+                .set_global_option(key, value, false)
+                .expect("compiled option must be valid");
+        }
+        self.bindings.extend(binding_table(config::COMPILED_BINDINGS));
     }
 
     fn create_session(
@@ -3020,12 +2999,6 @@ impl ServerState {
                 }
                 continue;
             }
-            if command[0] == "source-file" {
-                if let Some(path) = command.get(1).and_then(|value| expand_config_path(value)) {
-                    self.load_config(&path);
-                }
-                continue;
-            }
             if command[0] == "display" || command[0] == "display-message" {
                 self.last_message = Some(
                     command
@@ -3233,6 +3206,7 @@ impl ServerState {
         self.reflow_session(session_id);
     }
 
+    #[cfg(test)]
     fn execute_config_line(
         &mut self,
         client_id: u64,
@@ -3274,15 +3248,6 @@ impl ServerState {
                     }
                 }
             }
-            "source-file" => {
-                if let Some(path) = line
-                    .tokens
-                    .get(1)
-                    .and_then(|value| expand_config_path(value))
-                {
-                    self.load_config(&path);
-                }
-            }
             "display" | "display-message" => {}
             "select-layout" => {
                 if let Some(client) = self.clients.get(&client_id)
@@ -3300,6 +3265,7 @@ impl ServerState {
         Ok(String::new())
     }
 
+    #[cfg(test)]
     fn install_binding(&mut self, tokens: &[String], chained: &[Vec<String>]) -> CommandResult {
         let mut index = 1;
         let mut repeat = false;
@@ -3349,6 +3315,7 @@ impl ServerState {
         Ok(String::new())
     }
 
+    #[cfg(test)]
     fn apply_config_option(&mut self, tokens: &[String]) -> CommandResult {
         let mut index = 1;
         let mut append = false;
@@ -3374,12 +3341,10 @@ impl ServerState {
         self.set_global_option(key, &value, false)
     }
 
-    fn load_config(&mut self, path: &Path) {
-        let Ok(lines) = config::read(path) else {
-            return;
-        };
+    #[cfg(test)]
+    fn apply_test_config(&mut self, contents: &str) {
         let shared = Arc::new(Mutex::new(ServerState::new()));
-        for line in lines {
+        for line in config::parse(contents) {
             let _ = self.execute_config_line(0, line, &shared);
         }
     }
@@ -7772,6 +7737,7 @@ fn parse_sgr_mouse(bytes: &[u8]) -> Option<(u16, u16, u16, bool)> {
     Some((button, col, row, last == b'm'))
 }
 
+#[cfg(test)]
 fn is_mouse_binding_name(value: &str) -> bool {
     value.starts_with("Mouse")
         || value.starts_with("Wheel")
@@ -14084,49 +14050,10 @@ mod tests {
     }
 
     #[test]
-    fn user_config_binding_vocabulary_loads_headlessly() {
-        let path =
-            std::env::temp_dir().join(format!("tm-config-vocabulary-{}.conf", std::process::id()));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
-set -g history-limit 10000
-set -g base-index 1
-set -g renumber-windows on
-set -g mouse on
-set -g focus-events on
-set -g extended-keys on
-set -g set-clipboard external
-bind Enter source-file ~/.config/tmux/tmux.conf \; display 'configuration reloaded.'
-bind-key -T prefix C-s send -N 2 C-a
-bind / command-prompt
-bind r command-prompt -p "rename window:" "rename-window '%%'"
-bind n command-prompt -p "name of new window:" "new-window -n '%%'"
-bind -r C-Left previous-window
-bind -r C-Right next-window
-bind -r Left swap-window -t -1\; select-window -t -1
-bind -r Right swap-window -t +1\; select-window -t +1
-bind \\ split-window -h -c "#{pane_current_path}" \; select-layout even-horizontal
-bind - split-window -v -c "#{pane_current_path}" \; select-layout even-vertical
-bind z resize-pane -Z
-bind k kill-pane \; display 'pane killed.'
-bind p display-panes
-bind m command-prompt -p "move pane to window #:" "join-pane -h -t '%%'"
-bind -r C-n break-pane -t :
-set -g status-position bottom
-set -g status-bg black
-set -g status-fg white
-set -g window-status-format "#[dim]#I:#W#{?window_zoomed_flag, (Z),}"
-set -g window-status-current-format "#[fg=green]#I:#W#{?window_zoomed_flag, (Z),}"
-set -g status-left "#{?client_prefix,#[fg=yellow],}(#S) "
-set -g status-right ""
-"###,
-        )
-        .expect("write config vocabulary");
+    fn compiled_interactive_binding_vocabulary_executes_headlessly() {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_compiled_interactive_config();
 
         assert_eq!(state.prefix, vec![1]);
         assert_eq!(state.history_limit, 10_000);
@@ -14248,14 +14175,8 @@ set -g status-right ""
     }
 
     #[test]
-    fn user_config_pane_move_break_and_swap_bindings_execute_headlessly() {
-        let path = std::env::temp_dir().join(format!(
-            "tm-config-pane-bindings-{}.conf",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
+    fn pane_move_break_and_swap_bindings_execute_headlessly() {
+        let config = r###"set -g prefix C-a
 set -g base-index 1
 set -g renumber-windows on
 bind - split-window -v \; select-layout even-vertical
@@ -14263,13 +14184,10 @@ bind m command-prompt -p "move pane to window #:" "join-pane -h -t '%%'"
 bind -r C-n break-pane -t :
 bind -r Left swap-window -t -1\; select-window -t -1
 bind -r Right swap-window -t +1\; select-window -t +1
-"###,
-        )
-        .expect("write pane binding config");
+"###;
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_test_config(config);
         state
             .create_session(
                 &shared,
@@ -14329,20 +14247,13 @@ bind -r Right swap-window -t +1\; select-window -t +1
 
     #[test]
     fn configured_prefix_and_window_prompt_drive_the_bound_command_headlessly() {
-        let path =
-            std::env::temp_dir().join(format!("tm-config-prompt-{}.conf", std::process::id()));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
+        let config = r###"set -g prefix C-a
 set -g base-index 1
 bind n command-prompt -p "name of new window:" "new-window -n '%%'"
-"###,
-        )
-        .expect("write prompt config");
+"###;
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_test_config(config);
         state
             .create_session(
                 &shared,
@@ -14381,19 +14292,12 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
 
     #[test]
     fn command_prompt_supports_cursor_editing_headlessly() {
-        let path =
-            std::env::temp_dir().join(format!("tm-config-prompt-edit-{}.conf", std::process::id()));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
+        let config = r###"set -g prefix C-a
 bind n command-prompt -p "name: " "rename-window '%%'"
-"###,
-        )
-        .expect("write prompt editing config");
+"###;
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_test_config(config);
         state
             .create_session(
                 &shared,
@@ -14434,21 +14338,12 @@ bind n command-prompt -p "name: " "rename-window '%%'"
 
     #[test]
     fn command_prompt_recalls_history_with_up_headlessly() {
-        let path = std::env::temp_dir().join(format!(
-            "tm-config-prompt-history-{}.conf",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
+        let config = r###"set -g prefix C-a
 bind / command-prompt
-"###,
-        )
-        .expect("write prompt history config");
+"###;
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_test_config(config);
         state
             .create_session(
                 &shared,
@@ -14482,13 +14377,7 @@ bind / command-prompt
 
     #[test]
     fn command_prompt_mechanics_match_tmux_headlessly() {
-        let path = std::env::temp_dir().join(format!(
-            "tm-config-prompt-mechanics-{}.conf",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
+        let config = r###"set -g prefix C-a
 bind s command-prompt -1 -p "one: " "set -g @single '%%'"
 bind n command-prompt -N -I 5 -p "num: " "set -g @numeric '%%'"
 bind k command-prompt -k -p "key: " "set -g @key '%%'"
@@ -14497,13 +14386,10 @@ bind i command-prompt -I hello -p "prefill: " "set -g @prefill '%%'"
 bind x command-prompt -i -p "incremental: " "set -g @incremental '%%'"
 bind m command-prompt -p "first,second" "set -g @multi '%1/%2'"
 bind p command-prompt -P -p "pane: " "set -g @pane '%%'"
-"###,
-        )
-        .expect("write prompt mechanics config");
+"###;
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_test_config(config);
         state
             .create_session(
                 &shared,
@@ -14725,21 +14611,12 @@ bind p command-prompt -P -p "pane: " "set -g @pane '%%'"
 
     #[test]
     fn copy_mode_key_table_bindings_override_default_keys_headlessly() {
-        let path = std::env::temp_dir().join(format!(
-            "tm-config-copy-key-table-{}.conf",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
+        let config = r###"set -g prefix C-a
 bind -T copy-mode C-a send -X end-of-line
-"###,
-        )
-        .expect("write copy key table config");
+"###;
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_test_config(config);
         state
             .create_session(
                 &shared,
@@ -15318,19 +15195,12 @@ bind -T copy-mode C-a send -X end-of-line
 
     #[test]
     fn repeatable_prefix_bindings_repeat_without_a_second_prefix_headlessly() {
-        let path =
-            std::env::temp_dir().join(format!("tm-config-repeat-{}.conf", std::process::id()));
-        std::fs::write(
-            &path,
-            r###"set -g prefix C-a
+        let config = r###"set -g prefix C-a
 bind -r Right next-window
-"###,
-        )
-        .expect("write repeat binding config");
+"###;
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
-        state.load_config(&path);
-        let _ = std::fs::remove_file(&path);
+        state.apply_test_config(config);
         state
             .create_session(
                 &shared,
