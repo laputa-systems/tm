@@ -254,6 +254,32 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
         "V"
     );
 
+    // Let the attach loop settle, then prove that an unchanged pane state is
+    // silent on the wire. This catches regressions that resend non-clearing
+    // frames even though the full-screen clear count remains stable.
+    assert!(
+        terminal
+            .wait_for_quiescence(
+                terminal.deadline(Duration::from_secs(3)),
+                Duration::from_millis(100),
+            )
+            .expect("settle initial pane frame")
+    );
+    let idle_output_length = terminal.raw_output().len();
+    assert!(
+        terminal
+            .wait_for_quiescence(
+                terminal.deadline(Duration::from_secs(3)),
+                Duration::from_millis(100),
+            )
+            .expect("observe unchanged pane state")
+    );
+    assert_eq!(
+        terminal.raw_output().len(),
+        idle_output_length,
+        "unchanged pane state must not emit another attached frame"
+    );
+
     let color = run_tm(
         &socket,
         ["send-keys", "-t", "pty-e2e:0.0", "color", "Enter"],
@@ -344,6 +370,15 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
     terminal
         .assert_snapshot("tests/snapshots/attached_client_panes_resized.txt")
         .expect("resized pane capture");
+    let full_clear_count = terminal
+        .raw_output()
+        .windows(b"\x1b[2J".len())
+        .filter(|window| *window == b"\x1b[2J")
+        .count();
+    assert_eq!(
+        full_clear_count, 1,
+        "attached updates must not flash-clear the terminal"
+    );
 
     let shutdown = run_tm(&socket, ["kill-server"]);
     assert!(

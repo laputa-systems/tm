@@ -11,6 +11,7 @@ vt100 = "0.16.2"
 
 [dev-dependencies]
 laputa-ptytest = "0.1"
+rustybench = "0.1"
 
 [[bin]]
 name = "tm"
@@ -22,6 +23,11 @@ path = "src/main.rs"
 [[bin]]
 name = "tm-pty-fixture"
 path = "tests/support/pty_fixture.rs"
+
+[[bench]]
+name = "tm_performance"
+path = "benches/tm_performance.rs"
+harness = false
 
 [profile.dev]
 incremental = false

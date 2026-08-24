@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,11 @@ use crate::terminal;
 
 type SharedState = Arc<Mutex<ServerState>>;
 type CommandResult = Result<String, String>;
+
+// Attach clients sleep until a state mutation can affect their screen. The
+// condition variable is process-wide because each daemon owns one state
+// mutex; spurious wakeups are harmless and avoid a timer-driven render loop.
+static RENDER_WAKE: Condvar = Condvar::new();
 
 pub(crate) fn socket_path(explicit: Option<&Path>) -> PathBuf {
     if let Some(path) = explicit {
@@ -123,7 +128,11 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
     }
 
     let result = match shared.lock() {
-        Ok(mut state) => execute_request(&mut state, &shared, request),
+        Ok(mut state) => {
+            let result = execute_request(&mut state, &shared, request);
+            state.mark_render_dirty();
+            result
+        }
         Err(_) => Err("server state lock is poisoned".to_owned()),
     };
     let (ok, body) = match result {
@@ -136,7 +145,10 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
 fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<String>, size: Size) {
     let (_session_id, client_id) = match shared.lock() {
         Ok(mut state) => match state.register_client(target.as_deref(), size) {
-            Ok(client) => client,
+            Ok(client) => {
+                state.mark_render_dirty();
+                client
+            }
             Err(error) => {
                 let _ = write_server_message(
                     &mut stream,
@@ -191,6 +203,7 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                     match message {
                         ClientMessage::Input(bytes) => {
                             state.handle_client_input(client_id, &bytes, &input_state);
+                            state.mark_render_dirty();
                         }
                         ClientMessage::Resize(size) => {
                             if let Some(session_id) = state
@@ -203,9 +216,11 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                                 }
                                 state.resize_session(session_id, size);
                             }
+                            state.mark_render_dirty();
                         }
                         ClientMessage::Detach => {
                             state.clients.remove(&client_id);
+                            state.mark_render_dirty();
                             break;
                         }
                     }
@@ -214,44 +229,117 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                 }
             }
             input_alive.store(false, std::sync::atomic::Ordering::Release);
+            RENDER_WAKE.notify_all();
         })
         .ok();
 
     let mut previous = Vec::new();
+    let mut terminal = vt100::Parser::new(size.rows.max(1), size.cols.max(1), 10_000);
+    let mut previous_screen = None;
+    let mut last_size = None;
+    let mut observed_revision = None;
+    let mut last_render_at = Instant::now()
+        .checked_sub(Duration::from_millis(16))
+        .unwrap_or_else(Instant::now);
     while alive.load(std::sync::atomic::Ordering::Acquire) {
-        let render = match shared.lock() {
-            Ok(mut state) => {
-                let Some(session_id) = state
-                    .clients
-                    .get(&client_id)
-                    .map(|client| client.session_id)
-                else {
-                    break;
+        let next_render = match shared.lock() {
+            Ok(mut state) => loop {
+                let Some(client) = state.clients.get(&client_id) else {
+                    break None;
                 };
-                match state.render_session(session_id, Some(client_id)) {
-                    Some(render) => render,
-                    None => break,
+                let session_id = client.session_id;
+                let render_size = client.size.bounded();
+                let revision = state.render_revision;
+                if observed_revision == Some(revision) && last_size == Some(render_size) {
+                    state = match RENDER_WAKE.wait(state) {
+                        Ok(state) => state,
+                        Err(_) => break None,
+                    };
+                    continue;
                 }
-            }
-            Err(_) => break,
+                let render_wait = Duration::from_millis(16).saturating_sub(last_render_at.elapsed());
+                if !render_wait.is_zero() {
+                    state = match RENDER_WAKE.wait_timeout(state, render_wait) {
+                        Ok((state, _)) => state,
+                        Err(_) => break None,
+                    };
+                    continue;
+                }
+                let clear_screen = last_size != Some(render_size);
+                let Some(full_render) =
+                    state.render_session_with_clear(session_id, Some(client_id), clear_screen)
+                else {
+                    break None;
+                };
+                break Some((full_render, render_size, revision));
+            },
+            Err(_) => None,
         };
-        if render != previous {
+        let Some((full_render, render_size, render_revision)) = next_render else {
+            break;
+        };
+        // Keep the revision observed before rendering. Rendering consumes
+        // one-shot state such as messages and clipboard notifications; those
+        // mutations intentionally make the next loop produce a follow-up
+        // frame.
+        observed_revision = Some(render_revision);
+        last_render_at = Instant::now();
+        if last_size != Some(render_size) {
+            terminal = vt100::Parser::new(
+                render_size.rows.max(1),
+                render_size.cols.max(1),
+                10_000,
+            );
+            previous_screen = None;
+            previous.clear();
+            last_size = Some(render_size);
+        }
+        let render = if previous_screen.is_none() {
+            terminal.process(&full_render);
+            previous_screen = Some(terminal.screen().clone());
+            full_render
+        } else {
+            let before = terminal.screen().clone();
+            terminal.process(&full_render);
+            let after = terminal.screen().clone();
+            // Screen diffs cannot carry OSC/DCS side effects (for example an
+            // OSC 52 clipboard update), so preserve the complete non-clearing
+            // frame whenever one is present.
+            let delta = if full_render
+                .windows(2)
+                .any(|window| window == b"\x1b]" || window == b"\x1bP")
+            {
+                Err(())
+            } else {
+                render_screen_delta(&before, &after)
+            };
+            previous_screen = Some(after);
+            match delta {
+                Ok(Some(delta)) => delta,
+                Ok(None) => Vec::new(),
+                Err(()) => full_render,
+            }
+        };
+        if !render.is_empty() && render != previous {
             if write_server_message(&mut stream, &ServerMessage::Render(render.clone())).is_err() {
                 break;
             }
             let _ = stream.flush();
             previous = render;
         }
-        thread::sleep(Duration::from_millis(20));
     }
     alive.store(false, std::sync::atomic::Ordering::Release);
     if let Ok(mut state) = shared.lock() {
         state.clients.remove(&client_id);
+        state.mark_render_dirty();
     }
     let _ = write_server_message(&mut stream, &ServerMessage::Closed);
 }
 
 struct ServerState {
+    // Monotonic generation for screen-affecting state. Attach clients wait
+    // for this to change instead of rebuilding an unchanged frame on a timer.
+    render_revision: u64,
     sessions: Vec<Session>,
     next_session_id: u64,
     next_window_id: u64,
@@ -279,6 +367,113 @@ struct ServerState {
     table_bindings: HashMap<(String, Vec<u8>), ConfigBinding>,
     mouse_bindings: HashMap<(String, String), ConfigBinding>,
     mouse_context: Option<MouseContext>,
+}
+
+/// A deterministic in-process render fixture for performance benchmarks.
+///
+/// It deliberately uses empty panes, so benchmark setup never measures shell
+/// startup or PTY scheduling. The returned frame is the same byte stream sent
+/// to an attached client after pane state has been parsed.
+#[doc(hidden)]
+#[allow(dead_code)]
+pub struct RenderBenchmark {
+    state: ServerState,
+    session_id: u64,
+    client_id: u64,
+    terminal: vt100::Parser,
+    previous_screen: Option<vt100::Screen>,
+}
+
+#[allow(dead_code)]
+impl RenderBenchmark {
+    #[doc(hidden)]
+    pub fn new(cols: u16, rows: u16, pane_count: usize) -> Self {
+        assert!(pane_count > 0, "render benchmark needs at least one pane");
+        let size = Size::new(cols, rows).bounded();
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = ServerState::new();
+        state.apply_compiled_interactive_config();
+        state
+            .create_session(
+                &shared,
+                Some("render-benchmark"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                size,
+            )
+            .expect("create render benchmark session");
+        for _ in 1..pane_count {
+            state
+                .split_window(
+                    &shared,
+                    Some("render-benchmark:0"),
+                    true,
+                    false,
+                    false,
+                    true,
+                    false,
+                    true,
+                    None,
+                    &[],
+                    None,
+                )
+                .expect("split render benchmark pane");
+        }
+        let session_id = state.sessions[0].id;
+        let (_, client_id) = state
+            .register_client(Some("render-benchmark"), size)
+            .expect("register render benchmark client");
+        for pane in &mut state.sessions[0].windows[0].panes {
+            pane.parser.process(
+                b"render benchmark 0123456789 abcdefghijklmnopqrstuvwxyz\r\nsecond line\r\n",
+            );
+        }
+        Self {
+            state,
+            session_id,
+            client_id,
+            terminal: vt100::Parser::new(size.rows, size.cols, 10_000),
+            previous_screen: None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn render_frame(&mut self) -> Vec<u8> {
+        self.state
+            .render_session(self.session_id, Some(self.client_id))
+            .expect("render benchmark session")
+    }
+
+    #[doc(hidden)]
+    pub fn render_delta_frame(&mut self) -> Vec<u8> {
+        let full = self
+            .state
+            .render_session_with_clear(
+                self.session_id,
+                Some(self.client_id),
+                self.previous_screen.is_none(),
+            )
+            .expect("render benchmark session");
+        if self.previous_screen.is_none() {
+            self.terminal.process(&full);
+            self.previous_screen = Some(self.terminal.screen().clone());
+            return full;
+        }
+        let before = self.terminal.screen().clone();
+        self.terminal.process(&full);
+        let after = self.terminal.screen().clone();
+        self.previous_screen = Some(after.clone());
+        match render_screen_delta(&before, &after) {
+            Ok(Some(delta)) => delta,
+            Ok(None) => Vec::new(),
+            Err(()) => full,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -723,6 +918,7 @@ impl Drop for PanePipe {
 impl ServerState {
     fn new() -> Self {
         Self {
+            render_revision: 0,
             sessions: Vec::new(),
             next_session_id: 0,
             next_window_id: 0,
@@ -751,6 +947,11 @@ impl ServerState {
             mouse_bindings: HashMap::new(),
             mouse_context: None,
         }
+    }
+
+    fn mark_render_dirty(&mut self) {
+        self.render_revision = self.render_revision.wrapping_add(1);
+        RENDER_WAKE.notify_all();
     }
 
     fn apply_compiled_interactive_config(&mut self) {
@@ -7093,6 +7294,15 @@ impl ServerState {
     }
 
     fn render_session(&mut self, session_id: u64, client_id: Option<u64>) -> Option<Vec<u8>> {
+        self.render_session_with_clear(session_id, client_id, true)
+    }
+
+    fn render_session_with_clear(
+        &mut self,
+        session_id: u64,
+        client_id: Option<u64>,
+        clear_screen: bool,
+    ) -> Option<Vec<u8>> {
         let client_prefix = client_id
             .and_then(|client_id| self.clients.get(&client_id))
             .is_some_and(|client| client.prefix_pending);
@@ -7165,8 +7375,14 @@ impl ServerState {
             .find(|window| window.index == session.active_window)?;
         let history_limit = self.history_limit;
         let mut output = Vec::new();
-        output.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H\x1b[0m");
-        if let Some(data) = self.clipboard_pending.take() {
+        let clipboard = self.clipboard_pending.take();
+        let consumed_one_shot_state = message.is_some() || clipboard.is_some();
+        if clear_screen {
+            output.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H\x1b[0m");
+        } else {
+            output.extend_from_slice(b"\x1b[?25l\x1b[H\x1b[0m");
+        }
+        if let Some(data) = clipboard {
             output.extend_from_slice(b"\x1b]52;c;");
             output.extend_from_slice(base64_encode(&data).as_bytes());
             output.push(0x07);
@@ -7453,6 +7669,9 @@ impl ServerState {
             render_client_mode_overlay(&mut output, client_mode, session.size);
         } else if let Some(panes_mode) = panes_mode.as_ref() {
             render_panes_mode_overlay(&mut output, panes_mode, session.size);
+        }
+        if consumed_one_shot_state {
+            self.mark_render_dirty();
         }
         Some(output)
     }
@@ -8655,7 +8874,10 @@ fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
         },
         &mut separators,
     );
-    let mut cells = HashMap::<(u16, u16), u8>::new();
+    // Keep the escape sequence order stable. A fresh HashMap has a fresh
+    // randomized iteration seed, which made otherwise identical frames differ
+    // byte-for-byte and defeated the attach loop's redraw suppression.
+    let mut cells = BTreeMap::<(u16, u16), u8>::new();
     for (x, y, axis) in separators {
         let bit = match axis {
             Axis::Horizontal => 1,
@@ -8801,6 +9023,71 @@ fn append_cell_style(output: &mut Vec<u8>, current: &mut CellStyle, style: CellS
         output.extend_from_slice(b"\x1b[7m");
     }
     *current = style;
+}
+
+/// Turn a fully rendered terminal state into the smallest safe update for an
+/// already synchronized terminal. Rows are rewritten atomically from column
+/// one, which avoids the visible clear-and-repaint flash while keeping stale
+/// tails erased with `EL`.
+fn render_screen_delta(
+    previous: &vt100::Screen,
+    current: &vt100::Screen,
+) -> Result<Option<Vec<u8>>, ()> {
+    if previous.size() != current.size()
+        || previous.alternate_screen() != current.alternate_screen()
+        || previous.application_cursor() != current.application_cursor()
+        || previous.application_keypad() != current.application_keypad()
+        || previous.bracketed_paste() != current.bracketed_paste()
+        || previous.mouse_protocol_mode() != current.mouse_protocol_mode()
+        || previous.mouse_protocol_encoding() != current.mouse_protocol_encoding()
+    {
+        return Err(());
+    }
+    let (rows, cols) = current.size();
+    let mut output = Vec::new();
+    let mut changed = false;
+    for row in 0..rows {
+        let row_changed = (0..cols).any(|col| previous.cell(row, col) != current.cell(row, col));
+        if !row_changed {
+            continue;
+        }
+        changed = true;
+        output.extend_from_slice(format!("\x1b[{};1H", row.saturating_add(1)).as_bytes());
+        let mut cell_style = CellStyle::default();
+        for col in 0..cols {
+            let Some(cell) = current.cell(row, col) else {
+                output.push(b' ');
+                continue;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            append_cell_style(&mut output, &mut cell_style, CellStyle::from_cell(cell));
+            if cell.contents().is_empty() {
+                output.push(b' ');
+            } else {
+                output.extend_from_slice(cell.contents().as_bytes());
+            }
+        }
+        output.extend_from_slice(b"\x1b[0m\x1b[K");
+    }
+    let cursor_changed = previous.cursor_position() != current.cursor_position()
+        || previous.hide_cursor() != current.hide_cursor();
+    if cursor_changed || changed {
+        output.extend_from_slice(b"\x1b[?25l");
+        if !current.hide_cursor() {
+            let (row, col) = current.cursor_position();
+            output.extend_from_slice(
+                format!(
+                    "\x1b[{};{}H\x1b[?25h",
+                    row.saturating_add(1),
+                    col.saturating_add(1)
+                )
+                .as_bytes(),
+            );
+        }
+    }
+    Ok((!output.is_empty()).then_some(output))
 }
 
 fn render_status_line(
@@ -9764,10 +10051,22 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                     let _ = stdin.write_all(&buffer[..length]);
                                 }
                                 retain_raw_output(pane, &buffer[..length]);
-                                if let Some(path) = terminal_path(&pane.raw_output) {
+                                // OSC 2/7 metadata is emitted near the live
+                                // cursor. Scanning the complete retained
+                                // history for every PTY read made sustained
+                                // output quadratic and blocked rendering on
+                                // the global state lock. A bounded tail still
+                                // covers sequences split across reads while
+                                // keeping this path O(read size).
+                                let metadata_start = pane
+                                    .raw_output
+                                    .len()
+                                    .saturating_sub(TERMINAL_METADATA_SCAN_LIMIT);
+                                let metadata = &pane.raw_output[metadata_start..];
+                                if let Some(path) = terminal_path(metadata) {
                                     pane.current_path = Some(path);
                                 }
-                                let title = terminal_title(&pane.raw_output);
+                                let title = terminal_title(metadata);
                                 pane.output_state
                                     .process(&mut pane.parser, &buffer[..length]);
                                 audible_bell |= pane.output_state.take_audible_bell();
@@ -9808,6 +10107,9 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                     }
                                 }
                             }
+                            if updated {
+                                state.mark_render_dirty();
+                            }
                             if !updated {
                                 break;
                             }
@@ -9841,6 +10143,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                 } else {
                     state.remove_exited_panes(&exited);
                 }
+                state.mark_render_dirty();
             }
             Pty::reap(pid);
         })
@@ -9848,6 +10151,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
 }
 
 const RAW_OUTPUT_LIMIT: usize = 1 << 20;
+const TERMINAL_METADATA_SCAN_LIMIT: usize = 4096;
 
 fn retain_raw_output(pane: &mut Pane, bytes: &[u8]) {
     pane.raw_output.extend_from_slice(bytes);
@@ -13603,6 +13907,44 @@ mod tests {
             Color::Idx(2)
         );
         assert_eq!(screen.cell(0, 11).expect("right pane cell").contents(), "B");
+        let rendered_again = state
+            .render_session(session_id, None)
+            .expect("render split session again");
+        assert_eq!(
+            rendered, rendered_again,
+            "identical pane state must produce an identical frame"
+        );
+        let incremental = state
+            .render_session_with_clear(session_id, None, false)
+            .expect("render incremental split session");
+        assert!(
+            !incremental.windows(b"\x1b[2J".len()).any(|window| window == b"\x1b[2J"),
+            "incremental frames must not clear the entire terminal"
+        );
+        let before_incremental = terminal.screen().clone();
+        terminal.process(&incremental);
+        let after_incremental = terminal.screen().clone();
+        assert!(
+            matches!(
+                render_screen_delta(&before_incremental, &after_incremental),
+                Ok(None)
+            ),
+            "an unchanged pane state must have no screen delta"
+        );
+    }
+
+    #[test]
+    fn idle_attached_delta_is_empty_headlessly() {
+        let mut fixture = RenderBenchmark::new(80, 24, 1);
+        let initial = fixture.render_delta_frame();
+        let idle = fixture.render_delta_frame();
+        assert!(
+            idle.is_empty(),
+            "idle attached delta had {} bytes after a {} byte initial frame: {:?}",
+            idle.len(),
+            initial.len(),
+            String::from_utf8_lossy(&idle)
+        );
     }
 
     #[test]
