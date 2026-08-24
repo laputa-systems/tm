@@ -42,7 +42,7 @@ fn assert_frame_budget(frame: &[u8], started: std::time::Instant, label: &str) {
     name = "render_80x24_1_pane",
     sample_count = 20,
     sample_size = 10,
-    threads = false,
+    threads = false
 )]
 fn render_80x24_1_pane(bencher: Bencher) {
     let mut fixture = server::RenderBenchmark::new(80, 24, 1);
@@ -58,7 +58,7 @@ fn render_80x24_1_pane(bencher: Bencher) {
     name = "render_80x24_2_panes",
     sample_count = 20,
     sample_size = 10,
-    threads = false,
+    threads = false
 )]
 fn render_80x24_2_panes(bencher: Bencher) {
     let mut fixture = server::RenderBenchmark::new(80, 24, 2);
@@ -74,7 +74,7 @@ fn render_80x24_2_panes(bencher: Bencher) {
     name = "render_120x40_4_panes",
     sample_count = 20,
     sample_size = 10,
-    threads = false,
+    threads = false
 )]
 fn render_120x40_4_panes(bencher: Bencher) {
     let mut fixture = server::RenderBenchmark::new(120, 40, 4);
@@ -90,7 +90,7 @@ fn render_120x40_4_panes(bencher: Bencher) {
     name = "attached_delta_120x40_4_panes",
     sample_count = 20,
     sample_size = 10,
-    threads = false,
+    threads = false
 )]
 fn attached_delta_120x40_4_panes(bencher: Bencher) {
     let mut fixture = server::RenderBenchmark::new(120, 40, 4);

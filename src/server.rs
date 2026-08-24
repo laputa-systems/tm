@@ -257,7 +257,8 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                     };
                     continue;
                 }
-                let render_wait = Duration::from_millis(16).saturating_sub(last_render_at.elapsed());
+                let render_wait =
+                    Duration::from_millis(16).saturating_sub(last_render_at.elapsed());
                 if !render_wait.is_zero() {
                     state = match RENDER_WAKE.wait_timeout(state, render_wait) {
                         Ok((state, _)) => state,
@@ -285,11 +286,7 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
         observed_revision = Some(render_revision);
         last_render_at = Instant::now();
         if last_size != Some(render_size) {
-            terminal = vt100::Parser::new(
-                render_size.rows.max(1),
-                render_size.cols.max(1),
-                10_000,
-            );
+            terminal = vt100::Parser::new(render_size.rows.max(1), render_size.cols.max(1), 10_000);
             previous_screen = None;
             previous.clear();
             last_size = Some(render_size);
@@ -958,11 +955,11 @@ impl ServerState {
         // `config::COMPILED_OPTIONS` is the sole source of interactive
         // startup settings. Startup must never inspect tmux.conf or TM_CONFIG.
         for &(key, value) in config::COMPILED_OPTIONS {
-            self
-                .set_global_option(key, value, false)
+            self.set_global_option(key, value, false)
                 .expect("compiled option must be valid");
         }
-        self.bindings.extend(binding_table(config::COMPILED_BINDINGS));
+        self.bindings
+            .extend(binding_table(config::COMPILED_BINDINGS));
     }
 
     fn create_session(
@@ -1360,8 +1357,14 @@ impl ServerState {
             .global_options
             .get("default-terminal")
             .map(String::as_str);
-        let pty = Pty::spawn(command, cwd.map(Path::new), size, terminal, &self.environment)
-            .map_err(|error| error.to_string())?;
+        let pty = Pty::spawn(
+            command,
+            cwd.map(Path::new),
+            size,
+            terminal,
+            &self.environment,
+        )
+        .map_err(|error| error.to_string())?;
         let reader = pty.reader().map_err(|error| error.to_string())?;
         let pid = pty.pid();
         let mut pane = Pane::new(
@@ -6650,13 +6653,11 @@ impl ServerState {
         Ok(String::new())
     }
 
-    fn resize_mouse_separator(
-        &mut self,
-        session_id: u64,
-        resize: MouseResize,
-        first_size: u16,
-    ) {
-        let Some(session_index) = self.sessions.iter().position(|session| session.id == session_id)
+    fn resize_mouse_separator(&mut self, session_id: u64, resize: MouseResize, first_size: u16) {
+        let Some(session_index) = self
+            .sessions
+            .iter()
+            .position(|session| session.id == session_id)
         else {
             return;
         };
@@ -7427,9 +7428,7 @@ impl ServerState {
                     .as_mut()
                     .map_or(&mut pane.parser, |parser| parser);
                 let screen = parser.screen().clone();
-                let lines = screen
-                    .rows(0, content_rect.cols)
-                    .collect::<Vec<_>>();
+                let lines = screen.rows(0, content_rect.cols).collect::<Vec<_>>();
                 let mut cell_style = CellStyle::default();
                 for row in 0..content_rect.rows {
                     output.extend_from_slice(
@@ -8883,7 +8882,10 @@ fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
             Axis::Horizontal => 1,
             Axis::Vertical => 2,
         };
-        cells.entry((x, y)).and_modify(|value| *value |= bit).or_insert(bit);
+        cells
+            .entry((x, y))
+            .and_modify(|value| *value |= bit)
+            .or_insert(bit);
     }
     for ((x, y), kind) in cells {
         let glyph = match kind {
@@ -8904,10 +8906,10 @@ fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
                 }
             })
             .unwrap_or(32);
-        let style = active.then_some(active_color).map_or_else(String::new, |color| {
-            format!("\x1b[{color}m")
-        });
-        let reset = active.then_some("\x1b[39m").unwrap_or("");
+        let style = active
+            .then_some(active_color)
+            .map_or_else(String::new, |color| format!("\x1b[{color}m"));
+        let reset = if active { "\x1b[39m" } else { "" };
         output.extend_from_slice(
             format!(
                 "\x1b[{};{}H\x1b[0m{}{}{}",
@@ -8982,14 +8984,14 @@ fn append_color(output: &mut Vec<u8>, color: Color, foreground: bool) {
     };
     match color {
         Color::Default => output.extend_from_slice(format!("\x1b[{default_code}m").as_bytes()),
-        Color::Idx(index) if index < 8 => output
-            .extend_from_slice(format!("\x1b[{}m", basic_base + u16::from(index)).as_bytes()),
-        Color::Idx(index) if index < 16 => output.extend_from_slice(
-            format!("\x1b[{}m", bright_base + u16::from(index - 8)).as_bytes(),
-        ),
-        Color::Idx(index) => output.extend_from_slice(
-            format!("\x1b[{extended_prefix};5;{index}m").as_bytes(),
-        ),
+        Color::Idx(index) if index < 8 => {
+            output.extend_from_slice(format!("\x1b[{}m", basic_base + u16::from(index)).as_bytes())
+        }
+        Color::Idx(index) if index < 16 => output
+            .extend_from_slice(format!("\x1b[{}m", bright_base + u16::from(index - 8)).as_bytes()),
+        Color::Idx(index) => {
+            output.extend_from_slice(format!("\x1b[{extended_prefix};5;{index}m").as_bytes())
+        }
         Color::Rgb(red, green, blue) => output.extend_from_slice(
             format!("\x1b[{extended_prefix};2;{red};{green};{blue}m").as_bytes(),
         ),
@@ -13918,7 +13920,9 @@ mod tests {
             .render_session_with_clear(session_id, None, false)
             .expect("render incremental split session");
         assert!(
-            !incremental.windows(b"\x1b[2J".len()).any(|window| window == b"\x1b[2J"),
+            !incremental
+                .windows(b"\x1b[2J".len())
+                .any(|window| window == b"\x1b[2J"),
             "incremental frames must not clear the entire terminal"
         );
         let before_incremental = terminal.screen().clone();

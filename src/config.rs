@@ -22,7 +22,10 @@ pub(crate) const COMPILED_OPTIONS: &[(&str, &str)] = &[
     ("status-position", "bottom"),
     ("status-bg", "black"),
     ("status-fg", "white"),
-    ("window-status-format", "#[dim]#I:#W#{?window_zoomed_flag, (Z),}"),
+    (
+        "window-status-format",
+        "#[dim]#I:#W#{?window_zoomed_flag, (Z),}",
+    ),
     (
         "window-status-current-format",
         "#[fg=green]#I:#W#{?window_zoomed_flag, (Z),}",
@@ -121,7 +124,12 @@ pub(crate) const COMPILED_BINDINGS: &[CompiledBinding] = &[
     CompiledBinding {
         key: "n",
         repeat: false,
-        commands: &[&["command-prompt", "-p", "name of new window:", "new-window -n '%%'"]],
+        commands: &[&[
+            "command-prompt",
+            "-p",
+            "name of new window:",
+            "new-window -n '%%'",
+        ]],
     },
     CompiledBinding {
         key: "p",
@@ -146,7 +154,12 @@ pub(crate) const COMPILED_BINDINGS: &[CompiledBinding] = &[
     CompiledBinding {
         key: "r",
         repeat: false,
-        commands: &[&["command-prompt", "-p", "rename window:", "rename-window '%%'"]],
+        commands: &[&[
+            "command-prompt",
+            "-p",
+            "rename window:",
+            "rename-window '%%'",
+        ]],
     },
     CompiledBinding {
         key: "C-Left",
@@ -197,7 +210,12 @@ pub(crate) const COMPILED_BINDINGS: &[CompiledBinding] = &[
     CompiledBinding {
         key: "m",
         repeat: false,
-        commands: &[&["command-prompt", "-p", "move pane to window #:", "join-pane -h -t '%%'"]],
+        commands: &[&[
+            "command-prompt",
+            "-p",
+            "move pane to window #:",
+            "join-pane -h -t '%%'",
+        ]],
     },
     CompiledBinding {
         key: "C-n",

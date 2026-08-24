@@ -97,7 +97,14 @@ impl Pty {
         }
 
         if pid == 0 {
-            child_setup(slave, master, &argv, cwd_c.as_ref(), terminal, &environment_c);
+            child_setup(
+                slave,
+                master,
+                &argv,
+                cwd_c.as_ref(),
+                terminal,
+                &environment_c,
+            );
         }
 
         close_fd(slave);

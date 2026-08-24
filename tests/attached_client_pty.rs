@@ -228,7 +228,11 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "right pane fixture",
-            |screen| screen.cell(0, 21).is_some_and(|cell| cell.contents() == "V"),
+            |screen| {
+                screen
+                    .cell(0, 21)
+                    .is_some_and(|cell| cell.contents() == "V")
+            },
         )
         .expect("right pane readiness");
 
@@ -359,11 +363,18 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "resized pane border",
-            |screen| screen.cell(0, 25).is_some_and(|cell| cell.contents() == "│"),
+            |screen| {
+                screen
+                    .cell(0, 25)
+                    .is_some_and(|cell| cell.contents() == "│")
+            },
         )
         .expect("resized pane border");
     assert_ne!(
-        resized.cell(0, 20).expect("old pane border cell").contents(),
+        resized
+            .cell(0, 20)
+            .expect("old pane border cell")
+            .contents(),
         "│",
         "the old border was not returned to pane content"
     );

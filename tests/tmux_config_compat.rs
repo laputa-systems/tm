@@ -24,7 +24,10 @@ impl Tm {
                 .to_string_lossy()
                 .into_owned(),
             ignored_config_path: root
-                .join(format!("tm-config-ignored-{}-{id}.conf", std::process::id()))
+                .join(format!(
+                    "tm-config-ignored-{}-{id}.conf",
+                    std::process::id()
+                ))
                 .to_string_lossy()
                 .into_owned(),
         }

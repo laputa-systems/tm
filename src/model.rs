@@ -358,12 +358,7 @@ impl Layout {
         }
     }
 
-    pub(crate) fn separator_at(
-        &self,
-        rect: Rect,
-        x: u16,
-        y: u16,
-    ) -> Option<LayoutSeparator> {
+    pub(crate) fn separator_at(&self, rect: Rect, x: u16, y: u16) -> Option<LayoutSeparator> {
         let mut path = Vec::new();
         self.separator_at_with_path(rect, x, y, &mut path)
     }
@@ -391,10 +386,7 @@ impl Layout {
                     .unwrap_or(available.saturating_add(1) / 2)
                     .min(available);
                 let separator_x = rect.x.saturating_add(first_cols);
-                if x == separator_x
-                    && y >= rect.y
-                    && y < rect.y.saturating_add(rect.rows)
-                {
+                if x == separator_x && y >= rect.y && y < rect.y.saturating_add(rect.rows) {
                     return Some(LayoutSeparator {
                         axis: *axis,
                         path: path.clone(),
@@ -437,10 +429,7 @@ impl Layout {
                 let available = rect.rows.saturating_sub(1);
                 let first_rows = first_size.unwrap_or(available / 2).min(available);
                 let separator_y = rect.y.saturating_add(first_rows);
-                if y == separator_y
-                    && x >= rect.x
-                    && x < rect.x.saturating_add(rect.cols)
-                {
+                if y == separator_y && x >= rect.x && x < rect.x.saturating_add(rect.cols) {
                     return Some(LayoutSeparator {
                         axis: *axis,
                         path: path.clone(),
@@ -966,10 +955,14 @@ mod tests {
         let mut separators = Vec::new();
         layout.separators(rect, &mut separators);
         assert_eq!(separators.len(), 8);
-        assert!(separators.iter().all(|(x, _, axis)| {
-            *x == 10 && *axis == Axis::Horizontal
-        }));
-        let hit = layout.separator_at(rect, 10, 3).expect("vertical separator");
+        assert!(
+            separators
+                .iter()
+                .all(|(x, _, axis)| { *x == 10 && *axis == Axis::Horizontal })
+        );
+        let hit = layout
+            .separator_at(rect, 10, 3)
+            .expect("vertical separator");
         assert_eq!(hit.axis, Axis::Horizontal);
         assert!(hit.path.is_empty());
         assert_eq!(hit.first_size, 10);
@@ -992,12 +985,7 @@ mod tests {
             .expect("horizontal separator");
         assert_eq!(hit.axis, Axis::Vertical);
         assert_eq!(hit.coordinate, 3);
-        assert!(vertical.set_separator_size(
-            vertical_rect,
-            &hit.path,
-            hit.axis,
-            2
-        ));
+        assert!(vertical.set_separator_size(vertical_rect, &hit.path, hit.axis, 2));
         let mut vertical_rectangles = HashMap::new();
         vertical.rectangles(vertical_rect, &mut vertical_rectangles);
         assert_eq!(vertical_rectangles[&3].rows, 2);
