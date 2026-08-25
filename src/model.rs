@@ -800,9 +800,16 @@ impl Window {
                         rows: self.size.rows,
                     };
                 }
-                pane.parser
-                    .screen_mut()
-                    .set_size(pane.rect.rows.max(1), pane.rect.cols.max(1));
+                if resize_parser_to_rect(
+                    &mut pane.parser,
+                    pane.rect.rows.max(1),
+                    pane.rect.cols.max(1),
+                ) {
+                    // The re-anchor is synthetic terminal output. Reset the
+                    // PTY stream normalizer so its wrap/REP state cannot refer
+                    // to bytes that were only used to restore the screen.
+                    pane.output_state = OutputState::default();
+                }
             }
         }
     }
@@ -862,6 +869,65 @@ impl Window {
             .for_each(|(index, pane)| pane.index = index as u32);
         self.active_pane = new_ids[active_position];
     }
+}
+
+/// Resize a pane's terminal model while keeping the newest visible rows when
+/// a split shortens its height. `vt100::Screen::set_size` retains rows from
+/// the top, which drops a shell prompt at the bottom of the pane until the
+/// child redraws after SIGWINCH. Re-anchor the visible rows first so a frame
+/// rendered between the resize and that redraw still represents the pane.
+fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
+    let screen = parser.screen();
+    let (old_rows, old_cols) = screen.size();
+    if old_rows <= rows {
+        parser.screen_mut().set_size(rows, cols);
+        return false;
+    }
+
+    let width = cols.min(old_cols);
+    let bottom_offset = old_rows.saturating_sub(rows);
+    let bottom_has_content = screen
+        .rows(0, old_cols)
+        .skip(usize::from(bottom_offset))
+        .any(|row| !row.trim().is_empty());
+    // A client attach can briefly grow a pane and then shrink it back to the
+    // session size. In that case the newly appended rows are blank, so keep
+    // the top of the screen; genuine pane splits with a live prompt have
+    // content at the bottom and should keep the newest rows instead.
+    let keep_from = if bottom_has_content { bottom_offset } else { 0 };
+    let saved_rows = screen
+        .rows_formatted(0, width)
+        .skip(usize::from(keep_from))
+        .take(usize::from(rows))
+        .collect::<Vec<_>>();
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let cursor_hidden = screen.hide_cursor();
+    let attributes = screen.attributes_formatted();
+
+    parser.screen_mut().set_size(rows, cols);
+
+    let mut redraw = Vec::new();
+    for (row, contents) in saved_rows.into_iter().enumerate() {
+        redraw.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
+        redraw.extend_from_slice(&contents);
+        redraw.extend_from_slice(b"\x1b[K");
+    }
+    let mapped_row = usize::from(cursor_row)
+        .saturating_sub(usize::from(keep_from))
+        .min(usize::from(rows.saturating_sub(1)));
+    let mapped_col = cursor_col.min(cols.saturating_sub(1));
+    redraw.extend_from_slice(
+        format!(
+            "\x1b[{};{}H{}",
+            mapped_row + 1,
+            mapped_col + 1,
+            if cursor_hidden { "\x1b[?25l" } else { "\x1b[?25h" }
+        )
+        .as_bytes(),
+    );
+    redraw.extend_from_slice(&attributes);
+    parser.process(&redraw);
+    true
 }
 
 pub(crate) struct Session {
@@ -990,5 +1056,24 @@ mod tests {
         vertical.rectangles(vertical_rect, &mut vertical_rectangles);
         assert_eq!(vertical_rectangles[&3].rows, 2);
         assert_eq!(vertical_rectangles[&4].y, 3);
+    }
+
+    #[test]
+    fn shrinking_a_pane_keeps_its_newest_visible_rows() {
+        let mut pane = Pane::empty(1, 0, Size::new(20, 6)).expect("empty resize pane");
+        pane.parser
+            .process(b"line-0\r\nline-1\r\nline-2\r\nline-3\r\nline-4\r\nline-5");
+        let mut window = Window::new(1, 0, "resize".to_owned(), Size::new(20, 6), pane);
+        window.layout = Layout::Split {
+            axis: Axis::Vertical,
+            first: Box::new(Layout::Leaf(1)),
+            second: Box::new(Layout::Leaf(2)),
+            first_size: None,
+        };
+        window
+            .panes
+            .push(Pane::empty(2, 1, Size::new(20, 6)).expect("second resize pane"));
+        window.reflow();
+        assert_eq!(window.panes[0].parser.screen().contents(), "line-4\nline-5");
     }
 }

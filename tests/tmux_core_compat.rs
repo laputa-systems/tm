@@ -101,6 +101,20 @@ fn session_ops_port_the_tmux_session_lifecycle() {
         "printf ready; sleep 30",
     ]);
     assert!(tm.ok(&["list-sessions"]).contains("S1: 1 windows"));
+    tm.ok(&["new-session", "-d", "-E"]);
+    assert!(
+        tm.ok(&["ls"])
+            .lines()
+            .any(|line| line.starts_with("0: 1 windows")),
+        "ls should list an unnamed session using its numeric default name"
+    );
+    tm.ok(&["new-session", "-d", "-E", "-s", ""]);
+    assert!(
+        tm.ok(&["ls"])
+            .lines()
+            .any(|line| line.starts_with("1: 1 windows")),
+        "an empty submitted session name should use the next numeric name"
+    );
     assert_eq!(
         tm.ok(&[
             "new-session",
@@ -111,7 +125,7 @@ fn session_ops_port_the_tmux_session_lifecycle() {
             "-s",
             "printed",
         ]),
-        "$1:printed:1\n"
+        "$3:printed:1\n"
     );
     assert_eq!(
         tm.ok(&["new-session", "-A", "-d", "-s", "printed"]),

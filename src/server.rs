@@ -984,7 +984,7 @@ impl ServerState {
         cwd: Option<&str>,
         size: Size,
     ) -> CommandResult {
-        let session_name = match name {
+        let session_name = match name.filter(|name| !name.is_empty()) {
             Some(name) => render_format_with_options(
                 name,
                 &[("pid", std::process::id().to_string())],
@@ -1494,6 +1494,26 @@ impl ServerState {
                 index += consumed;
                 continue;
             }
+            // The prefix-number keys are built-in window selectors in tmux,
+            // rather than ordinary bindings. Consume them before the prefix
+            // table forwards an unbound digit to the active pane.
+            let numeric_window = self.clients.get(&client_id).and_then(|client| {
+                (client.prefix_pending && client.key_buffer.is_empty())
+                    .then_some((client.session_id, bytes[index]))
+                    .filter(|(_, byte)| byte.is_ascii_digit())
+                    .map(|(session_id, byte)| (session_id, u32::from(byte - b'0')))
+            });
+            if let Some((session_id, window_index)) = numeric_window {
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.prefix_pending = false;
+                    client.key_buffer.clear();
+                    client.repeat_key = None;
+                    client.repeat_binding = None;
+                }
+                let _ = self.select_window(&format!("${session_id}:{window_index}"));
+                index += 1;
+                continue;
+            }
             let byte = bytes[index];
             let prefix_pending = self
                 .clients
@@ -1752,9 +1772,47 @@ impl ServerState {
         if let Some(bytes) = invalid {
             self.write_active(session_id, &bytes);
         } else if let Some((button, col, row, release)) = complete {
-            self.apply_mouse_event(client_id, session_id, button, col, row, release, shared);
+            if let Some((pane_id, local_col, local_row, encoding)) =
+                self.mouse_passthrough_target(session_id, col, row)
+            {
+                self.write_pane(
+                    pane_id,
+                    &encode_mouse_event(button, local_col, local_row, release, encoding),
+                );
+            } else {
+                self.apply_mouse_event(client_id, session_id, button, col, row, release, shared);
+            }
         }
         (consumed > 0).then_some(consumed)
+    }
+
+    /// Applications such as file managers and terminal editors can enable a
+    /// mouse protocol of their own. When that state is active inside a pane,
+    /// tm forwards the event with coordinates translated into the pane rather
+    /// than turning it into a multiplexer action.
+    fn mouse_passthrough_target(
+        &self,
+        session_id: u64,
+        col: u16,
+        row: u16,
+    ) -> Option<(u64, u16, u16, vt100::MouseProtocolEncoding)> {
+        let session = self.sessions.iter().find(|session| session.id == session_id)?;
+        let window = session.active_window()?;
+        let x = col.saturating_sub(1);
+        let y = row.saturating_sub(1);
+        let pane = window.panes.iter().find(|pane| {
+            x >= pane.rect.x
+                && x < pane.rect.x.saturating_add(pane.rect.cols)
+                && y >= pane.rect.y
+                && y < pane.rect.y.saturating_add(pane.rect.rows)
+                && pane.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        })?;
+        Some((
+            pane.id,
+            x.saturating_sub(pane.rect.x).saturating_add(1),
+            y.saturating_sub(pane.rect.y).saturating_add(1),
+            pane.parser.screen().mouse_protocol_encoding(),
+        ))
     }
 
     fn apply_mouse_event(
@@ -3480,14 +3538,19 @@ impl ServerState {
             .find(|window| window.index == session.active_window)
             .expect("active window exists");
         window.layout = crate::model::Layout::Leaf(pane_ids[0]);
+        let mut target = pane_ids[0];
         for pane_id in pane_ids.into_iter().skip(1) {
-            let target = match &window.layout {
-                crate::model::Layout::Leaf(id) => *id,
-                _ => window.active_pane,
-            };
-            let _ = window
+            if !window
                 .layout
-                .split_with_size(target, pane_id, axis, false, false, None);
+                .split_with_size(target, pane_id, axis, false, false, None)
+            {
+                return;
+            }
+            // Keep extending the leaf just added. The active pane can be a
+            // different pane when a layout is selected through a chained
+            // binding, and using it here can leave the new pane unreachable
+            // from the layout tree.
+            target = pane_id;
         }
         self.reflow_session(session_id);
     }
@@ -5521,6 +5584,7 @@ impl ServerState {
 
     fn remove_exited_panes(&mut self, pane_ids: &HashSet<u64>) {
         let mut removed = Vec::new();
+        let mut affected_sessions = HashSet::new();
         self.sessions.retain_mut(|session| {
             for window in &mut session.windows {
                 let ids = window
@@ -5529,6 +5593,9 @@ impl ServerState {
                     .filter(|pane| pane_ids.contains(&pane.id))
                     .map(|pane| pane.id)
                     .collect::<Vec<_>>();
+                if !ids.is_empty() {
+                    affected_sessions.insert(session.id);
+                }
                 for id in &ids {
                     let _ = window.layout.remove(*id);
                 }
@@ -5562,6 +5629,12 @@ impl ServerState {
         });
         for id in removed {
             self.pane_pipes.remove(&id);
+        }
+        // Pane exit can collapse a split without going through kill-pane.
+        // Reflow every surviving window so its PTY receives the new geometry
+        // and SIGWINCH just like an explicit pane close.
+        for session_id in affected_sessions {
+            self.reflow_session(session_id);
         }
     }
 
@@ -8139,6 +8212,52 @@ fn parse_sgr_mouse(bytes: &[u8]) -> Option<(u16, u16, u16, bool)> {
         return None;
     }
     Some((button, col, row, last == b'm'))
+}
+
+fn encode_sgr_mouse(button: u16, col: u16, row: u16, release: bool) -> Vec<u8> {
+    format!(
+        "\x1b[<{};{};{}{}",
+        button,
+        col,
+        row,
+        if release { 'm' } else { 'M' }
+    )
+    .into_bytes()
+}
+
+fn encode_mouse_event(
+    button: u16,
+    col: u16,
+    row: u16,
+    release: bool,
+    encoding: vt100::MouseProtocolEncoding,
+) -> Vec<u8> {
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => encode_sgr_mouse(button, col, row, release),
+        vt100::MouseProtocolEncoding::Default | vt100::MouseProtocolEncoding::Utf8 => {
+            let old_button = if release {
+                (button & !0x03) | 0x03
+            } else {
+                button
+            };
+            let values = [
+                old_button.saturating_add(32),
+                col.saturating_add(32),
+                row.saturating_add(32),
+            ];
+            let mut output = b"\x1b[M".to_vec();
+            for value in values {
+                let character = char::from_u32(u32::from(value)).unwrap_or('\u{fffd}');
+                if encoding == vt100::MouseProtocolEncoding::Default {
+                    output.push(u8::try_from(value).unwrap_or(b'?'));
+                } else {
+                    let mut bytes = [0; 4];
+                    output.extend_from_slice(character.encode_utf8(&mut bytes).as_bytes());
+                }
+            }
+            output
+        }
+    }
 }
 
 #[cfg(test)]
@@ -14196,6 +14315,100 @@ mod tests {
     }
 
     #[test]
+    fn application_mouse_mode_gets_local_pane_coordinates_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("mouse-pass-through"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(40, 6),
+            )
+            .expect("create mouse pass-through session");
+        state
+            .split_window(
+                &shared,
+                Some("mouse-pass-through:0"),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                None,
+                &[],
+                None,
+            )
+            .expect("split mouse pass-through session");
+        let right_pane = state.sessions[0].windows[0].panes[1].id;
+        state
+            .find_pane_mut(right_pane)
+            .expect("right mouse pane")
+            .parser
+            .process(b"\x1b[?1000h\x1b[?1006h");
+        let session_id = state.sessions[0].id;
+        assert_eq!(
+            state.mouse_passthrough_target(session_id, 25, 2),
+            Some((
+                right_pane,
+                4,
+                2,
+                vt100::MouseProtocolEncoding::Sgr,
+            ))
+        );
+        assert_eq!(encode_sgr_mouse(0, 4, 2, false), b"\x1b[<0;4;2M");
+    }
+
+    #[test]
+    fn exited_pane_reflows_the_surviving_panes_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("exited-reflow"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(40, 6),
+            )
+            .expect("create exited reflow session");
+        state
+            .split_window(
+                &shared,
+                Some("exited-reflow:0"),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                None,
+                &[],
+                None,
+            )
+            .expect("split exited reflow session");
+        let removed = state.sessions[0].windows[0].panes[1].id;
+        state.remove_exited_panes(&std::collections::HashSet::from([removed]));
+        let window = &state.sessions[0].windows[0];
+        assert_eq!(window.panes.len(), 1);
+        assert_eq!(window.panes[0].rect.x, 0);
+        assert_eq!(window.panes[0].rect.cols, 40);
+        assert_eq!(window.panes[0].rect.rows, 6);
+    }
+
+    #[test]
     fn mode_kill_flags_remove_the_pane_that_entered_each_mode_headlessly() {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
@@ -15260,6 +15473,83 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
                 .expect("list prompted windows"),
             "1:0\n2:renamed"
         );
+    }
+
+    #[test]
+    fn prefix_digits_select_windows_by_index_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("prefix-digits"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(40, 8),
+            )
+            .expect("create prefix digit session");
+        state
+            .new_window(
+                &shared,
+                Some("prefix-digits"),
+                Some("second"),
+                false,
+                None,
+                false,
+                None,
+                false,
+                false,
+                false,
+                true,
+                &[],
+                None,
+            )
+            .expect("create second prefix digit window");
+        let (_, client_id) = state
+            .register_client(Some("prefix-digits"), Size::new(40, 8))
+            .expect("register prefix digit client");
+        state.handle_client_input(client_id, b"\x020", &shared);
+        assert_eq!(state.sessions[0].active_window, 0);
+        state.handle_client_input(client_id, b"\x021", &shared);
+        assert_eq!(state.sessions[0].active_window, 1);
+    }
+
+    #[test]
+    fn three_vertical_panes_keep_each_separator_visible_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state.apply_compiled_interactive_config();
+        state
+            .create_session(
+                &shared,
+                Some("three-vertical"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(40, 8),
+            )
+            .expect("create three vertical session");
+        let (session_id, client_id) = state
+            .register_client(Some("three-vertical"), Size::new(40, 8))
+            .expect("register three vertical client");
+        state.handle_client_input(client_id, b"\x01\\", &shared);
+        state.handle_client_input(client_id, b"\x01\\", &shared);
+        let rendered = state
+            .render_session(session_id, Some(client_id))
+            .expect("render three vertical panes");
+        let mut terminal = Parser::new(8, 40, 0);
+        terminal.process(&rendered);
+        assert_eq!(terminal.screen().cell(0, 20).map(|cell| cell.contents()), Some("│"));
+        assert_eq!(terminal.screen().cell(0, 30).map(|cell| cell.contents()), Some("│"));
     }
 
     #[test]

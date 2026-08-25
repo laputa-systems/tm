@@ -25,7 +25,8 @@ regression test gives the core a reason to carry them.
 cargo run                         # create session 0 and attach
 cargo run -- new-session -d -s work
 cargo run -- split-window -h -t work
-cargo run -- list-sessions
+cargo run -- ls
+cargo run -- kill-session -t work
 cargo run -- attach-session -t work
 ```
 

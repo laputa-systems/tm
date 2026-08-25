@@ -9,10 +9,11 @@ hermetic test environment, an audited `xterm-minimal-v1` profile, and named
 semantic screen barriers. Do not add settle sleeps: wait for the fixture marker
 or visible terminal state instead.
 
-The attached-client scenarios cover both the single-pane lifecycle and a
-split-pane capture: pane borders and active-border color, SGR cell colors,
-wheel scrolling into copy mode, and dragging a border to resize it. The split
-scenario stores its stable semantic captures in `tests/snapshots/`.
+The attached-client scenarios cover the single-pane lifecycle, an attached
+client split regression, and a split-pane capture: pane borders and
+active-border color, SGR cell colors, wheel scrolling into copy mode, and
+dragging a border to resize it. The split scenario stores its stable semantic
+captures in `tests/snapshots/`.
 
 On a crate-owned failure, inspect `target/ptytest-failures/<scenario>-*/` for
 exact input/output, events, semantic screen, and redacted configuration.

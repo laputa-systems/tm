@@ -410,3 +410,79 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
         .finish(terminal.deadline(Duration::from_secs(3)))
         .expect("reap pane capture client");
 }
+
+#[test]
+fn opening_pane_from_attached_client_preserves_existing_pane_contents() {
+    let environment = TestEnv::hermetic().expect("create hermetic test environment");
+    let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+    let socket = environment
+        .paths()
+        .root()
+        .join(format!("tm-attached-split-{number}.sock"))
+        .to_string_lossy()
+        .into_owned();
+    let server = TestServer::new(socket.clone());
+    server.create_fixture_session();
+
+    let scenario = Scenario::new("tm attached split preserves content")
+        .expect("valid scenario label")
+        .command(
+            CommandSpec::new(env!("CARGO_BIN_EXE_tm"))
+                .env("TM_SOCKET", &socket)
+                .args(["attach-session", "-t", "pty-e2e"]),
+        )
+        .size(Size::new(COLS, ROWS).expect("constant PTY size"))
+        .environment(environment)
+        .protocol_profile(ProtocolProfile::xterm_minimal_v1());
+    let mut terminal = PtyTest::spawn(scenario).expect("spawn attached split PTY");
+    let baseline = terminal.terminal_baseline();
+
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "fixture ready",
+            |screen| screen.contains("VT_FIXTURE_READY"),
+        )
+        .expect("attached client readiness");
+
+    terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "scroll\n")
+        .expect("fill existing pane before split");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "existing pane content",
+            |screen| screen.contains("SCROLL_23"),
+        )
+        .expect("existing pane content");
+
+    terminal
+        .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x02\"")
+        .expect("open pane from attached client");
+    let split = terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "new pane border",
+            |screen| screen.cell(2, 0).is_some_and(|cell| cell.contents() == "─"),
+        )
+        .expect("new pane became visible");
+    assert!(
+        split.contains("SCROLL_23"),
+        "opening a pane cleared the original pane contents:\n{split}"
+    );
+
+    let shutdown = run_tm(&socket, ["kill-server"]);
+    assert!(shutdown.status.success(), "stop split server");
+    assert_eq!(
+        terminal
+            .wait_for_exit(terminal.deadline(Duration::from_secs(3)))
+            .expect("wait for split detach"),
+        ExitStatus::Code(0)
+    );
+    terminal
+        .assert_terminal_restored(&baseline)
+        .expect("restore terminal after split");
+    terminal
+        .finish(terminal.deadline(Duration::from_secs(3)))
+        .expect("reap split client");
+}
