@@ -62,6 +62,25 @@ fn main() -> io::Result<()> {
                     emit(line.as_bytes())?;
                 }
             }
+            b"app-mouse" => {
+                enable_application_mouse()?;
+                let event = read_sgr_mouse()?;
+                expect_mouse_event(&event, b"\x1b[<64;5;2M")?;
+                emit_mouse_ack(&event)?;
+            }
+            b"app-drag" => {
+                enable_application_mouse()?;
+                let press = read_sgr_mouse()?;
+                let motion = read_sgr_mouse()?;
+                let release = read_sgr_mouse()?;
+                expect_mouse_event(&press, b"\x1b[<0;3;2M")?;
+                expect_mouse_event(&motion, b"\x1b[<32;8;2M")?;
+                expect_mouse_event(&release, b"\x1b[<0;8;2m")?;
+                let mut events = press;
+                events.extend(motion);
+                events.extend(release);
+                emit_mouse_ack(&events)?;
+            }
             b"quit" => {
                 emit(b"FIXTURE_DONE\r\n")?;
                 // Keep the PTY alive until the client sends its explicit
@@ -78,6 +97,75 @@ fn emit(bytes: &[u8]) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     stdout.write_all(bytes)?;
     stdout.flush()
+}
+
+/// Match the sequence used by terminal applications such as `e`: the
+/// alternate screen plus button-motion and SGR mouse reporting. The attached
+/// tm client must forward these reports to this PTY rather than treating them
+/// as copy-mode input.
+fn enable_application_mouse() -> io::Result<()> {
+    enable_raw_input()?;
+    emit(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006hMOUSE_READY\r\n")
+}
+
+fn enable_raw_input() -> io::Result<()> {
+    // `e` enters raw mode before it receives mouse reports. A terminal in
+    // canonical mode waits for a newline and echoes the report, which would
+    // test the PTY line discipline rather than tm's forwarding boundary.
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(0, &mut termios) == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        libc::cfmakeraw(&mut termios);
+        if libc::tcsetattr(0, libc::TCSANOW, &termios) == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn read_sgr_mouse() -> io::Result<Vec<u8>> {
+    let mut event = Vec::new();
+    loop {
+        wait_for_input(50)?;
+        let mut byte = [0_u8; 1];
+        // SAFETY: fd 0 is the fixture's PTY slave inherited from the test.
+        let read = unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) };
+        if read == 1 {
+            event.push(byte[0]);
+            if event.len() > 3 && matches!(byte[0], b'M' | b'm') {
+                return Ok(event);
+            }
+            continue;
+        }
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "mouse report ended before its final byte",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted || error.kind() == io::ErrorKind::WouldBlock {
+            continue;
+        }
+        return Err(error);
+    }
+}
+
+fn expect_mouse_event(actual: &[u8], expected: &[u8]) -> io::Result<()> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("unexpected SGR mouse report: {actual:?}"),
+    ))
+}
+
+fn emit_mouse_ack(event: &[u8]) -> io::Result<()> {
+    let message = format!("MOUSE_ACK:{}\r\n", event.len());
+    emit(message.as_bytes())
 }
 
 fn install_sigwinch_handler() -> io::Result<()> {

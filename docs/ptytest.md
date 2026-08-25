@@ -12,8 +12,12 @@ or visible terminal state instead.
 The attached-client scenarios cover the single-pane lifecycle, an attached
 client split regression, and a split-pane capture: pane borders and
 active-border color, SGR cell colors, wheel scrolling into copy mode, and
-dragging a border to resize it. The split scenario stores its stable semantic
-captures in `tests/snapshots/`.
+dragging a border to resize it. The
+`attached_client_forwards_application_mouse_events_without_entering_copy_mode`
+scenario covers the boundary where a pane application enables SGR mouse
+reporting: wheel and drag reports must reach that pane rather than entering tm
+copy mode. The split scenario stores its stable semantic captures in
+`tests/snapshots/`.
 
 On a crate-owned failure, inspect `target/ptytest-failures/<scenario>-*/` for
 exact input/output, events, semantic screen, and redacted configuration.

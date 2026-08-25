@@ -154,9 +154,9 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
         .wait_for_screen(
             terminal.deadline(Duration::from_secs(3)),
             "resized fixture size",
-            |screen| screen.contains("RESIZE_ACK:10x50"),
+            |screen| screen.contains("RESIZE_ACK:9x50"),
         )
-        .expect("nested PTY resize propagation");
+        .expect("nested PTY resize excludes the status line");
 
     terminal
         .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x02d")
@@ -409,6 +409,107 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
     terminal
         .finish(terminal.deadline(Duration::from_secs(3)))
         .expect("reap pane capture client");
+}
+
+#[test]
+fn attached_client_forwards_application_mouse_events_without_entering_copy_mode() {
+    let environment = TestEnv::hermetic().expect("create hermetic test environment");
+    let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+    let socket = environment
+        .paths()
+        .root()
+        .join(format!("tm-attached-app-mouse-{number}.sock"))
+        .to_string_lossy()
+        .into_owned();
+    let server = TestServer::new(socket.clone());
+    server.create_fixture_session();
+    let mouse = run_tm(&socket, ["set-option", "-g", "mouse", "on"]);
+    assert!(
+        mouse.status.success(),
+        "enable mouse failed: {}",
+        String::from_utf8_lossy(&mouse.stderr)
+    );
+
+    let scenario = Scenario::new("tm attached application mouse")
+        .expect("valid scenario label")
+        .command(
+            CommandSpec::new(env!("CARGO_BIN_EXE_tm"))
+                .env("TM_SOCKET", &socket)
+                .args(["attach-session", "-t", "pty-e2e"]),
+        )
+        .size(Size::new(COLS, ROWS).expect("constant PTY size"))
+        .environment(environment)
+        .protocol_profile(ProtocolProfile::xterm_minimal_v1());
+    let mut terminal = PtyTest::spawn(scenario).expect("spawn attached client PTY");
+    let baseline = terminal.terminal_baseline();
+
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "fixture ready",
+            |screen| screen.contains("VT_FIXTURE_READY"),
+        )
+        .expect("attached client readiness");
+
+    terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "app-mouse\n")
+        .expect("start application mouse fixture");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "application mouse ready",
+            |screen| screen.contains("MOUSE_READY"),
+        )
+        .expect("application mouse mode enabled");
+    terminal
+        .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x1b[<64;5;2M")
+        .expect("send wheel report");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "application wheel acknowledgement",
+            |screen| screen.contains("MOUSE_ACK:10"),
+        )
+        .expect("wheel report forwarded to application");
+
+    terminal
+        .send_text(terminal.deadline(Duration::from_secs(3)), "app-drag\n")
+        .expect("start application drag fixture");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "application drag ready",
+            |screen| screen.contains("MOUSE_READY"),
+        )
+        .expect("application drag mode enabled");
+    terminal
+        .send_bytes(
+            terminal.deadline(Duration::from_secs(3)),
+            b"\x1b[<0;3;2M\x1b[<32;8;2M\x1b[<0;8;2m",
+        )
+        .expect("send drag reports");
+    terminal
+        .wait_for_screen(
+            terminal.deadline(Duration::from_secs(3)),
+            "application drag acknowledgement",
+            |screen| screen.contains("MOUSE_ACK:28"),
+        )
+        .expect("drag reports forwarded to application");
+
+    let shutdown = run_tm(&socket, ["kill-server"]);
+    assert!(shutdown.status.success(), "stop application mouse server");
+    assert_eq!(
+        terminal
+            .wait_for_exit(terminal.deadline(Duration::from_secs(3)))
+            .expect("wait for application mouse detach"),
+        ExitStatus::Code(0)
+    );
+    terminal
+        .assert_terminal_restored(&baseline)
+        .expect("restore terminal after application mouse test");
+    terminal
+        .finish(terminal.deadline(Duration::from_secs(3)))
+        .expect("reap attached client");
 }
 
 #[test]

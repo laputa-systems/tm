@@ -214,7 +214,7 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                                 if let Some(client) = state.clients.get_mut(&client_id) {
                                     client.size = size;
                                 }
-                                state.resize_session(session_id, size);
+                                state.resize_session(session_id, size, true);
                             }
                             state.mark_render_dirty();
                         }
@@ -960,6 +960,43 @@ impl ServerState {
         RENDER_WAKE.notify_all();
     }
 
+    /// The terminal client owns the status row. Windows and their PTYs use
+    /// only the remaining viewport so applications never draw underneath it.
+    /// A one-row terminal cannot host both, so retain its sole row for the
+    /// pane rather than creating an invalid zero-row PTY.
+    fn pane_viewport(&self, size: Size, reserve_status: bool) -> Rect {
+        let size = size.bounded();
+        let status_enabled = !self
+            .global_options
+            .get("status")
+            .is_some_and(|value| !parse_on_off(value).unwrap_or(true));
+        if !reserve_status || !status_enabled || size.rows == 1 {
+            return Rect {
+                cols: size.cols,
+                rows: size.rows,
+                ..Rect::default()
+            };
+        }
+        Rect {
+            y: self
+                .global_options
+                .get("status-position")
+                .is_some_and(|value| value == "top")
+                .then_some(1)
+                .unwrap_or(0),
+            cols: size.cols,
+            rows: size.rows.saturating_sub(1),
+            ..Rect::default()
+        }
+    }
+
+    fn reflow_all_sessions(&mut self) {
+        let session_ids = self.sessions.iter().map(|session| session.id).collect::<Vec<_>>();
+        for session_id in session_ids {
+            self.reflow_session(session_id);
+        }
+    }
+
     fn apply_compiled_interactive_config(&mut self) {
         // `config::COMPILED_OPTIONS` is the sole source of interactive
         // startup settings. Startup must never inspect tmux.conf or TM_CONFIG.
@@ -1394,7 +1431,7 @@ impl ServerState {
     fn attach_target(&mut self, target: Option<&str>, size: Size) -> Result<u64, String> {
         let session_index = self.resolve_session_index(target)?;
         let id = self.sessions[session_index].id;
-        self.resize_session(id, size);
+        self.resize_session(id, size, true);
         Ok(id)
     }
 
@@ -1877,16 +1914,7 @@ impl ServerState {
             && !release
             && !motion
             && base_button == 0
-            && let Some(separator) = window.layout.separator_at(
-                Rect {
-                    x: 0,
-                    y: 0,
-                    cols: window.size.cols,
-                    rows: window.size.rows,
-                },
-                x,
-                y,
-            )
+            && let Some(separator) = window.layout.separator_at(window.layout_rect(), x, y)
         {
             if let Some(client) = self.clients.get_mut(&client_id) {
                 client.mouse_drag_button = Some(base_button);
@@ -3698,7 +3726,8 @@ impl ServerState {
         }
     }
 
-    fn resize_session(&mut self, session_id: u64, size: Size) {
+    fn resize_session(&mut self, session_id: u64, size: Size, reserve_status: bool) {
+        let viewport = self.pane_viewport(size, reserve_status);
         let Some(session) = self
             .sessions
             .iter_mut()
@@ -3708,8 +3737,7 @@ impl ServerState {
         };
         session.size = size.bounded();
         for window in &mut session.windows {
-            window.size = session.size;
-            window.reflow();
+            window.set_viewport(viewport);
             for pane in &pane_iter(window) {
                 let _ = pane.pty.resize(pane.rect_size());
             }
@@ -3717,6 +3745,15 @@ impl ServerState {
     }
 
     fn reflow_session(&mut self, session_id: u64) {
+        let reserve_status = self
+            .clients
+            .values()
+            .any(|client| client.session_id == session_id);
+        let viewport = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| self.pane_viewport(session.size, reserve_status));
         let Some(session) = self
             .sessions
             .iter_mut()
@@ -3724,9 +3761,9 @@ impl ServerState {
         else {
             return;
         };
+        let viewport = viewport.expect("existing session has a pane viewport");
         for window in &mut session.windows {
-            window.size = session.size;
-            window.reflow();
+            window.set_viewport(viewport);
             for pane in &window.panes {
                 let _ = pane.pty.resize(pane.rect_size());
             }
@@ -5287,6 +5324,9 @@ impl ServerState {
                 "prefix" => self.prefix = vec![2],
                 _ => {}
             }
+            if matches!(key, "status" | "status-position") {
+                self.reflow_all_sessions();
+            }
             return Ok(String::new());
         }
         if key == "prefix" {
@@ -5366,6 +5406,9 @@ impl ServerState {
         }
         if key != "buffer-limit" {
             self.global_options.insert(key.to_owned(), value.to_owned());
+            if matches!(key, "status" | "status-position") {
+                self.reflow_all_sessions();
+            }
             return Ok(String::new());
         }
         self.buffer_limit = value
@@ -5783,7 +5826,7 @@ impl ServerState {
         if let Some(attached) = self.clients.get_mut(&client_id) {
             attached.session_id = session_id;
         }
-        self.resize_session(session_id, size);
+        self.resize_session(session_id, size, true);
         Ok(String::new())
     }
 
@@ -6717,12 +6760,7 @@ impl ServerState {
         };
         let window = &mut self.sessions[session_index].windows[window_index];
         if !window.layout.resize(
-            Rect {
-                x: 0,
-                y: 0,
-                cols: window_size.cols,
-                rows: window_size.rows,
-            },
+            window.layout_rect(),
             pane_id,
             axis,
             signed_amount,
@@ -6751,14 +6789,8 @@ impl ServerState {
         else {
             return;
         };
-        let size = window.size;
         let _ = window.layout.set_separator_size(
-            Rect {
-                x: 0,
-                y: 0,
-                cols: size.cols,
-                rows: size.rows,
-            },
+            window.layout_rect(),
             &resize.path,
             resize.axis,
             first_size,
@@ -7708,16 +7740,7 @@ impl ServerState {
             output.extend_from_slice(
                 format!(
                     "\x1b[{};{}H\x1b[K{}",
-                    active.rect.y
-                        + if !self
-                            .global_options
-                            .get("status")
-                            .is_some_and(|value| { !parse_on_off(value).unwrap_or(true) })
-                        {
-                            active.rect.rows.saturating_sub(1)
-                        } else {
-                            active.rect.rows
-                        },
+                    active.rect.y.saturating_add(active.rect.rows),
                     active.rect.x + 1,
                     message
                 )
@@ -7740,7 +7763,6 @@ impl ServerState {
             render_pane_prompt_cursor(
                 &mut output,
                 active.rect,
-                &self.global_options,
                 prompt,
             );
         } else if let Some(active) = window
@@ -9039,15 +9061,7 @@ fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
         return;
     }
     let mut separators = Vec::new();
-    window.layout.separators(
-        Rect {
-            x: 0,
-            y: 0,
-            cols: window.size.cols,
-            rows: window.size.rows,
-        },
-        &mut separators,
-    );
+    window.layout.separators(window.layout_rect(), &mut separators);
     // Keep the escape sequence order stable. A fresh HashMap has a fresh
     // randomized iteration seed, which made otherwise identical frames differ
     // byte-for-byte and defeated the attach loop's redraw suppression.
@@ -9308,17 +9322,9 @@ fn render_status_prompt_cursor(
 fn render_pane_prompt_cursor(
     output: &mut Vec<u8>,
     rect: Rect,
-    options: &HashMap<String, String>,
     prompt: &str,
 ) {
-    let status_enabled = !options
-        .get("status")
-        .is_some_and(|value| !parse_on_off(value).unwrap_or(true));
-    let row = rect.y + if status_enabled {
-        rect.rows.saturating_sub(1)
-    } else {
-        rect.rows
-    };
+    let row = rect.y.saturating_add(rect.rows);
     let col = format_display_width(prompt)
         .min(usize::from(rect.cols.max(1)).saturating_sub(1));
     output.extend_from_slice(
@@ -12351,11 +12357,13 @@ fn format_pane(
         ),
         (
             "pane_at_top",
-            if pane.rect.y == 0 { "1" } else { "0" }.to_owned(),
+            if pane.rect.y == window.origin_y { "1" } else { "0" }.to_owned(),
         ),
         (
             "pane_at_bottom",
-            if pane.rect.y.saturating_add(pane.rect.rows) == window.size.rows {
+            if pane.rect.y.saturating_add(pane.rect.rows)
+                == window.origin_y.saturating_add(window.size.rows)
+            {
                 "1"
             } else {
                 "0"
@@ -14367,9 +14375,117 @@ mod tests {
     }
 
     #[test]
+    fn top_status_line_translates_application_mouse_coordinates_to_the_pane_viewport() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .set_global_option("status-position", "top", false)
+            .expect("move status to top");
+        state
+            .create_session(
+                &shared,
+                Some("top-status-mouse"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(40, 6),
+            )
+            .expect("create top status mouse session");
+        state
+            .split_window(
+                &shared,
+                Some("top-status-mouse:0"),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                None,
+                &[],
+                None,
+            )
+            .expect("split top status mouse session");
+        let right_pane = state.sessions[0].windows[0].panes[1].id;
+        state
+            .register_client(Some("top-status-mouse"), Size::new(40, 6))
+            .expect("attach top status mouse client");
+        state
+            .find_pane_mut(right_pane)
+            .expect("right application mouse pane")
+            .parser
+            .process(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+        let session_id = state.sessions[0].id;
+
+        // Terminal row 2 is the first row below a top status line. The
+        // application must receive its own first row, not terminal row 2.
+        assert_eq!(
+            state.mouse_passthrough_target(session_id, 25, 2),
+            Some((
+                right_pane,
+                4,
+                1,
+                vt100::MouseProtocolEncoding::Sgr,
+            ))
+        );
+        assert_eq!(encode_sgr_mouse(0, 4, 1, false), b"\x1b[<0;4;1M");
+    }
+
+    #[test]
+    fn status_line_reserves_a_row_from_each_pane_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("status-height"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(20, 6),
+            )
+            .expect("create status-height session");
+        state
+            .register_client(Some("status-height"), Size::new(20, 6))
+            .expect("attach status-height client");
+
+        let pane = &state.sessions[0].windows[0].panes[0];
+        assert_eq!(pane.rect.y, 0);
+        assert_eq!(pane.rect.rows, 5);
+        assert_eq!(pane.parser.screen().size(), (5, 20));
+
+        state
+            .set_global_option("status-position", "top", false)
+            .expect("move status to top");
+        let pane = &state.sessions[0].windows[0].panes[0];
+        assert_eq!(pane.rect.y, 1);
+        assert_eq!(pane.rect.rows, 5);
+        assert_eq!(pane.parser.screen().size(), (5, 20));
+
+        state
+            .set_global_option("status", "off", false)
+            .expect("hide status");
+        let pane = &state.sessions[0].windows[0].panes[0];
+        assert_eq!(pane.rect.y, 0);
+        assert_eq!(pane.rect.rows, 6);
+        assert_eq!(pane.parser.screen().size(), (6, 20));
+    }
+
+    #[test]
     fn exited_pane_reflows_the_surviving_panes_headlessly() {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
+        state
+            .set_global_option("status", "off", false)
+            .expect("hide status for pane reflow");
         state
             .create_session(
                 &shared,
@@ -16785,6 +16901,9 @@ bind -r Right next-window
         state
             .set_global_option("mouse", "on", false)
             .expect("enable mouse");
+        state
+            .set_global_option("status", "off", false)
+            .expect("hide status for scrollbar geometry");
         state
             .create_session(
                 &shared,

@@ -701,6 +701,10 @@ pub(crate) struct Window {
     pub id: u64,
     pub index: u32,
     pub name: String,
+    /// The pane viewport excludes the client-owned status row. `size` is the
+    /// viewport dimensions; this origin keeps pane and border coordinates in
+    /// client-terminal space when the status bar is at the top.
+    pub origin_y: u16,
     pub size: Size,
     pub layout: Layout,
     pub panes: Vec<Pane>,
@@ -723,6 +727,7 @@ impl Window {
             id,
             index,
             name,
+            origin_y: 0,
             size: size.bounded(),
             layout: Layout::Leaf(pane.id),
             active_pane: pane.id,
@@ -751,6 +756,7 @@ impl Window {
             id: self.id,
             index: self.index,
             name: self.name.clone(),
+            origin_y: self.origin_y,
             size: self.size,
             layout: self.layout.clone(),
             panes: self.panes.iter().map(Pane::linked_clone).collect(),
@@ -768,20 +774,12 @@ impl Window {
 
     pub(crate) fn reflow(&mut self) {
         let mut rectangles = HashMap::new();
-        self.layout.rectangles(
-            Rect {
-                x: 0,
-                y: 0,
-                cols: self.size.cols,
-                rows: self.size.rows,
-            },
-            &mut rectangles,
-        );
+        self.layout.rectangles(self.layout_rect(), &mut rectangles);
         for pane in &mut self.panes {
             if let Some(rect) = rectangles.get(&pane.id).copied() {
                 pane.rect = match pane.full_axis {
                     Some(Axis::Horizontal) => Rect {
-                        y: 0,
+                        y: self.origin_y,
                         rows: self.size.rows,
                         ..rect
                     },
@@ -795,7 +793,7 @@ impl Window {
                 if self.zoomed && pane.id == self.active_pane {
                     pane.rect = Rect {
                         x: 0,
-                        y: 0,
+                        y: self.origin_y,
                         cols: self.size.cols,
                         rows: self.size.rows,
                     };
@@ -812,6 +810,24 @@ impl Window {
                 }
             }
         }
+    }
+
+    /// The rectangle addressed by this window's layout tree. Pane rectangles
+    /// remain in client-terminal coordinates so mouse events and rendering
+    /// share one coordinate system even with a top status line.
+    pub(crate) fn layout_rect(&self) -> Rect {
+        Rect {
+            x: 0,
+            y: self.origin_y,
+            cols: self.size.cols,
+            rows: self.size.rows,
+        }
+    }
+
+    pub(crate) fn set_viewport(&mut self, rect: Rect) {
+        self.origin_y = rect.y;
+        self.size = Size::new(rect.cols, rect.rows).bounded();
+        self.reflow();
     }
 
     pub(crate) fn pane_for_index(&self, index: u32) -> Option<u64> {
