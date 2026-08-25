@@ -764,6 +764,15 @@ impl AttachedPrompt {
         String::from_utf8_lossy(&self.input).into_owned()
     }
 
+    fn cursor_display(&self) -> String {
+        let input = self.input.get(..self.cursor).unwrap_or(&self.input);
+        format!(
+            "{}{}",
+            self.label,
+            display_prompt_input(input)
+        )
+    }
+
     fn all_inputs(&self) -> Vec<String> {
         let mut inputs = self.accepted_inputs.clone();
         inputs.push(self.current_input());
@@ -7319,22 +7328,31 @@ impl ServerState {
         let panes_mode = client_id
             .and_then(|client_id| self.clients.get(&client_id))
             .and_then(|client| client.panes_mode.clone());
-        let copy_prompt_message = client_id.and_then(|client_id| {
-            let session_id = self.clients.get(&client_id)?.session_id;
-            self.sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .and_then(|session| session.active_window())
-                .and_then(|window| window.active())
-                .and_then(|pane| pane.copy_mode.as_ref())
-                .and_then(CopyModeState::prompt_display)
-        });
+        let (copy_prompt_message, copy_prompt_cursor) = client_id
+            .and_then(|client_id| {
+                let session_id = self.clients.get(&client_id)?.session_id;
+                self.sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .and_then(|session| session.active_window())
+                    .and_then(|window| window.active())
+                    .and_then(|pane| pane.copy_mode.as_ref())
+                    .map(|mode| (mode.prompt_display(), mode.prompt_cursor_display()))
+            })
+            .unwrap_or((None, None));
         let pane_prompt_message = client_id.and_then(|client_id| {
             self.clients
                 .get(&client_id)
                 .and_then(|client| client.prompt.as_ref())
                 .filter(|prompt| prompt.pane)
                 .map(|prompt| format!("{}{}", prompt.label, display_prompt_input(&prompt.input)))
+        });
+        let pane_prompt_cursor = client_id.and_then(|client_id| {
+            self.clients
+                .get(&client_id)
+                .and_then(|client| client.prompt.as_ref())
+                .filter(|prompt| prompt.pane)
+                .map(AttachedPrompt::cursor_display)
         });
         let session = self
             .sessions
@@ -7355,6 +7373,26 @@ impl ServerState {
                 })
             })
             .or(copy_prompt_message);
+        let status_prompt_cursor = if message.is_none()
+            && !self
+                .global_options
+                .get("status")
+                .is_some_and(|value| !parse_on_off(value).unwrap_or(true))
+        {
+            client_id
+                .and_then(|client_id| {
+                    self.clients.get(&client_id).and_then(|client| {
+                        client
+                            .prompt
+                            .as_ref()
+                            .filter(|prompt| !prompt.pane)
+                            .map(AttachedPrompt::cursor_display)
+                    })
+                })
+                .or(copy_prompt_cursor)
+        } else {
+            None
+        };
         if let Some(status_window) = session
             .windows
             .iter()
@@ -7613,7 +7651,26 @@ impl ServerState {
                 .as_bytes(),
             );
         }
-        if let Some(active) = window
+        // The status bar is drawn with ordinary cursor-addressed output. Draw
+        // it before restoring the active pane cursor so the terminal's
+        // hardware cursor remains where the pane application owns it rather
+        // than stranded on the status row.
+        output.extend_from_slice(&status_output);
+        if let Some(prompt) = status_prompt_cursor.as_deref() {
+            render_status_prompt_cursor(&mut output, session.size, &self.global_options, prompt);
+        } else if let Some(prompt) = pane_prompt_cursor.as_deref()
+            && let Some(active) = window
+                .panes
+                .iter()
+                .find(|pane| pane.id == window.active_pane)
+        {
+            render_pane_prompt_cursor(
+                &mut output,
+                active.rect,
+                &self.global_options,
+                prompt,
+            );
+        } else if let Some(active) = window
             .panes
             .iter_mut()
             .find(|pane| pane.id == window.active_pane)
@@ -7659,7 +7716,6 @@ impl ServerState {
                 );
             }
         }
-        output.extend_from_slice(&status_output);
         if let Some(tree_mode) = tree_mode.as_ref() {
             render_tree_mode_overlay(&mut output, tree_mode, session.size);
         } else if let Some(buffer_mode) = buffer_mode.as_ref() {
@@ -9046,14 +9102,20 @@ fn render_screen_delta(
         return Err(());
     }
     let (rows, cols) = current.size();
+    let changed_rows = (0..rows)
+        .filter(|row| (0..cols).any(|col| previous.cell(*row, col) != current.cell(*row, col)))
+        .collect::<Vec<_>>();
+    let changed = !changed_rows.is_empty();
+    let cursor_changed = previous.cursor_position() != current.cursor_position()
+        || previous.hide_cursor() != current.hide_cursor();
     let mut output = Vec::new();
-    let mut changed = false;
-    for row in 0..rows {
-        let row_changed = (0..cols).any(|col| previous.cell(row, col) != current.cell(row, col));
-        if !row_changed {
-            continue;
-        }
-        changed = true;
+    // Match tmux's redraw discipline: suppress a visible cursor before any
+    // changed rows are written, then restore the final cursor state once.
+    // When the cursor was already hidden, avoid emitting an idempotent hide.
+    if changed && !previous.hide_cursor() {
+        output.extend_from_slice(b"\x1b[?25l");
+    }
+    for row in changed_rows {
         output.extend_from_slice(format!("\x1b[{};1H", row.saturating_add(1)).as_bytes());
         let mut cell_style = CellStyle::default();
         for col in 0..cols {
@@ -9073,23 +9135,81 @@ fn render_screen_delta(
         }
         output.extend_from_slice(b"\x1b[0m\x1b[K");
     }
-    let cursor_changed = previous.cursor_position() != current.cursor_position()
-        || previous.hide_cursor() != current.hide_cursor();
-    if cursor_changed || changed {
-        output.extend_from_slice(b"\x1b[?25l");
-        if !current.hide_cursor() {
+    if changed && !current.hide_cursor() {
+        let (row, col) = current.cursor_position();
+        output.extend_from_slice(
+            format!(
+                "\x1b[{};{}H\x1b[?25h",
+                row.saturating_add(1),
+                col.saturating_add(1)
+            )
+            .as_bytes(),
+        );
+    } else if !changed && cursor_changed {
+        if current.hide_cursor() {
+            if !previous.hide_cursor() {
+                output.extend_from_slice(b"\x1b[?25l");
+            }
+        } else {
             let (row, col) = current.cursor_position();
             output.extend_from_slice(
-                format!(
-                    "\x1b[{};{}H\x1b[?25h",
-                    row.saturating_add(1),
-                    col.saturating_add(1)
-                )
-                .as_bytes(),
+                format!("\x1b[{};{}H", row.saturating_add(1), col.saturating_add(1))
+                    .as_bytes(),
             );
+            if previous.hide_cursor() {
+                output.extend_from_slice(b"\x1b[?25h");
+            }
         }
     }
     Ok((!output.is_empty()).then_some(output))
+}
+
+/// Restore a status prompt's editing cursor after its row has been painted.
+/// The status prompt owns the client cursor while command or copy-mode input
+/// is active; otherwise the active pane owns it.
+fn render_status_prompt_cursor(
+    output: &mut Vec<u8>,
+    size: Size,
+    options: &HashMap<String, String>,
+    prompt: &str,
+) {
+    let row = if options
+        .get("status-position")
+        .is_some_and(|value| value == "top")
+    {
+        1
+    } else {
+        size.rows.max(1)
+    };
+    let col = format_display_width(prompt)
+        .min(usize::from(size.cols.max(1)).saturating_sub(1));
+    output.extend_from_slice(format!("\x1b[{row};{}H\x1b[?25h", col + 1).as_bytes());
+}
+
+fn render_pane_prompt_cursor(
+    output: &mut Vec<u8>,
+    rect: Rect,
+    options: &HashMap<String, String>,
+    prompt: &str,
+) {
+    let status_enabled = !options
+        .get("status")
+        .is_some_and(|value| !parse_on_off(value).unwrap_or(true));
+    let row = rect.y + if status_enabled {
+        rect.rows.saturating_sub(1)
+    } else {
+        rect.rows
+    };
+    let col = format_display_width(prompt)
+        .min(usize::from(rect.cols.max(1)).saturating_sub(1));
+    output.extend_from_slice(
+        format!(
+            "\x1b[{};{}H\x1b[?25h",
+            row,
+            rect.x + u16::try_from(col).unwrap_or(u16::MAX) + 1
+        )
+        .as_bytes(),
+    );
 }
 
 fn render_status_line(
@@ -13938,6 +14058,77 @@ mod tests {
     }
 
     #[test]
+    fn rendered_status_line_preserves_active_pane_cursor_headlessly() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                Some("render-cursor"),
+                false,
+                None,
+                None,
+                None,
+                true,
+                &[],
+                None,
+                Size::new(20, 6),
+            )
+            .expect("create render cursor session");
+        let pane = state.sessions[0].windows[0].panes[0].id;
+        state
+            .find_pane_mut(pane)
+            .expect("render cursor pane")
+            .parser
+            .process(b"shell$ ");
+
+        let session_id = state.sessions[0].id;
+        let rendered = state
+            .render_session(session_id, None)
+            .expect("render cursor session");
+        let mut terminal = Parser::new(6, 20, 100);
+        terminal.process(&rendered);
+
+        assert_eq!(
+            terminal.screen().cursor_position(),
+            (0, 7),
+            "status-line output must not steal the shell cursor"
+        );
+        assert!(
+            !terminal.screen().hide_cursor(),
+            "the active pane cursor must remain visible"
+        );
+    }
+
+    #[test]
+    fn incremental_render_hides_cursor_before_changed_rows_headlessly() {
+        let mut previous = Parser::new(2, 20, 0);
+        previous.process(b"old");
+        let mut current = Parser::new(2, 20, 0);
+        current.process(b"new");
+
+        let delta = render_screen_delta(previous.screen(), current.screen())
+            .expect("compatible terminal states")
+            .expect("changed row delta");
+        assert!(
+            delta.starts_with(b"\x1b[?25l"),
+            "incremental redraw must hide a visible cursor before painting rows"
+        );
+
+        previous.process(b"\x1b[?25l");
+        current.process(b"\x1b[?25l");
+        let hidden_delta = render_screen_delta(previous.screen(), current.screen())
+            .expect("compatible hidden terminal states")
+            .expect("changed hidden row delta");
+        assert!(
+            !hidden_delta
+                .windows(b"\x1b[?25l".len())
+                .any(|window| window == b"\x1b[?25l"),
+            "incremental redraw must not repeat an already-hidden cursor"
+        );
+    }
+
+    #[test]
     fn idle_attached_delta_is_empty_headlessly() {
         let mut fixture = RenderBenchmark::new(80, 24, 1);
         let initial = fixture.render_delta_frame();
@@ -15054,6 +15245,14 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
                 .windows(b"name of new window:".len())
                 .any(|window| window == b"name of new window:")
         );
+        let mut prompt_terminal = Parser::new(8, 40, 0);
+        prompt_terminal.process(&prompt_render);
+        assert_eq!(
+            prompt_terminal.screen().cursor_position(),
+            (7, 19),
+            "status command prompts own the client cursor"
+        );
+        assert!(!prompt_terminal.screen().hide_cursor());
         state.handle_client_input(client_id, b"renamed\r", &shared);
         assert_eq!(
             state
@@ -15248,6 +15447,11 @@ bind p command-prompt -P -p "pane: " "set -g @pane '%%'"
         assert!(
             !status_row.contains("pane: "),
             "status prompt row: {status_row:?}"
+        );
+        assert_eq!(
+            terminal.screen().cursor_position(),
+            (6, 6),
+            "pane prompts own the client cursor"
         );
         state.handle_client_input(client_id, b"z\r", &shared);
         assert_eq!(state.global_options.get("@pane"), Some(&"z".to_owned()));
@@ -15476,6 +15680,13 @@ bind -T copy-mode C-a send -X end-of-line
             rendered
                 .windows(b"(search) ZabXcdY".len())
                 .any(|window| window == b"(search) ZabXcdY")
+        );
+        let mut prompt_terminal = Parser::new(8, 40, 0);
+        prompt_terminal.process(&rendered);
+        assert_eq!(
+            prompt_terminal.screen().cursor_position(),
+            (7, 16),
+            "copy-mode status prompts own the client cursor"
         );
         assert_eq!(
             state

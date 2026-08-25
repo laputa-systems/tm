@@ -1328,6 +1328,29 @@ impl CopyModeState {
         Some(format!("{label} {}", display_prompt_input(&prompt.input)))
     }
 
+    /// Return the prompt text through the editing cursor. Attached rendering
+    /// uses this to place the client's hardware cursor in the status prompt,
+    /// matching the pane cursor handoff used by tmux.
+    pub(crate) fn prompt_cursor_display(&self) -> Option<String> {
+        let prompt = self.prompt.as_ref()?;
+        let label = match prompt.kind {
+            CopyPromptKind::SearchForward
+            | CopyPromptKind::SearchBackward
+            | CopyPromptKind::SearchForwardIncremental
+            | CopyPromptKind::SearchBackwardIncremental => "(search)",
+            CopyPromptKind::GotoLine => "(goto line)",
+            CopyPromptKind::JumpForward => "(jump forward)",
+            CopyPromptKind::JumpBackward => "(jump backward)",
+            CopyPromptKind::JumpToForward => "(jump to forward)",
+            CopyPromptKind::JumpToBackward => "(jump to backward)",
+        };
+        let input = prompt.input.get(..prompt.cursor).unwrap_or(&prompt.input);
+        Some(format!(
+            "{label} {}",
+            display_prompt_input(input)
+        ))
+    }
+
     fn record_prompt_history(&mut self, input: &[u8]) {
         if input.is_empty() || self.prompt_history.last().is_some_and(|last| last == input) {
             return;
