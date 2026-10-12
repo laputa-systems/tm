@@ -17545,7 +17545,10 @@ bind -r Right next-window
         let command = vec![
             "sh".to_owned(),
             "-c".to_owned(),
-            "stty raw -echo; exec cat -v".to_owned(),
+            // The tty's own control-character echo renders the pasted escape
+            // bytes as ^[ immediately; `cat -v` would hold them in stdio
+            // buffering on BusyBox until a newline.
+            "stty raw echo echoctl; exec sleep 600".to_owned(),
         ];
         let client_id;
         {

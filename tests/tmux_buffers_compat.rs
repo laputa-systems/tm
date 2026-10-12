@@ -79,7 +79,10 @@ fn buffers_match_the_headless_tmux_command_contract() {
         "--",
         "sh",
         "-c",
-        "stty raw -echo; exec cat -v",
+        // The tty's own control-character echo renders pasted bytes as ^M and
+        // ^[ immediately. A reader such as `cat -v` would depend on its
+        // stdio buffering, which BusyBox holds until a newline.
+        "stty raw echo echoctl; exec sleep 600",
     ]);
 
     tm.ok(&["set-buffer", "one"]);
