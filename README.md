@@ -1,71 +1,37 @@
 # tm
 
-`tm` is the deliberately small, Unix-only core of a tmux-style terminal
-multiplexer. A local daemon owns sessions, windows, panes, PTYs, and terminal
-state; the foreground client attaches to it over a Unix socket.
+`tm` is a small Unix terminal multiplexer with sessions, windows, and panes.
+Sessions run in a local daemon and can stay open after you detach.
 
-The supported interactive surface is compiled into `src/config.rs`, rather
-than loaded from a user configuration file or presented as universal tmux
-parity. The compiled contract covers startup options (including the pane
-`TERM` value from `default-terminal`), a custom `C-a` prefix,
-repeatable key bindings, chained commands, command prompts,
-window and pane navigation, relative window swapping, pane movement, layouts,
-and the status line. Copy mode remains part of the core because it
-is a primary interactive tmux contract, not because every tmux feature is
-supported.
+## Install
 
-Web sharing, SDKs, Windows support, runtime config plugins, hooks, control mode,
-menus/popups, and unrelated advanced commands are intentionally outside this
-contract. They should only be added when the user's configuration or a focused
-regression test gives the core a reason to carry them.
+Download a zip from [GitHub Releases](https://github.com/laputa-systems/tm/releases).
+The release builds include macOS arm64 and Linux x86_64 and arm64 binaries.
+Linux offers dynamic and static musl builds; use the static binary if musl is
+not installed. Unzip the matching archive, rename its executable to `tm`, and
+put it in a directory on your `PATH`.
 
-## Usage
+## Use
 
 ```sh
-cargo run                         # create session 0 and attach
-cargo run -- new-session -d -s work
-cargo run -- split-window -h -t work
-cargo run -- ls
-cargo run -- kill-session -t work
-cargo run -- attach-session -t work
+tm                              # create a session and attach
+tm new-session -d -s work       # create a detached session
+tm split-window -h -t work      # split its window into side-by-side panes
+tm ls                           # list sessions
+tm attach-session -t work       # attach to the session
+tm kill-session -t work
 ```
 
-The daemon socket defaults to `$TMPDIR/tm-$UID.sock`. Set `TM_SOCKET` or
-use `-S path` to choose another local socket.
+The default socket is `$TMPDIR/tm-$UID.sock`. Pass `-S path` to select another
+socket. Setting `TM_SOCKET` also selects a socket; a daemon first started with
+that variable uses the baseline settings and bindings.
 
-The daemon persists independently of the client process. After rebuilding `tm`,
-stop an existing daemon (`tm kill-server`) before starting a new session so the
-attached client is served by the rebuilt renderer and key table.
+The normal prefix is `C-a`. For example, `C-a %` and `C-a "` split panes,
+`C-a h`, `C-a j`, `C-a k`, and `C-a l` move between panes, `C-a d` detaches,
+and `C-a [` enters copy mode. A server first started with `TM_SOCKET` uses the
+baseline bindings, including the `C-b` prefix. Settings and bindings are built
+in; `tm` does not read tmux configuration files or `TM_CONFIG`.
 
-The normal daemon starts with the settings and bindings from `src/config.rs`.
-An explicit `TM_SOCKET` starts an isolated vanilla daemon for tooling and test
-harnesses. `TM_CONFIG` is ignored; tm never reads a tmux configuration file.
-`source-file` is unavailable because changing the interactive contract requires
-an explicit source change and rebuild.
-
-The implementation currently targets macOS and Linux. The Unix PTY and
-terminal interfaces are kept in `pty.rs` and `terminal.rs`; raw mode, terminal
-size, and PTY resize use `rustix::termios`.
-
-## Compatibility checks
-
-The tests are deterministic contracts for the implemented core and compiled
-interactive behavior. The headless suites cover session, target, pane, window,
-PTY, buffer, capture, copy-mode, chooser-mode, format, client-registry, and
-run-shell behavior. `tests/attached_client_pty.rs` is the real
-terminal boundary: it launches `tm attach-session` through `openpty`, drives input
-and resize events, and parses rendered output with `vt100`. Its fixture is
-`tests/support/pty_fixture.rs`; it uses marker barriers and never invokes the
-platform `script` utility. Every integration test owns a private `TM_SOCKET`; the
-suite never contacts tmux or any existing tmux session.
-
-Run the tm-only checks with:
-
-```sh
-cargo test
-```
-
-Passing these tests establishes compatibility for the exercised flows. It is
-not a claim that the deliberately smaller command surface implements every
-tmux CLI feature; the durable compatibility target is the configured workflow
-described above.
+Run `tm help` for the command summary. Report problems in the
+[issue tracker](https://github.com/laputa-systems/tm/issues). The project is
+licensed under [MIT](LICENSE).

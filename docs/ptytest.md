@@ -1,25 +1,18 @@
 # PTY integration tests
 
-`tests/attached_client_pty.rs` uses `ptytest` for the outer kernel PTY. Keep
-tm daemon/socket setup and fixture protocol barriers in this repository; do not
-add a second PTY spawn, polling, or cleanup helper.
+Run the real attached-client tests with `cargo test --test attached_client_pty`.
+[`tests/attached_client_pty.rs`](../tests/attached_client_pty.rs) uses a
+hermetic environment, a real outer PTY managed by `ptytest`, and the pinned
+`xterm-minimal-v1` protocol profile. Keep daemon/socket setup and fixture
+barriers in this repository; use fixture markers or visible terminal state
+instead of settle sleeps.
 
-Run the focused case with `cargo test --test attached_client_pty`. It uses a
-hermetic test environment, an audited `xterm-minimal-v1` profile, and named
-semantic screen barriers. Do not add settle sleeps: wait for the fixture marker
-or visible terminal state instead.
+The scenarios cover initial attachment, pane rendering and colors, copy-mode
+scrolling, border resize, forwarding mouse reports to a pane application, and
+opening a split without losing existing pane contents. Stable captures live in
+[`tests/snapshots/`](../tests/snapshots/). Snapshot updates require
+`PTYTEST_UPDATE_SNAPSHOTS=1`.
 
-The attached-client scenarios cover the single-pane lifecycle, an attached
-client split regression, and a split-pane capture: pane borders and
-active-border color, SGR cell colors, wheel scrolling into copy mode, and
-dragging a border to resize it. The
-`attached_client_forwards_application_mouse_events_without_entering_copy_mode`
-scenario covers the boundary where a pane application enables SGR mouse
-reporting: wheel and drag reports must reach that pane rather than entering tm
-copy mode. The split scenario stores its stable semantic captures in
-`tests/snapshots/`.
-
-On a crate-owned failure, inspect `target/ptytest-failures/<scenario>-*/` for
-exact input/output, events, semantic screen, and redacted configuration.
-Snapshots, if a future attached-client scenario needs one, live beside that
-scenario and are updated only with `PTYTEST_UPDATE_SNAPSHOTS=1`.
+On failure, inspect `target/ptytest-failures/<scenario>-*/` for captured
+input/output, events, semantic screen state, and scenario metadata in
+`configuration.txt`.
