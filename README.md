@@ -6,9 +6,8 @@ Sessions run in a local daemon and can stay open after you detach.
 ## Install
 
 Download a zip from [GitHub Releases](https://github.com/laputa-systems/tm/releases).
-The release builds include macOS arm64 and Linux x86_64 and arm64 binaries.
-Linux offers dynamic and static musl builds; use the static binary if musl is
-not installed. Unzip the matching archive, rename its executable to `tm`, and
+The release builds include macOS arm64 and statically linked Linux x86_64 and
+arm64 binaries. Unzip the matching archive, rename its executable to `tm`, and
 put it in a directory on your `PATH`.
 
 ## Use
