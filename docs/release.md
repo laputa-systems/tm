@@ -14,5 +14,5 @@ The workflow packages each executable as a zip and creates a prerelease named
 
 For local builds, `make release TARGET=<target>` builds the release. Run
 `make verify-release TARGET=<target>` to check Linux static linking. On
-macOS, `make install` builds the default target, copies it to `~/usr/bin/tm`,
+macOS, `make install` builds the default target, copies it to `~/.local/bin/tm`,
 and applies an ad hoc code signature.
