@@ -998,8 +998,6 @@ impl ServerState {
     }
 
     fn apply_compiled_interactive_config(&mut self) {
-        // `config::COMPILED_OPTIONS` is the sole source of interactive
-        // startup settings. Startup must never inspect tmux.conf or TM_CONFIG.
         for &(key, value) in config::COMPILED_OPTIONS {
             self.set_global_option(key, value, false)
                 .expect("compiled option must be valid");
@@ -5556,14 +5554,9 @@ impl ServerState {
         if name.is_empty() || name.contains('=') || name.contains('\0') {
             return Err("invalid environment variable name".to_owned());
         }
-        // The process environment itself is never mutated: `std::env::set_var`
-        // is unsafe in edition 2024 because setenv races with getenv in a
-        // multithreaded process, and rustix deliberately offers no replacement
-        // (it is not a syscall). Instead `self.environment` is applied
-        // explicitly to spawned children: pane PTYs receive it in
-        // `Pty::spawn`, and each helper `Command::new("/bin/sh")` site passes
-        // it via `.envs`, preserving tmux's "affects future spawned shells"
-        // semantics.
+        // `std::env::set_var` is unsafe here: `setenv` races with `getenv` in
+        // other threads, and rustix does not wrap it. Spawned children receive
+        // `self.environment` instead.
         if remove {
             self.environment.remove(name);
         } else {
@@ -9062,9 +9055,6 @@ fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
     }
     let mut separators = Vec::new();
     window.layout.separators(window.layout_rect(), &mut separators);
-    // Keep the escape sequence order stable. A fresh HashMap has a fresh
-    // randomized iteration seed, which made otherwise identical frames differ
-    // byte-for-byte and defeated the attach loop's redraw suppression.
     let mut cells = BTreeMap::<(u16, u16), u8>::new();
     for (x, y, axis) in separators {
         let bit = match axis {

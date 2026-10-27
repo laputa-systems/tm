@@ -163,8 +163,8 @@ impl Pty {
         if self.is_empty() {
             return;
         }
-        // SAFETY: signaling an already-exited process group is harmless; the
-        // daemon deliberately does not reuse the pid as a process identity.
+        // SAFETY: `pid` is the child this process forked and has not reaped, so
+        // the id still names that process group.
         unsafe {
             libc::kill(-self.pid, libc::SIGTERM);
             libc::kill(-self.pid, libc::SIGHUP);

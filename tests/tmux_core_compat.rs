@@ -1,14 +1,5 @@
 #![cfg(unix)]
 
-//! Safe ports of the core portions of tmux's `regress/` suite.
-//!
-//! The upstream shell scripts are an excellent behavioral specification, but
-//! they assume tmux's complete command surface and often use control mode,
-//! formats, hooks, or nested tmux clients. These tests keep the session,
-//! target, pane, window, PTY, and VT behavior that tm claims today. Every
-//! test owns a private TM_SOCKET and cleans it up through `kill-server`; no
-//! tmux executable or tmux socket is consulted.
-
 use std::fs;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};

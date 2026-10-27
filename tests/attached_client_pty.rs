@@ -1,16 +1,5 @@
 #![cfg(unix)]
 
-//! Deterministic end-to-end coverage for the real attached client.
-//!
-//! ```text
-//! fixture PTY -> daemon reader -> vt100 pane state -> renderer
-//!     -> attach client raw stdout -> ptytest semantic screen
-//! ```
-//!
-//! `ptytest` owns the outer kernel PTY, process group, nonblocking I/O, and
-//! semantic terminal model. This test retains only tm's daemon/socket setup
-//! and its fixture-specific output barriers.
-
 use ptytest::{Color, CommandSpec, ExitStatus, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
 use std::fs;
 use std::process::{Command, Output};

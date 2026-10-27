@@ -1,8 +1,5 @@
 #![cfg(unix)]
 
-//! Headless ports of the scroll and selection portions of tmux's copy-mode
-//! regressions. The tests use private tm sockets and never invoke tmux.
-
 use std::fs;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};

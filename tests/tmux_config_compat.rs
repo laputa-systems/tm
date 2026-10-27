@@ -1,9 +1,5 @@
 #![cfg(unix)]
 
-//! Interactive behavior is compiled into tm rather than loaded from a file.
-//! This test proves the daemon ignores a `TM_CONFIG` path even when one is
-//! present in its environment.
-
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -1,8 +1,5 @@
 #![cfg(unix)]
 
-//! Headless ports of the command-side paste-buffer regressions. The daemon is
-//! isolated with a per-test socket and no tmux client or socket is consulted.
-
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
