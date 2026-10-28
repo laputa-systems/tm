@@ -64,6 +64,7 @@ impl Pty {
         let cwd_c = cwd
             .map(|path| CString::new(path.to_string_lossy().as_bytes()).map_err(invalid_command))
             .transpose()?;
+        #[cfg_attr(target_os = "linux", allow(unused_mut))]
         let mut winsize = libc::winsize {
             ws_row: size.rows.max(1),
             ws_col: size.cols.max(1),
@@ -72,6 +73,12 @@ impl Pty {
         };
         let mut master: RawFd = -1;
         let mut slave: RawFd = -1;
+        // openpty takes a const winsize pointer on Linux but a mutable one
+        // on macOS, so the pointer mutability follows the target.
+        #[cfg(target_os = "linux")]
+        let winp = &raw const winsize;
+        #[cfg(not(target_os = "linux"))]
+        let winp = &raw mut winsize;
 
         // SAFETY: openpty initializes both descriptors when it succeeds. The
         // optional name, termios, and pixel geometry are intentionally absent.
@@ -81,7 +88,7 @@ impl Pty {
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut winsize,
+                winp,
             )
         };
         if result == -1 {
@@ -217,6 +224,11 @@ fn child_setup(
     unsafe {
         libc::close(master);
         libc::setsid();
+        // TIOCSCTTY already has the ioctl request type on Linux but needs a
+        // conversion on other targets.
+        #[cfg(target_os = "linux")]
+        libc::ioctl(slave, libc::TIOCSCTTY, 0);
+        #[cfg(not(target_os = "linux"))]
         libc::ioctl(slave, libc::TIOCSCTTY.into(), 0);
         libc::dup2(slave, libc::STDIN_FILENO);
         libc::dup2(slave, libc::STDOUT_FILENO);
