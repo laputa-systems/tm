@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -69,17 +70,25 @@ fn binding_table(bindings: &[config::CompiledBinding]) -> HashMap<Vec<u8>, Confi
         .collect()
 }
 
-pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
+fn ensure_socket_parent(path: &Path) -> io::Result<()> {
+    let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    if parent.exists() {
+        return Ok(());
     }
+    fs::create_dir_all(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
+    ensure_socket_parent(path)?;
     if path.exists() {
         let _ = fs::remove_file(path);
     }
     let listener = UnixListener::bind(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     let mut initial_state = ServerState::new();
     // A private `TM_SOCKET` remains an isolated vanilla server for tests and
@@ -18268,5 +18277,45 @@ bind -r Right next-window
             replayed.screen().cursor_position(),
             pane.parser.screen().cursor_position()
         );
+    }
+
+    #[test]
+    fn missing_socket_parent_is_created_private() {
+        let base = std::env::temp_dir().join(format!(
+            "tm-unit-perm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let socket = base.join("nested").join("tm.sock");
+        ensure_socket_parent(&socket).expect("create missing parent");
+        let mode = std::fs::metadata(base.join("nested"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn existing_socket_parent_mode_is_preserved() {
+        let base = std::env::temp_dir().join(format!(
+            "tm-unit-keep-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = base.join("tm.sock");
+        ensure_socket_parent(&socket).expect("existing parent is fine");
+        let mode = std::fs::metadata(&base).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

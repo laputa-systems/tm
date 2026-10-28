@@ -28,15 +28,6 @@ Next: 8
 - **Fix with:** lifecycle-concurrency
 - **Effort:** S
 
-### TMUX-4 · P3 · The listening socket keeps the process umask
-
-- **Area:** Security
-- **Where:** `src/server.rs:71`, `src/server.rs:38`, `src/command.rs:28`
-- **Problem:** `UnixListener::bind` never changes the socket mode. A Python `bind` on this host created mode `0777 & ~umask` (`0755` at umask `022`, `0777` at umask `0`). Connecting required write permission: mode `0200` connected and mode `0500` returned `EACCES`. With umask `0`, or any umask that leaves group or other write, another user who can reach the path can connect and inject input. That path is the default socket on Linux `/tmp`, and `tm -L <label>` always uses `temp_dir()/tm-<label>.sock`. Default umask `022` does not grant other-write, and this Mac's `TMPDIR` is mode `0700`, so the default socket is not exposed here. A second uid was not available, so the cross-user connect itself was not run.
-- **Recommendation:** After `bind`, set the socket mode to `0600`. Create a missing parent directory as `0700`.
-- **Fix with:** os-boundaries
-- **Effort:** S
-
 ### TMUX-5 · P3 · Pane spawn calls setenv after fork in a multithreaded daemon
 
 - **Area:** Concurrency
