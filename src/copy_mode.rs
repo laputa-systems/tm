@@ -424,18 +424,18 @@ pub(crate) struct CopyActionResult {
     pub refresh_now: bool,
 }
 
+pub(crate) struct CopyModeOptions<'a> {
+    pub keys: CopyModeKeys,
+    pub exit_on_scroll: bool,
+    pub kill_on_exit: bool,
+    pub hide_position: bool,
+    pub wrap_search: bool,
+    pub word_separators: &'a str,
+    pub history_floor: usize,
+}
+
 impl CopyModeState {
-    pub(crate) fn new(
-        parser: &mut Parser,
-        keys: CopyModeKeys,
-        exit_on_scroll: bool,
-        kill_on_exit: bool,
-        hide_position: bool,
-        wrap_search: bool,
-        word_separators: &str,
-        raw_output: &[u8],
-        history_floor: usize,
-    ) -> Self {
+    pub(crate) fn new(parser: &mut Parser, options: CopyModeOptions<'_>, raw_output: &[u8]) -> Self {
         let (history, live) = history_rows(parser);
         let live_row = usize::from(parser.screen().cursor_position().0);
         let live_col = usize::from(parser.screen().cursor_position().1);
@@ -456,17 +456,17 @@ impl CopyModeState {
             selection_mode: SelectionMode::Char,
             mark: None,
             scroll_offset,
-            exit_on_scroll,
-            kill_on_exit,
-            hide_position,
+            exit_on_scroll: options.exit_on_scroll,
+            kill_on_exit: options.kill_on_exit,
+            hide_position: options.hide_position,
             refresh_active: false,
             line_numbers: false,
             line_number_mode: CopyLineNumberMode::Off,
-            keys,
-            wrap_search,
-            word_separators: word_separators.to_owned(),
+            keys: options.keys,
+            wrap_search: options.wrap_search,
+            word_separators: options.word_separators.to_owned(),
             raw_output: raw_output.to_vec(),
-            history_floor,
+            history_floor: options.history_floor,
             last_search: None,
             search_origin: None,
             last_jump: None,
@@ -544,9 +544,11 @@ impl CopyModeState {
         // accidentally turn that old click into a selection.
         self.mouse_anchor = None;
         let repeat = repeat.max(1);
-        let mut result = CopyActionResult::default();
-        result.set_paste = true;
-        result.set_clipboard = true;
+        let mut result = CopyActionResult {
+            set_paste: true,
+            set_clipboard: true,
+            ..CopyActionResult::default()
+        };
         match action {
             CopyAction::Cancel => {
                 result.exit = true;
@@ -1826,9 +1828,9 @@ impl CopyModeState {
             return;
         };
         if next {
-            for row_index in row..lines.len() {
+            for (row_index, line) in lines.iter().enumerate().skip(row) {
                 let start = if row_index == row { col + 1 } else { 0 };
-                for (column, value) in lines[row_index].chars().enumerate().skip(start) {
+                for (column, value) in line.chars().enumerate().skip(start) {
                     if value == open {
                         depth += 1;
                     } else if value == close {
@@ -2248,9 +2250,9 @@ impl CopyModeState {
         let end_row = end.row.min(lines.len().saturating_sub(1));
         let mut output = String::new();
         if self.selection_mode == SelectionMode::Line {
-            for row in start.row..=end_row {
-                output.push_str(&lines[row]);
-                if row != end_row {
+            for (offset, line) in lines[start.row..=end_row].iter().enumerate() {
+                output.push_str(line);
+                if start.row + offset != end_row {
                     output.push('\n');
                 }
             }
@@ -2259,21 +2261,20 @@ impl CopyModeState {
         if self.rectangle {
             let from = start.col.min(end.col);
             let to = start.col.max(end.col).saturating_add(1);
-            for row in start.row..=end_row {
-                let line = &lines[row];
+            for (offset, line) in lines[start.row..=end_row].iter().enumerate() {
                 let width = to.saturating_sub(from);
                 let segment = line.chars().skip(from).take(width).collect::<String>();
                 let missing = width.saturating_sub(segment.chars().count());
                 output.push_str(&segment);
                 output.extend(std::iter::repeat_n(' ', missing));
-                if row != end_row {
+                if start.row + offset != end_row {
                     output.push('\n');
                 }
             }
             return Some(output);
         }
-        for row in start.row..=end_row {
-            let line = &lines[row];
+        for (offset, line) in lines[start.row..=end_row].iter().enumerate() {
+            let row = start.row + offset;
             let from = if row == start.row { start.col } else { 0 };
             let to = if row == end.row {
                 if reversed && end.col == 0 {
@@ -2584,10 +2585,7 @@ fn next_word(
         };
         if !character.is_whitespace() {
             let separator = is_separator(character, separators);
-            loop {
-                let Some(character) = line_char(&lines[position.row], position.col) else {
-                    break;
-                };
+            while let Some(character) = line_char(&lines[position.row], position.col) {
                 if character.is_whitespace() || is_separator(character, separators) != separator {
                     break;
                 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use vt100::Parser;
 
-use crate::copy_mode::{CopyModeKeys, CopyModeState};
+use crate::copy_mode::{CopyModeKeys, CopyModeOptions, CopyModeState};
 use crate::pty::Pty;
 use crate::terminal::{self, OutputState};
 
@@ -624,13 +624,7 @@ impl Pane {
 
     pub(crate) fn enter_copy_mode(
         &mut self,
-        keys: CopyModeKeys,
-        exit_on_scroll: bool,
-        kill_on_exit: bool,
-        hide_position: bool,
-        wrap_search: bool,
-        word_separators: &str,
-        history_floor: usize,
+        options: CopyModeOptions<'_>,
         prompt_history: &[Vec<u8>],
         source: Option<CopySource>,
         history_limit: usize,
@@ -641,7 +635,7 @@ impl Pane {
         );
         let source_history_floor = source
             .as_ref()
-            .map_or(history_floor, |source| source.history_floor);
+            .map_or(options.history_floor, |source| source.history_floor);
         let mut source_parser = source
             .as_ref()
             .map(|_| Parser::new(self.rect.rows.max(1), self.rect.cols.max(1), history_limit));
@@ -651,16 +645,12 @@ impl Pane {
         let parser = source_parser
             .as_mut()
             .map_or(&mut self.parser, |parser| parser);
+        let mut options = options;
+        options.history_floor = source_history_floor;
         self.copy_mode = Some(CopyModeState::new(
             parser,
-            keys,
-            exit_on_scroll,
-            kill_on_exit,
-            hide_position,
-            wrap_search,
-            word_separators,
+            options,
             &raw_output,
-            source_history_floor,
         ));
         self.copy_source = source;
         if let Some(mode) = self.copy_mode.as_mut() {

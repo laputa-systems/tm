@@ -15,9 +15,9 @@ use crate::config;
 #[cfg(test)]
 use crate::config::ConfigLine;
 use crate::copy_mode::{
-    CopyAction, CopyLineNumberMode, CopyModeKeys, CopyModeState, CopyPromptKind, CopyScrollbarHit,
-    DEFAULT_WORD_SEPARATORS, SelectionMode, display_column_to_char_index, display_prompt_input,
-    history_rows, scrollbar_geometry_for, scrollbar_hit_for,
+    CopyAction, CopyLineNumberMode, CopyModeKeys, CopyModeOptions, CopyModeState, CopyPromptKind,
+    CopyScrollbarHit, DEFAULT_WORD_SEPARATORS, SelectionMode, display_column_to_char_index,
+    display_prompt_input, history_rows, scrollbar_geometry_for, scrollbar_hit_for,
 };
 use crate::model::{Axis, CopySource, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
@@ -29,6 +29,7 @@ use crate::terminal;
 
 type SharedState = Arc<Mutex<ServerState>>;
 type CommandResult = Result<String, String>;
+type FormatLoopItem = (String, usize, usize, u64, Vec<(&'static str, String)>);
 
 // Attach clients sleep until a state mutation can affect their screen. The
 // condition variable is process-wide because each daemon owns one state
@@ -393,31 +394,35 @@ impl RenderBenchmark {
         state
             .create_session(
                 &shared,
-                Some("render-benchmark"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                size,
+                CreateSessionOptions {
+                    name: Some("render-benchmark"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size,
+                },
             )
             .expect("create render benchmark session");
         for _ in 1..pane_count {
             state
                 .split_window(
                     &shared,
-                    Some("render-benchmark:0"),
-                    true,
-                    false,
-                    false,
-                    true,
-                    false,
-                    true,
-                    None,
-                    &[],
-                    None,
+                    SplitWindowOptions {
+                        target: Some("render-benchmark:0"),
+                        horizontal: true,
+                        before: false,
+                        full: false,
+                        detached: true,
+                        zoom: false,
+                        empty: true,
+                        split_size: None,
+                        command: &[],
+                        cwd: None,
+                    },
                 )
                 .expect("split render benchmark pane");
         }
@@ -921,6 +926,91 @@ impl Drop for PanePipe {
     }
 }
 
+struct MouseEvent {
+    button: u16,
+    col: u16,
+    row: u16,
+    release: bool,
+}
+
+struct ShowOptionsQuery<'a> {
+    target: Option<&'a str>,
+    global: bool,
+    window: bool,
+    pane: bool,
+    value_only: bool,
+    quiet: bool,
+    key: Option<&'a str>,
+}
+
+struct TreeEntriesOptions<'a> {
+    filter: Option<&'a str>,
+    format: &'a str,
+    sort: TreeSort,
+    reverse: bool,
+    hide_source: bool,
+    source_pane: Option<u64>,
+    collapsed: &'a HashSet<TreeKey>,
+}
+
+struct RespawnPaneOptions<'a> {
+    target: Option<&'a str>,
+    command: &'a [String],
+    cwd: Option<&'a str>,
+    kill: bool,
+    empty: bool,
+    window_command: bool,
+}
+
+struct CreateSessionOptions<'a> {
+    name: Option<&'a str>,
+    attach_existing: bool,
+    group_target: Option<&'a str>,
+    format: Option<&'a str>,
+    window_name: Option<&'a str>,
+    empty: bool,
+    command: &'a [String],
+    cwd: Option<&'a str>,
+    size: Size,
+}
+
+struct NewWindowOptions<'a> {
+    target: Option<&'a str>,
+    name: Option<&'a str>,
+    detached: bool,
+    requested_index: Option<u32>,
+    force: bool,
+    format: Option<&'a str>,
+    after: bool,
+    before: bool,
+    select_existing: bool,
+    empty: bool,
+    command: &'a [String],
+    cwd: Option<&'a str>,
+}
+
+struct SplitWindowOptions<'a> {
+    target: Option<&'a str>,
+    horizontal: bool,
+    before: bool,
+    full: bool,
+    detached: bool,
+    zoom: bool,
+    empty: bool,
+    split_size: Option<&'a str>,
+    command: &'a [String],
+    cwd: Option<&'a str>,
+}
+
+struct NewPaneOptions<'a> {
+    pane_id: u64,
+    index: u32,
+    size: Size,
+    command: &'a [String],
+    cwd: Option<&'a str>,
+    empty: bool,
+}
+
 impl ServerState {
     fn new() -> Self {
         Self {
@@ -978,12 +1068,15 @@ impl ServerState {
             };
         }
         Rect {
-            y: self
+            y: if self
                 .global_options
                 .get("status-position")
                 .is_some_and(|value| value == "top")
-                .then_some(1)
-                .unwrap_or(0),
+            {
+                1
+            } else {
+                0
+            },
             cols: size.cols,
             rows: size.rows.saturating_sub(1),
             ..Rect::default()
@@ -1009,16 +1102,19 @@ impl ServerState {
     fn create_session(
         &mut self,
         shared: &SharedState,
-        name: Option<&str>,
-        attach_existing: bool,
-        group_target: Option<&str>,
-        format: Option<&str>,
-        window_name: Option<&str>,
-        empty: bool,
-        command: &[String],
-        cwd: Option<&str>,
-        size: Size,
+        options: CreateSessionOptions<'_>,
     ) -> CommandResult {
+        let CreateSessionOptions {
+            name,
+            attach_existing,
+            group_target,
+            format,
+            window_name,
+            empty,
+            command,
+            cwd,
+            size,
+        } = options;
         let session_name = match name.filter(|name| !name.is_empty()) {
             Some(name) => render_format_with_options(
                 name,
@@ -1079,7 +1175,17 @@ impl ServerState {
         let size = size.bounded();
         let base_index = self.global_base_index();
         let pane_id = self.next_pane_id();
-        let pane = self.new_pane(shared, pane_id, 0, size, command, cwd, empty)?;
+        let pane = self.new_pane(
+            shared,
+            NewPaneOptions {
+                pane_id,
+                index: 0,
+                size,
+                command,
+                cwd,
+                empty,
+            },
+        )?;
         let window_id = self.next_window_id;
         self.next_window_id += 1;
         let mut window = Window::new(
@@ -1140,19 +1246,22 @@ impl ServerState {
     fn new_window(
         &mut self,
         shared: &SharedState,
-        target: Option<&str>,
-        name: Option<&str>,
-        detached: bool,
-        requested_index: Option<u32>,
-        force: bool,
-        format: Option<&str>,
-        after: bool,
-        before: bool,
-        select_existing: bool,
-        empty: bool,
-        command: &[String],
-        cwd: Option<&str>,
+        options: NewWindowOptions<'_>,
     ) -> CommandResult {
+        let NewWindowOptions {
+            target,
+            name,
+            detached,
+            requested_index,
+            force,
+            format,
+            after,
+            before,
+            select_existing,
+            empty,
+            command,
+            cwd,
+        } = options;
         let session_index = self.resolve_session_index(target)?;
         if select_existing
             && let Some(name) = name
@@ -1225,12 +1334,14 @@ impl ServerState {
         let pane_id = self.next_pane_id();
         let pane = self.new_pane(
             shared,
-            pane_id,
-            0,
-            size,
-            command,
-            cwd.or(session_cwd.as_deref()),
-            empty,
+            NewPaneOptions {
+                pane_id,
+                index: 0,
+                size,
+                command,
+                cwd: cwd.or(session_cwd.as_deref()),
+                empty,
+            },
         )?;
         let window_name = name
             .map(|name| {
@@ -1286,17 +1397,20 @@ impl ServerState {
     fn split_window(
         &mut self,
         shared: &SharedState,
-        target: Option<&str>,
-        horizontal: bool,
-        before: bool,
-        full: bool,
-        detached: bool,
-        zoom: bool,
-        empty: bool,
-        split_size: Option<&str>,
-        command: &[String],
-        cwd: Option<&str>,
+        options: SplitWindowOptions<'_>,
     ) -> CommandResult {
+        let SplitWindowOptions {
+            target,
+            horizontal,
+            before,
+            full,
+            detached,
+            zoom,
+            empty,
+            split_size,
+            command,
+            cwd,
+        } = options;
         let (session_index, window_index, target_pane) = self.resolve_pane_target(target)?;
         let session_id = self.sessions[session_index].id;
         if self.sessions[session_index].windows[window_index].zoomed {
@@ -1317,12 +1431,14 @@ impl ServerState {
         let pane_id = self.next_pane_id();
         let mut pane = self.new_pane(
             shared,
-            pane_id,
-            pane_index,
-            size,
-            command,
-            cwd.or(session_cwd.as_deref()),
-            empty,
+            NewPaneOptions {
+                pane_id,
+                index: pane_index,
+                size,
+                command,
+                cwd: cwd.or(session_cwd.as_deref()),
+                empty,
+            },
         )?;
         let window = &mut self.sessions[session_index].windows[window_index];
         let requested_size =
@@ -1378,13 +1494,16 @@ impl ServerState {
     fn new_pane(
         &mut self,
         shared: &SharedState,
-        pane_id: u64,
-        index: u32,
-        size: Size,
-        command: &[String],
-        cwd: Option<&str>,
-        empty: bool,
+        options: NewPaneOptions<'_>,
     ) -> Result<Pane, String> {
+        let NewPaneOptions {
+            pane_id,
+            index,
+            size,
+            command,
+            cwd,
+            empty,
+        } = options;
         let start_path = cwd.map(str::to_owned).or_else(|| {
             std::env::current_dir()
                 .ok()
@@ -1815,7 +1934,17 @@ impl ServerState {
                     &encode_mouse_event(button, local_col, local_row, release, encoding),
                 );
             } else {
-                self.apply_mouse_event(client_id, session_id, button, col, row, release, shared);
+                self.apply_mouse_event(
+                    client_id,
+                    session_id,
+                    MouseEvent {
+                        button,
+                        col,
+                        row,
+                        release,
+                    },
+                    shared,
+                );
             }
         }
         (consumed > 0).then_some(consumed)
@@ -1854,12 +1983,15 @@ impl ServerState {
         &mut self,
         client_id: u64,
         session_id: u64,
-        button: u16,
-        col: u16,
-        row: u16,
-        release: bool,
+        event: MouseEvent,
         shared: &SharedState,
     ) {
+        let MouseEvent {
+            button,
+            col,
+            row,
+            release,
+        } = event;
         let Some(session) = self
             .sessions
             .iter()
@@ -2308,9 +2440,7 @@ impl ServerState {
         let Some(client) = self.clients.get(&client_id) else {
             return Some(bytes.len().max(1));
         };
-        let Some(mode) = client.tree_mode.as_ref() else {
-            return None;
-        };
+        let mode = client.tree_mode.as_ref()?;
         let Some(&byte) = bytes.first() else {
             return Some(0);
         };
@@ -2621,9 +2751,7 @@ impl ServerState {
         let Some(client) = self.clients.get(&client_id) else {
             return Some(bytes.len().max(1));
         };
-        let Some(mode) = client.buffer_mode.as_ref() else {
-            return None;
-        };
+        let mode = client.buffer_mode.as_ref()?;
         let Some(&byte) = bytes.first() else {
             return Some(0);
         };
@@ -2847,9 +2975,7 @@ impl ServerState {
         let Some(client) = self.clients.get(&client_id) else {
             return Some(bytes.len().max(1));
         };
-        let Some(mode) = client.client_mode.as_ref() else {
-            return None;
-        };
+        let mode = client.client_mode.as_ref()?;
         let Some(&byte) = bytes.first() else {
             return Some(0);
         };
@@ -3019,9 +3145,7 @@ impl ServerState {
         let Some(client) = self.clients.get_mut(&client_id) else {
             return Some(bytes.len().max(1));
         };
-        let Some(prompt) = client.prompt.as_mut() else {
-            return None;
-        };
+        let prompt = client.prompt.as_mut()?;
         let Some(&byte) = bytes.first() else {
             return Some(0);
         };
@@ -3387,8 +3511,14 @@ impl ServerState {
                 continue;
             }
             if command[0] == "display-panes" {
-                let (target, source, no_zoom, no_mode, selection_command, kill_on_exit) =
-                    parse_panes_mode_command(&command[1..])?;
+                let PanesModeOptions {
+                    target,
+                    source,
+                    no_zoom,
+                    no_mode,
+                    command: selection_command,
+                    kill_on_exit,
+                } = parse_panes_mode_command(&command[1..])?;
                 if no_mode {
                     if !selection_command.is_empty() {
                         self.execute_bound_commands(
@@ -3414,44 +3544,18 @@ impl ServerState {
                 continue;
             }
             if command[0] == "choose-tree" {
-                let (target, format, filter, sort, reverse, hide_source, kill_on_exit) =
-                    parse_tree_mode_command(&command[1..])?;
-                self.enter_tree_mode(
-                    client_id,
-                    target.as_deref(),
-                    format.as_deref(),
-                    filter.as_deref(),
-                    &sort,
-                    reverse,
-                    hide_source,
-                    kill_on_exit,
-                )?;
+                let options = parse_tree_mode_command(&command[1..])?;
+                self.enter_tree_mode(client_id, options)?;
                 continue;
             }
             if command[0] == "choose-buffer" {
-                let (target, format, filter, sort, reverse, kill_on_exit) =
-                    parse_buffer_mode_command(&command[1..])?;
-                self.enter_buffer_mode(
-                    client_id,
-                    target.as_deref(),
-                    format.as_deref(),
-                    filter.as_deref(),
-                    &sort,
-                    reverse,
-                    kill_on_exit,
-                )?;
+                let options = parse_buffer_mode_command(&command[1..])?;
+                self.enter_buffer_mode(client_id, options)?;
                 continue;
             }
             if command[0] == "choose-client" {
-                let (target, format, filter, kill_on_exit) =
-                    parse_client_mode_command(&command[1..])?;
-                self.enter_client_mode(
-                    client_id,
-                    target.as_deref(),
-                    format.as_deref(),
-                    filter.as_deref(),
-                    kill_on_exit,
-                )?;
+                let options = parse_client_mode_command(&command[1..])?;
+                self.enter_client_mode(client_id, options)?;
                 continue;
             }
             let mut command = command.clone();
@@ -3871,13 +3975,15 @@ impl ServerState {
         pane.panes_mode = false;
         let prompt_history = pane.copy_prompt_history.clone();
         pane.enter_copy_mode(
-            keys,
-            exit_on_scroll,
-            kill_on_exit,
-            hide_position,
-            wrap_search,
-            &word_separators,
-            pane.history_floor,
+            CopyModeOptions {
+                keys,
+                exit_on_scroll,
+                kill_on_exit,
+                hide_position,
+                wrap_search,
+                word_separators: &word_separators,
+                history_floor: pane.history_floor,
+            },
             &prompt_history,
             source_snapshot,
             history_limit,
@@ -4079,9 +4185,7 @@ impl ServerState {
         let Some(client) = self.clients.get(&client_id) else {
             return Some(bytes.len().max(1));
         };
-        let Some(mode) = client.panes_mode.as_ref() else {
-            return None;
-        };
+        let mode = client.panes_mode.as_ref()?;
         let Some(&byte) = bytes.first() else {
             return Some(0);
         };
@@ -4099,21 +4203,17 @@ impl ServerState {
     fn enter_tree_mode(
         &mut self,
         client_id: u64,
-        target: Option<&str>,
-        format: Option<&str>,
-        filter: Option<&str>,
-        sort: &str,
-        reverse: bool,
-        hide_source: bool,
-        kill_on_exit: bool,
+        options: TreeModeOptions,
     ) -> CommandResult {
-        let source_pane = target
+        let source_pane = options
+            .target
+            .as_deref()
             .map(|target| {
                 self.resolve_pane_target(Some(target))
                     .map(|(_, _, pane)| pane)
             })
             .transpose()?;
-        let sort = match sort {
+        let sort = match options.sort.as_str() {
             "name" => TreeSort::Name,
             "index" | "" => TreeSort::Index,
             value => return Err(format!("unknown choose-tree sort: {value}")),
@@ -4124,18 +4224,18 @@ impl ServerState {
         client.tree_mode = Some(TreeMode {
             entries: Vec::new(),
             cursor: 0,
-            filter: filter.map(str::to_owned),
+            filter: options.filter,
             filter_input: None,
-            format: format.unwrap_or_default().to_owned(),
+            format: options.format.unwrap_or_default(),
             sort,
-            reverse,
-            hide_source,
+            reverse: options.reverse,
+            hide_source: options.hide_source,
             source_pane,
             collapsed: HashSet::new(),
             no_matches: false,
             confirmation: None,
             confirmation_label: None,
-            kill_on_exit,
+            kill_on_exit: options.kill_on_exit,
         });
         self.rebuild_tree_mode(client_id);
         Ok(String::new())
@@ -4182,18 +4282,15 @@ impl ServerState {
     fn enter_buffer_mode(
         &mut self,
         client_id: u64,
-        target: Option<&str>,
-        format: Option<&str>,
-        filter: Option<&str>,
-        sort: &str,
-        reverse: bool,
-        kill_on_exit: bool,
+        options: BufferModeOptions,
     ) -> CommandResult {
-        let source_pane = target
+        let source_pane = options
+            .target
+            .as_deref()
             .map(|target| self.resolve_pane_target(Some(target)).map(|(_, _, id)| id))
             .transpose()?
             .unwrap_or(self.client_active_pane(client_id)?);
-        let sort = match sort {
+        let sort = match options.sort.as_str() {
             "name" => TreeSort::Name,
             "index" | "" => TreeSort::Index,
             value => return Err(format!("unknown choose-buffer sort: {value}")),
@@ -4206,15 +4303,15 @@ impl ServerState {
         client.buffer_mode = Some(BufferMode {
             entries: Vec::new(),
             cursor: 0,
-            filter: filter.map(str::to_owned),
+            filter: options.filter,
             filter_input: None,
-            format: format.unwrap_or_default().to_owned(),
+            format: options.format.unwrap_or_default(),
             sort,
-            reverse,
+            reverse: options.reverse,
             no_matches: false,
             source_pane,
             tagged: HashSet::new(),
-            kill_on_exit,
+            kill_on_exit: options.kill_on_exit,
         });
         self.rebuild_buffer_mode(client_id);
         Ok(String::new())
@@ -4306,15 +4403,14 @@ impl ServerState {
     fn enter_client_mode(
         &mut self,
         client_id: u64,
-        target: Option<&str>,
-        format: Option<&str>,
-        filter: Option<&str>,
-        kill_on_exit: bool,
+        options: ClientModeOptions,
     ) -> CommandResult {
         if !self.clients.contains_key(&client_id) {
             return Err("client not found".to_owned());
         }
-        let source_pane = target
+        let source_pane = options
+            .target
+            .as_deref()
             .map(|target| self.resolve_pane_target(Some(target)).map(|(_, _, id)| id))
             .transpose()?
             .unwrap_or(self.client_active_pane(client_id)?);
@@ -4324,12 +4420,12 @@ impl ServerState {
             client.client_mode = Some(ClientMode {
                 entries: Vec::new(),
                 cursor: 0,
-                filter: filter.map(str::to_owned),
+                filter: options.filter,
                 filter_input: None,
-                format: format.unwrap_or_default().to_owned(),
+                format: options.format.unwrap_or_default(),
                 no_matches: false,
                 source_pane,
-                kill_on_exit,
+                kill_on_exit: options.kill_on_exit,
             });
         }
         self.rebuild_client_mode(client_id);
@@ -4437,15 +4533,15 @@ impl ServerState {
         let hide_source = mode.hide_source;
         let source_pane = mode.source_pane;
         let collapsed = mode.collapsed.clone();
-        let (entries, no_matches) = self.build_tree_entries(
-            filter.as_deref(),
-            &format,
+        let (entries, no_matches) = self.build_tree_entries(TreeEntriesOptions {
+            filter: filter.as_deref(),
+            format: &format,
             sort,
             reverse,
             hide_source,
             source_pane,
-            &collapsed,
-        );
+            collapsed: &collapsed,
+        });
         if let Some(mode) = self
             .clients
             .get_mut(&client_id)
@@ -4457,16 +4553,16 @@ impl ServerState {
         }
     }
 
-    fn build_tree_entries(
-        &self,
-        filter: Option<&str>,
-        format: &str,
-        sort: TreeSort,
-        reverse: bool,
-        hide_source: bool,
-        source_pane: Option<u64>,
-        collapsed: &HashSet<TreeKey>,
-    ) -> (Vec<TreeEntry>, bool) {
+    fn build_tree_entries(&self, options: TreeEntriesOptions<'_>) -> (Vec<TreeEntry>, bool) {
+        let TreeEntriesOptions {
+            filter,
+            format,
+            sort,
+            reverse,
+            hide_source,
+            source_pane,
+            collapsed,
+        } = options;
         let mut matching = HashSet::new();
         let mut any_match = filter.is_none();
         for session in &self.sessions {
@@ -4759,20 +4855,20 @@ impl ServerState {
             .map(|window| window.name.as_str())
             .collect::<Vec<_>>()
             .join("\0");
-        Ok(format_pane(
+        Ok(format_pane(FormatPaneOptions {
             session,
             window,
             pane,
-            self.marked_pane == Some(pane.id),
-            self.marked_pane.is_some(),
-            pane.copy_mode.as_ref(),
-            self.window_link_count(window.id),
-            self.session_group_info(session_index),
-            &session_names,
-            &window_names,
-            &self.global_options,
-            &format,
-        ))
+            marked: self.marked_pane == Some(pane.id),
+            marked_set: self.marked_pane.is_some(),
+            mode: pane.copy_mode.as_ref(),
+            linked_sessions: self.window_link_count(window.id),
+            group_info: self.session_group_info(session_index),
+            session_names: &session_names,
+            window_names: &window_names,
+            options: &self.global_options,
+            format: &format,
+        }))
     }
 
     fn store_buffer(&mut self, name: Option<String>, data: Vec<u8>, append: bool) {
@@ -5429,17 +5525,16 @@ impl ServerState {
         Ok(String::new())
     }
 
-    fn show_options(
-        &self,
-        target: Option<&str>,
-        global: bool,
-        window: bool,
-        pane: bool,
-        value_only: bool,
-        _all: bool,
-        quiet: bool,
-        key: Option<&str>,
-    ) -> CommandResult {
+    fn show_options(&self, query: ShowOptionsQuery<'_>) -> CommandResult {
+        let ShowOptionsQuery {
+            target,
+            global,
+            window,
+            pane,
+            value_only,
+            quiet,
+            key,
+        } = query;
         let mut options = self.global_options.clone();
         if key == Some("mode-keys") || (key.is_none() && global) {
             options.insert(
@@ -5965,7 +6060,7 @@ impl ServerState {
         session_index: usize,
         window_index: usize,
         pane_id: u64,
-    ) -> Vec<(String, usize, usize, u64, Vec<(&'static str, String)>)> {
+    ) -> Vec<FormatLoopItem> {
         match kind {
             'S' => self
                 .sessions
@@ -6217,20 +6312,20 @@ impl ServerState {
                     Some(format) => {
                         let format =
                             self.expand_context_loops(format, session_index, window_index, pane.id);
-                        format_pane(
+                        format_pane(FormatPaneOptions {
                             session,
                             window,
                             pane,
-                            self.marked_pane == Some(pane.id),
-                            self.marked_pane.is_some(),
-                            pane.copy_mode.as_ref(),
-                            self.window_link_count(window.id),
-                            self.session_group_info(session_index),
-                            &session_names,
-                            &window_names,
-                            &self.global_options,
-                            &format,
-                        )
+                            marked: self.marked_pane == Some(pane.id),
+                            marked_set: self.marked_pane.is_some(),
+                            mode: pane.copy_mode.as_ref(),
+                            linked_sessions: self.window_link_count(window.id),
+                            group_info: self.session_group_info(session_index),
+                            session_names: &session_names,
+                            window_names: &window_names,
+                            options: &self.global_options,
+                            format: &format,
+                        })
                     }
                     None => format!("%{}: {} {}", pane.id, pane.index, marker),
                 }
@@ -7017,13 +7112,16 @@ impl ServerState {
     fn respawn_pane(
         &mut self,
         shared: &SharedState,
-        target: Option<&str>,
-        command: &[String],
-        cwd: Option<&str>,
-        kill: bool,
-        empty: bool,
-        window_command: bool,
+        options: RespawnPaneOptions<'_>,
     ) -> CommandResult {
+        let RespawnPaneOptions {
+            target,
+            command,
+            cwd,
+            kill,
+            empty,
+            window_command,
+        } = options;
         let (session_index, window_index, pane_id) = self.resolve_pane_target(target)?;
         let (size, existing_dead, session_cwd, stored_command) = {
             let pane = self.sessions[session_index].windows[window_index]
@@ -7066,12 +7164,14 @@ impl ServerState {
             let pane_id = self.next_pane_id();
             let pane = self.new_pane(
                 shared,
-                pane_id,
-                0,
-                size,
-                &effective_command,
-                cwd.or(session_cwd.as_deref()),
-                empty,
+                NewPaneOptions {
+                    pane_id,
+                    index: 0,
+                    size,
+                    command: &effective_command,
+                    cwd: cwd.or(session_cwd.as_deref()),
+                    empty,
+                },
             )?;
             let window = &mut self.sessions[session_index].windows[window_index];
             for old in window.panes.drain(..) {
@@ -7559,7 +7659,7 @@ impl ServerState {
                 let viewport_start = mode.viewport_start(parser);
                 (row, col, mode.hide_position, viewport_start)
             });
-            if copy_cursor.is_some() {
+            if let Some((cursor_row, cursor_col, hide_position, viewport_start)) = copy_cursor {
                 let parser = source_parser
                     .as_mut()
                     .map_or(&mut pane.parser, |parser| parser);
@@ -7575,8 +7675,6 @@ impl ServerState {
                         .get(usize::from(row))
                         .map(String::as_str)
                         .unwrap_or("");
-                    let (cursor_row, cursor_col, hide_position, viewport_start) =
-                        copy_cursor.expect("copy cursor exists for copy-mode rendering");
                     let logical_row = viewport_start + usize::from(row);
                     let line_number_width = pane
                         .copy_mode
@@ -9712,15 +9810,17 @@ fn execute_request(
             size,
         } => state.create_session(
             shared,
-            name.as_deref(),
-            attach_existing,
-            group_target.as_deref(),
-            format.as_deref(),
-            window_name.as_deref(),
-            empty,
-            &command,
-            cwd.as_deref(),
-            size,
+            CreateSessionOptions {
+                name: name.as_deref(),
+                attach_existing,
+                group_target: group_target.as_deref(),
+                format: format.as_deref(),
+                window_name: window_name.as_deref(),
+                empty,
+                command: &command,
+                cwd: cwd.as_deref(),
+                size,
+            },
         ),
         Request::ListSessions { format } => Ok(state.list_sessions(format.as_deref())),
         Request::ListClients { format } => state.list_clients(format.as_deref()),
@@ -9754,18 +9854,20 @@ fn execute_request(
             cwd,
         } => state.new_window(
             shared,
-            target.as_deref(),
-            name.as_deref(),
-            detached,
-            index,
-            force,
-            format.as_deref(),
-            after,
-            before,
-            select_existing,
-            empty,
-            &command,
-            cwd.as_deref(),
+            NewWindowOptions {
+                target: target.as_deref(),
+                name: name.as_deref(),
+                detached,
+                requested_index: index,
+                force,
+                format: format.as_deref(),
+                after,
+                before,
+                select_existing,
+                empty,
+                command: &command,
+                cwd: cwd.as_deref(),
+            },
         ),
         Request::SplitWindow {
             target,
@@ -9780,16 +9882,18 @@ fn execute_request(
             cwd,
         } => state.split_window(
             shared,
-            target.as_deref(),
-            horizontal,
-            before,
-            full,
-            detached,
-            zoom,
-            empty,
-            size.as_deref(),
-            &command,
-            cwd.as_deref(),
+            SplitWindowOptions {
+                target: target.as_deref(),
+                horizontal,
+                before,
+                full,
+                detached,
+                zoom,
+                empty,
+                split_size: size.as_deref(),
+                command: &command,
+                cwd: cwd.as_deref(),
+            },
         ),
         Request::ListWindows { target, format } => {
             state.list_windows(target.as_deref(), format.as_deref())
@@ -9901,12 +10005,14 @@ fn execute_request(
             window,
         } => state.respawn_pane(
             shared,
-            target.as_deref(),
-            &command,
-            cwd.as_deref(),
-            kill,
-            empty,
-            window,
+            RespawnPaneOptions {
+                target: target.as_deref(),
+                command: &command,
+                cwd: cwd.as_deref(),
+                kill,
+                empty,
+                window_command: window,
+            },
         ),
         Request::ClearHistory { target } => {
             let (_, _, pane_id) = state.resolve_pane_target(target.as_deref())?;
@@ -10078,13 +10184,15 @@ fn execute_request(
                 client_id.ok_or_else(|| "choose-tree requires an attached client".to_owned())?;
             state.enter_tree_mode(
                 client_id,
-                target.as_deref(),
-                format.as_deref(),
-                filter.as_deref(),
-                &sort,
-                reverse,
-                hide_source,
-                kill_on_exit,
+                TreeModeOptions {
+                    target,
+                    format,
+                    filter,
+                    sort,
+                    reverse,
+                    hide_source,
+                    kill_on_exit,
+                },
             )
         }
         Request::ChooseBuffer {
@@ -10098,12 +10206,14 @@ fn execute_request(
             let client_id = state.client_for_mode_target(target.as_deref())?;
             state.enter_buffer_mode(
                 client_id,
-                target.as_deref(),
-                format.as_deref(),
-                filter.as_deref(),
-                &sort,
-                reverse,
-                kill_on_exit,
+                BufferModeOptions {
+                    target,
+                    format,
+                    filter,
+                    sort,
+                    reverse,
+                    kill_on_exit,
+                },
             )
         }
         Request::ChooseClient {
@@ -10115,10 +10225,12 @@ fn execute_request(
             let client_id = state.client_for_mode_target(target.as_deref())?;
             state.enter_client_mode(
                 client_id,
-                target.as_deref(),
-                format.as_deref(),
-                filter.as_deref(),
-                kill_on_exit,
+                ClientModeOptions {
+                    target,
+                    format,
+                    filter,
+                    kill_on_exit,
+                },
             )
         }
         Request::DisplayPanes {
@@ -10216,20 +10328,19 @@ fn execute_request(
             global,
             window,
             pane,
-            value,
-            all,
+            value: value_only,
+            all: _,
             quiet,
             key,
-        } => state.show_options(
-            target.as_deref(),
+        } => state.show_options(ShowOptionsQuery {
+            target: target.as_deref(),
             global,
             window,
             pane,
-            value,
-            all,
+            value_only,
             quiet,
-            key.as_deref(),
-        ),
+            key: key.as_deref(),
+        }),
         Request::SetEnvironment {
             name,
             value,
@@ -10650,9 +10761,7 @@ fn expand_format_token(body: &str, values: &[(&str, String)]) -> String {
             let left = evaluate_format_argument(left, values);
             let right = evaluate_format_argument(right, values);
             let result = compare_format_values(&left, &right, compare);
-            return result
-                .then_some("1".to_owned())
-                .unwrap_or_else(|| "0".to_owned());
+            return if result { "1" } else { "0" }.to_owned();
         }
     }
     if body.starts_with("e|") {
@@ -10791,33 +10900,47 @@ fn expand_format_token(body: &str, values: &[(&str, String)]) -> String {
         return if matched { "1" } else { "0" }.to_owned();
     }
     if let Some(arguments) = body.strip_prefix("||:") {
-        return split_format_arguments(arguments)
+        return if split_format_arguments(arguments)
             .iter()
             .any(|value| format_condition(value, values))
-            .then_some("1".to_owned())
-            .unwrap_or_else(|| "0".to_owned());
+        {
+            "1"
+        } else {
+            "0"
+        }
+        .to_owned();
     }
     if let Some(arguments) = body.strip_prefix("&&:") {
-        return split_format_arguments(arguments)
+        return if split_format_arguments(arguments)
             .iter()
             .all(|value| format_condition(value, values))
-            .then_some("1".to_owned())
-            .unwrap_or_else(|| "0".to_owned());
+        {
+            "1"
+        } else {
+            "0"
+        }
+        .to_owned();
     }
     if let Some(value) = body.strip_prefix("!:") {
-        return (!format_condition(value, values))
-            .then_some("1".to_owned())
-            .unwrap_or_else(|| "0".to_owned());
+        return if !format_condition(value, values) {
+            "1"
+        } else {
+            "0"
+        }
+        .to_owned();
     }
     if let Some(value) = body.strip_prefix("!!:") {
-        return format_condition(value, values)
-            .then_some("1".to_owned())
-            .unwrap_or_else(|| "0".to_owned());
+        return if format_condition(value, values) {
+            "1"
+        } else {
+            "0"
+        }
+        .to_owned();
     }
-    values
-        .iter()
-        .find(|(name, _)| *name == body)
-        .map_or_else(String::new, |(_, value)| value.clone())
+    match values.iter().find(|(name, _)| *name == body) {
+        Some((_, value)) => value.clone(),
+        None => String::new(),
+    }
 }
 
 fn split_format_arguments(value: &str) -> Vec<String> {
@@ -11842,46 +11965,22 @@ fn format_arithmetic(body: &str, values: &[(&str, String)]) -> Option<String> {
             "*" => left * right,
             "/" if right != 0.0 => left / right,
             "==" => {
-                return Some(
-                    (left == right)
-                        .then_some("1".to_owned())
-                        .unwrap_or_else(|| "0".to_owned()),
-                );
+                return Some(if left == right { "1" } else { "0" }.to_owned());
             }
             "!=" => {
-                return Some(
-                    (left != right)
-                        .then_some("1".to_owned())
-                        .unwrap_or_else(|| "0".to_owned()),
-                );
+                return Some(if left != right { "1" } else { "0" }.to_owned());
             }
             "<" => {
-                return Some(
-                    (left < right)
-                        .then_some("1".to_owned())
-                        .unwrap_or_else(|| "0".to_owned()),
-                );
+                return Some(if left < right { "1" } else { "0" }.to_owned());
             }
             ">" => {
-                return Some(
-                    (left > right)
-                        .then_some("1".to_owned())
-                        .unwrap_or_else(|| "0".to_owned()),
-                );
+                return Some(if left > right { "1" } else { "0" }.to_owned());
             }
             "<=" => {
-                return Some(
-                    (left <= right)
-                        .then_some("1".to_owned())
-                        .unwrap_or_else(|| "0".to_owned()),
-                );
+                return Some(if left <= right { "1" } else { "0" }.to_owned());
             }
             ">=" => {
-                return Some(
-                    (left >= right)
-                        .then_some("1".to_owned())
-                        .unwrap_or_else(|| "0".to_owned()),
-                );
+                return Some(if left >= right { "1" } else { "0" }.to_owned());
             }
             _ => return None,
         };
@@ -11896,46 +11995,22 @@ fn format_arithmetic(body: &str, values: &[(&str, String)]) -> Option<String> {
         "/" => left.checked_div(right)?,
         "m" | "%" => left.checked_rem(right)?,
         "==" => {
-            return Some(
-                (left == right)
-                    .then_some("1".to_owned())
-                    .unwrap_or_else(|| "0".to_owned()),
-            );
+            return Some(if left == right { "1" } else { "0" }.to_owned());
         }
         "!=" => {
-            return Some(
-                (left != right)
-                    .then_some("1".to_owned())
-                    .unwrap_or_else(|| "0".to_owned()),
-            );
+            return Some(if left != right { "1" } else { "0" }.to_owned());
         }
         "<" => {
-            return Some(
-                (left < right)
-                    .then_some("1".to_owned())
-                    .unwrap_or_else(|| "0".to_owned()),
-            );
+            return Some(if left < right { "1" } else { "0" }.to_owned());
         }
         ">" => {
-            return Some(
-                (left > right)
-                    .then_some("1".to_owned())
-                    .unwrap_or_else(|| "0".to_owned()),
-            );
+            return Some(if left > right { "1" } else { "0" }.to_owned());
         }
         "<=" => {
-            return Some(
-                (left <= right)
-                    .then_some("1".to_owned())
-                    .unwrap_or_else(|| "0".to_owned()),
-            );
+            return Some(if left <= right { "1" } else { "0" }.to_owned());
         }
         ">=" => {
-            return Some(
-                (left >= right)
-                    .then_some("1".to_owned())
-                    .unwrap_or_else(|| "0".to_owned()),
-            );
+            return Some(if left >= right { "1" } else { "0" }.to_owned());
         }
         _ => return None,
     };
@@ -12204,20 +12279,36 @@ fn format_environment(format: Option<&str>, name: &str, value: &str) -> String {
     )
 }
 
-fn format_pane(
-    session: &Session,
-    window: &Window,
-    pane: &Pane,
+struct FormatPaneOptions<'a> {
+    session: &'a Session,
+    window: &'a Window,
+    pane: &'a Pane,
     marked: bool,
     marked_set: bool,
-    mode: Option<&CopyModeState>,
+    mode: Option<&'a CopyModeState>,
     linked_sessions: usize,
     group_info: (bool, usize, String),
-    session_names: &str,
-    window_names: &str,
-    options: &HashMap<String, String>,
-    format: &str,
-) -> String {
+    session_names: &'a str,
+    window_names: &'a str,
+    options: &'a HashMap<String, String>,
+    format: &'a str,
+}
+
+fn format_pane(options: FormatPaneOptions<'_>) -> String {
+    let FormatPaneOptions {
+        session,
+        window,
+        pane,
+        marked,
+        marked_set,
+        mode,
+        linked_sessions,
+        group_info,
+        session_names,
+        window_names,
+        options,
+        format,
+    } = options;
     let mode_active = pane.panes_mode || mode.is_some();
     let mode_name = if pane.panes_mode {
         "panes-mode"
@@ -12551,20 +12642,17 @@ fn format_buffer(buffer: &Buffer, format: &str, options: &HashMap<String, String
     render_format_with_options(format, &buffer_values(buffer), options)
 }
 
-fn parse_tree_mode_command(
-    arguments: &[String],
-) -> Result<
-    (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        bool,
-        bool,
-        bool,
-    ),
-    String,
-> {
+struct TreeModeOptions {
+    target: Option<String>,
+    format: Option<String>,
+    filter: Option<String>,
+    sort: String,
+    reverse: bool,
+    hide_source: bool,
+    kill_on_exit: bool,
+}
+
+fn parse_tree_mode_command(arguments: &[String]) -> Result<TreeModeOptions, String> {
     let mut target = None;
     let mut format = None;
     let mut filter = None;
@@ -12617,7 +12705,7 @@ fn parse_tree_mode_command(
         }
         index += 1;
     }
-    Ok((
+    Ok(TreeModeOptions {
         target,
         format,
         filter,
@@ -12625,22 +12713,19 @@ fn parse_tree_mode_command(
         reverse,
         hide_source,
         kill_on_exit,
-    ))
+    })
 }
 
-fn parse_panes_mode_command(
-    arguments: &[String],
-) -> Result<
-    (
-        Option<String>,
-        Option<String>,
-        bool,
-        bool,
-        Vec<String>,
-        bool,
-    ),
-    String,
-> {
+struct PanesModeOptions {
+    target: Option<String>,
+    source: Option<String>,
+    no_zoom: bool,
+    no_mode: bool,
+    command: Vec<String>,
+    kill_on_exit: bool,
+}
+
+fn parse_panes_mode_command(arguments: &[String]) -> Result<PanesModeOptions, String> {
     let mut target = None;
     let mut source = None;
     let mut no_zoom = false;
@@ -12708,22 +12793,26 @@ fn parse_panes_mode_command(
         }
         index += 1;
     }
-    Ok((target, source, no_zoom, no_mode, command, kill_on_exit))
+    Ok(PanesModeOptions {
+        target,
+        source,
+        no_zoom,
+        no_mode,
+        command,
+        kill_on_exit,
+    })
 }
 
-fn parse_buffer_mode_command(
-    arguments: &[String],
-) -> Result<
-    (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        bool,
-        bool,
-    ),
-    String,
-> {
+struct BufferModeOptions {
+    target: Option<String>,
+    format: Option<String>,
+    filter: Option<String>,
+    sort: String,
+    reverse: bool,
+    kill_on_exit: bool,
+}
+
+fn parse_buffer_mode_command(arguments: &[String]) -> Result<BufferModeOptions, String> {
     let mut target = None;
     let mut format = None;
     let mut filter = None;
@@ -12774,12 +12863,24 @@ fn parse_buffer_mode_command(
         }
         index += 1;
     }
-    Ok((target, format, filter, sort, reverse, kill_on_exit))
+    Ok(BufferModeOptions {
+        target,
+        format,
+        filter,
+        sort,
+        reverse,
+        kill_on_exit,
+    })
 }
 
-fn parse_client_mode_command(
-    arguments: &[String],
-) -> Result<(Option<String>, Option<String>, Option<String>, bool), String> {
+struct ClientModeOptions {
+    target: Option<String>,
+    format: Option<String>,
+    filter: Option<String>,
+    kill_on_exit: bool,
+}
+
+fn parse_client_mode_command(arguments: &[String]) -> Result<ClientModeOptions, String> {
     let mut target = None;
     let mut format = None;
     let mut filter = None;
@@ -12820,7 +12921,12 @@ fn parse_client_mode_command(
         }
         index += 1;
     }
-    Ok((target, format, filter, kill_on_exit))
+    Ok(ClientModeOptions {
+        target,
+        format,
+        filter,
+        kill_on_exit,
+    })
 }
 
 fn parse_copy_action(value: &str) -> Result<CopyAction, String> {
@@ -13613,44 +13719,50 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("zzz"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("zzz"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create zzz session");
         state
             .split_window(
                 &shared,
-                Some("zzz:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("zzz:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split zzz session");
         state
             .create_session(
                 &shared,
-                Some("aaa"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("aaa"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create aaa session");
         let (_, client_id) = state
@@ -13660,13 +13772,15 @@ mod tests {
         state
             .enter_tree_mode(
                 client_id,
-                Some("aaa:0"),
-                Some("#{session_name}:F"),
-                Some("#{==:#{session_name},aaa}"),
-                "index",
-                false,
-                false,
-                false,
+                TreeModeOptions {
+                    target: Some("aaa:0".to_owned()),
+                    format: Some("#{session_name}:F".to_owned()),
+                    filter: Some("#{==:#{session_name},aaa}".to_owned()),
+                    sort: "index".to_owned(),
+                    reverse: false,
+                    hide_source: false,
+                    kill_on_exit: false,
+                },
             )
             .expect("enter tree mode");
         let session_id = state.clients[&client_id].session_id;
@@ -13692,13 +13806,15 @@ mod tests {
         state
             .enter_tree_mode(
                 client_id,
-                Some("aaa:0"),
-                Some("#{session_name}:F"),
-                None,
-                "index",
-                false,
-                false,
-                false,
+                TreeModeOptions {
+                    target: Some("aaa:0".to_owned()),
+                    format: Some("#{session_name}:F".to_owned()),
+                    filter: None,
+                    sort: "index".to_owned(),
+                    reverse: false,
+                    hide_source: false,
+                    kill_on_exit: false,
+                },
             )
             .expect("re-enter tree mode");
         let rendered = state
@@ -13738,13 +13854,15 @@ mod tests {
         state
             .enter_tree_mode(
                 client_id,
-                Some("aaa:0"),
-                Some("#{session_name}:F"),
-                Some("#{==:#{session_name},nosuch}"),
-                "index",
-                false,
-                true,
-                false,
+                TreeModeOptions {
+                    target: Some("aaa:0".to_owned()),
+                    format: Some("#{session_name}:F".to_owned()),
+                    filter: Some("#{==:#{session_name},nosuch}".to_owned()),
+                    sort: "index".to_owned(),
+                    reverse: false,
+                    hide_source: true,
+                    kill_on_exit: false,
+                },
             )
             .expect("enter no-match tree mode");
         let rendered = state
@@ -13762,30 +13880,34 @@ mod tests {
         state
             .new_window(
                 &shared,
-                Some("zzz"),
-                None,
-                true,
-                None,
-                false,
-                None,
-                false,
-                false,
-                false,
-                true,
-                &[],
-                None,
+                NewWindowOptions {
+                    target: Some("zzz"),
+                    name: None,
+                    detached: true,
+                    requested_index: None,
+                    force: false,
+                    format: None,
+                    after: false,
+                    before: false,
+                    select_existing: false,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("add tree window for kill test");
         state
             .enter_tree_mode(
                 client_id,
-                Some("zzz:0"),
-                Some("#{session_name}:G"),
-                None,
-                "index",
-                false,
-                false,
-                false,
+                TreeModeOptions {
+                    target: Some("zzz:0".to_owned()),
+                    format: Some("#{session_name}:G".to_owned()),
+                    filter: None,
+                    sort: "index".to_owned(),
+                    reverse: false,
+                    hide_source: false,
+                    kill_on_exit: false,
+                },
             )
             .expect("re-enter tree mode for kill test");
         state.handle_client_input(client_id, b"gjjjjx", &shared);
@@ -13820,29 +13942,33 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("aaa"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("aaa"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create buffer session");
         state
             .create_session(
                 &shared,
-                Some("bbb"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("bbb"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create client session");
         let (_, client_a) = state
@@ -13857,12 +13983,14 @@ mod tests {
         state
             .enter_buffer_mode(
                 client_a,
-                Some("aaa:0"),
-                Some("B"),
-                Some("#{m:*log*,#{buffer_sample}}"),
-                "name",
-                false,
-                false,
+                BufferModeOptions {
+                    target: Some("aaa:0".to_owned()),
+                    format: Some("B".to_owned()),
+                    filter: Some("#{m:*log*,#{buffer_sample}}".to_owned()),
+                    sort: "name".to_owned(),
+                    reverse: false,
+                    kill_on_exit: false,
+                },
             )
             .expect("enter buffer mode");
         let session_id = state.clients[&client_a].session_id;
@@ -13884,12 +14012,14 @@ mod tests {
         state
             .enter_buffer_mode(
                 client_a,
-                Some("aaa:0"),
-                Some("B"),
-                Some("#{==:#{buffer_name},nosuch}"),
-                "index",
-                false,
-                false,
+                BufferModeOptions {
+                    target: Some("aaa:0".to_owned()),
+                    format: Some("B".to_owned()),
+                    filter: Some("#{==:#{buffer_name},nosuch}".to_owned()),
+                    sort: "index".to_owned(),
+                    reverse: false,
+                    kill_on_exit: false,
+                },
             )
             .expect("enter no-match buffer mode");
         let rendered = state
@@ -13906,7 +14036,17 @@ mod tests {
 
         state.store_buffer(Some("bufa".to_owned()), b"paste".to_vec(), false);
         state
-            .enter_buffer_mode(client_a, Some("aaa:0"), None, None, "index", false, false)
+            .enter_buffer_mode(
+                client_a,
+                BufferModeOptions {
+                    target: Some("aaa:0".to_owned()),
+                    format: None,
+                    filter: None,
+                    sort: "index".to_owned(),
+                    reverse: false,
+                    kill_on_exit: false,
+                },
+            )
             .expect("re-enter buffer mode");
         state.handle_client_input(client_a, b"\r", &shared);
         assert!(state.clients[&client_a].buffer_mode.is_none());
@@ -13914,10 +14054,12 @@ mod tests {
         state
             .enter_client_mode(
                 client_a,
-                Some("aaa:0"),
-                Some("C=#{client_session}"),
-                Some("#{==:#{client_session},bbb}"),
-                false,
+                ClientModeOptions {
+                    target: Some("aaa:0".to_owned()),
+                    format: Some("C=#{client_session}".to_owned()),
+                    filter: Some("#{==:#{client_session},bbb}".to_owned()),
+                    kill_on_exit: false,
+                },
             )
             .expect("enter client mode");
         let rendered = state
@@ -13940,30 +14082,34 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("panes"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("panes"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create panes session");
         state
             .split_window(
                 &shared,
-                Some("panes:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("panes:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split panes session");
         state
@@ -14084,15 +14230,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("render-split"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("render-split"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create render split session");
         state
@@ -14101,16 +14249,18 @@ mod tests {
         state
             .split_window(
                 &shared,
-                Some("render-split:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("render-split:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split render session");
         let left = state.sessions[0].windows[0].panes[0].id;
@@ -14181,15 +14331,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("render-cursor"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("render-cursor"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create render cursor session");
         let pane = state.sessions[0].windows[0].panes[0].id;
@@ -14266,30 +14418,34 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("mouse-resize"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("mouse-resize"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create mouse resize session");
         state
             .split_window(
                 &shared,
-                Some("mouse-resize:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("mouse-resize:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split mouse resize session");
         state
@@ -14319,30 +14475,34 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("mouse-pass-through"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 6),
+                CreateSessionOptions {
+                    name: Some("mouse-pass-through"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 6),
+                },
             )
             .expect("create mouse pass-through session");
         state
             .split_window(
                 &shared,
-                Some("mouse-pass-through:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("mouse-pass-through:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split mouse pass-through session");
         let right_pane = state.sessions[0].windows[0].panes[1].id;
@@ -14374,30 +14534,34 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("top-status-mouse"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 6),
+                CreateSessionOptions {
+                    name: Some("top-status-mouse"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 6),
+                },
             )
             .expect("create top status mouse session");
         state
             .split_window(
                 &shared,
-                Some("top-status-mouse:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("top-status-mouse:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split top status mouse session");
         let right_pane = state.sessions[0].windows[0].panes[1].id;
@@ -14432,15 +14596,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("status-height"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("status-height"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create status-height session");
         state
@@ -14479,30 +14645,34 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("exited-reflow"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 6),
+                CreateSessionOptions {
+                    name: Some("exited-reflow"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 6),
+                },
             )
             .expect("create exited reflow session");
         state
             .split_window(
                 &shared,
-                Some("exited-reflow:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("exited-reflow:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split exited reflow session");
         let removed = state.sessions[0].windows[0].panes[1].id;
@@ -14521,15 +14691,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("mode-kill"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("mode-kill"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create mode-kill session");
         state.store_buffer(Some("kill-buffer".to_owned()), b"buffer".to_vec(), false);
@@ -14542,16 +14714,18 @@ mod tests {
                 state
                     .split_window(
                         &shared,
-                        Some("mode-kill:0"),
-                        true,
-                        false,
-                        false,
-                        false,
-                        false,
-                        true,
-                        None,
-                        &[],
-                        None,
+                        SplitWindowOptions {
+                            target: Some("mode-kill:0"),
+                            horizontal: true,
+                            before: false,
+                            full: false,
+                            detached: false,
+                            zoom: false,
+                            empty: true,
+                            split_size: None,
+                            command: &[],
+                            cwd: None,
+                        },
                     )
                     .expect("split mode-kill pane");
             }
@@ -14560,28 +14734,40 @@ mod tests {
                 "tree" => state
                     .enter_tree_mode(
                         client_id,
-                        Some("mode-kill:0"),
-                        None,
-                        None,
-                        "index",
-                        false,
-                        false,
-                        true,
+                        TreeModeOptions {
+                            target: Some("mode-kill:0".to_owned()),
+                            format: None,
+                            filter: None,
+                            sort: "index".to_owned(),
+                            reverse: false,
+                            hide_source: false,
+                            kill_on_exit: true,
+                        },
                     )
                     .expect("enter kill tree mode"),
                 "buffer" => state
                     .enter_buffer_mode(
                         client_id,
-                        Some("mode-kill:0"),
-                        None,
-                        None,
-                        "index",
-                        false,
-                        true,
+                        BufferModeOptions {
+                            target: Some("mode-kill:0".to_owned()),
+                            format: None,
+                            filter: None,
+                            sort: "index".to_owned(),
+                            reverse: false,
+                            kill_on_exit: true,
+                        },
                     )
                     .expect("enter kill buffer mode"),
                 "client" => state
-                    .enter_client_mode(client_id, Some("mode-kill:0"), None, None, true)
+                    .enter_client_mode(
+                        client_id,
+                        ClientModeOptions {
+                            target: Some("mode-kill:0".to_owned()),
+                            format: None,
+                            filter: None,
+                            kill_on_exit: true,
+                        },
+                    )
                     .expect("enter kill client mode"),
                 "panes" => state
                     .enter_panes_mode(client_id, Some("mode-kill:0"), None, true, None, true)
@@ -14614,30 +14800,34 @@ mod tests {
             state
                 .create_session(
                     &shared,
-                    Some("sync"),
-                    false,
-                    None,
-                    None,
-                    None,
-                    false,
-                    &left,
-                    None,
-                    Size::new(40, 6),
+                    CreateSessionOptions {
+                        name: Some("sync"),
+                        attach_existing: false,
+                        group_target: None,
+                        format: None,
+                        window_name: None,
+                        empty: false,
+                        command: &left,
+                        cwd: None,
+                        size: Size::new(40, 6),
+                    },
                 )
                 .expect("create sync session");
             state
                 .split_window(
                     &shared,
-                    Some("sync:0"),
-                    true,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    None,
-                    &right,
-                    None,
+                    SplitWindowOptions {
+                        target: Some("sync:0"),
+                        horizontal: true,
+                        before: false,
+                        full: false,
+                        detached: false,
+                        zoom: false,
+                        empty: false,
+                        split_size: None,
+                        command: &right,
+                        cwd: None,
+                    },
                 )
                 .expect("split sync window");
             state
@@ -14671,29 +14861,33 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("one"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(80, 24),
+                CreateSessionOptions {
+                    name: Some("one"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(80, 24),
+                },
             )
             .expect("create first session");
         state
             .create_session(
                 &shared,
-                Some("two"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(80, 24),
+                CreateSessionOptions {
+                    name: Some("two"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(80, 24),
+                },
             )
             .expect("create second session");
         let (_, client_id) = state
@@ -14739,15 +14933,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("render-copy"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 3),
+                CreateSessionOptions {
+                    name: Some("render-copy"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 3),
+                },
             )
             .expect("create render session");
         let session_id = state.sessions[0].id;
@@ -14807,15 +15003,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("redraw-tail"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 5),
+                CreateSessionOptions {
+                    name: Some("redraw-tail"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 5),
+                },
             )
             .expect("create redraw session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -14884,30 +15082,34 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("render-source"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("render-source"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create source render session");
         state
             .split_window(
                 &shared,
-                Some("render-source:0"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("render-source:0"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split source render session");
         let session_id = state.sessions[0].id;
@@ -14951,15 +15153,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("copy-format"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 5),
+                CreateSessionOptions {
+                    name: Some("copy-format"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 5),
+                },
             )
             .expect("create copy format session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -14992,15 +15196,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("copy-lines"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 5),
+                CreateSessionOptions {
+                    name: Some("copy-lines"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 5),
+                },
             )
             .expect("create line number session");
         let session_id = state.sessions[0].id;
@@ -15079,15 +15285,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("binding"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                Some(&cwd),
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("binding"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: Some(&cwd),
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create binding session");
         let (session_id, client_id) = state
@@ -15123,15 +15331,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("clipboard"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 5),
+                CreateSessionOptions {
+                    name: Some("clipboard"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 5),
+                },
             )
             .expect("create clipboard session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -15181,15 +15391,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("clipboard-flag"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 5),
+                CreateSessionOptions {
+                    name: Some("clipboard-flag"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 5),
+                },
             )
             .expect("create clipboard flag session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -15231,15 +15443,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("copy-refresh"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("copy-refresh"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create copy refresh session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -15292,15 +15506,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("copy-refresh-now"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("copy-refresh-now"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create refresh-now session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -15373,15 +15589,17 @@ mod tests {
         state
             .create_session(
                 &shared,
-                Some("configured-keys"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("configured-keys"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create configured-key session");
         let (_, client_id) = state
@@ -15474,15 +15692,17 @@ bind -r Right swap-window -t +1\; select-window -t +1
         state
             .create_session(
                 &shared,
-                Some("pane-bindings"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("pane-bindings"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create pane binding session");
         let (_, client_id) = state
@@ -15495,18 +15715,20 @@ bind -r Right swap-window -t +1\; select-window -t +1
         state
             .new_window(
                 &shared,
-                Some("pane-bindings"),
-                Some("destination"),
-                false,
-                None,
-                false,
-                None,
-                false,
-                false,
-                false,
-                false,
-                &[],
-                None,
+                NewWindowOptions {
+                    target: Some("pane-bindings"),
+                    name: Some("destination"),
+                    detached: false,
+                    requested_index: None,
+                    force: false,
+                    format: None,
+                    after: false,
+                    before: false,
+                    select_existing: false,
+                    empty: false,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("create destination window");
         assert_eq!(state.sessions[0].active_window, 2);
@@ -15540,15 +15762,17 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
         state
             .create_session(
                 &shared,
-                Some("prompt"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("prompt"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create prompt session");
         let (session_id, client_id) = state
@@ -15588,32 +15812,36 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
         state
             .create_session(
                 &shared,
-                Some("prefix-digits"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("prefix-digits"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create prefix digit session");
         state
             .new_window(
                 &shared,
-                Some("prefix-digits"),
-                Some("second"),
-                false,
-                None,
-                false,
-                None,
-                false,
-                false,
-                false,
-                true,
-                &[],
-                None,
+                NewWindowOptions {
+                    target: Some("prefix-digits"),
+                    name: Some("second"),
+                    detached: false,
+                    requested_index: None,
+                    force: false,
+                    format: None,
+                    after: false,
+                    before: false,
+                    select_existing: false,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("create second prefix digit window");
         let (_, client_id) = state
@@ -15633,15 +15861,17 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
         state
             .create_session(
                 &shared,
-                Some("three-vertical"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("three-vertical"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create three vertical session");
         let (session_id, client_id) = state
@@ -15669,15 +15899,17 @@ bind n command-prompt -p "name: " "rename-window '%%'"
         state
             .create_session(
                 &shared,
-                Some("prompt-edit"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("prompt-edit"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create prompt editing session");
         let (_, client_id) = state
@@ -15715,15 +15947,17 @@ bind / command-prompt
         state
             .create_session(
                 &shared,
-                Some("prompt-history"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("prompt-history"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create prompt history session");
         let (_, client_id) = state
@@ -15761,15 +15995,17 @@ bind p command-prompt -P -p "pane: " "set -g @pane '%%'"
         state
             .create_session(
                 &shared,
-                Some("prompt-mechanics"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("prompt-mechanics"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create prompt mechanics session");
         let (_, client_id) = state
@@ -15860,15 +16096,17 @@ bind p command-prompt -P -p "pane: " "set -g @pane '%%'"
         state
             .create_session(
                 &shared,
-                Some("prompt-details"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("prompt-details"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create prompt details session");
         let (_, client_id) = state
@@ -15993,15 +16231,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("copy-key-table"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("copy-key-table"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create copy key table session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16039,15 +16279,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("copy-prompt-edit"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("copy-prompt-edit"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create copy prompt edit session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16100,15 +16342,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("copy-search-prefill"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("copy-search-prefill"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create copy search prefill session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16152,15 +16396,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("copy-prompt-behavior"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("copy-prompt-behavior"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create copy prompt behavior session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16249,15 +16495,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("csi-u-prefix"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("csi-u-prefix"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create csi-u prefix session");
         let (_, client_id) = state
@@ -16296,15 +16544,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("attached-copy-keys"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("attached-copy-keys"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create attached copy key session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16377,15 +16627,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("attached-copy-modifiers"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("attached-copy-modifiers"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create modified copy key session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16428,15 +16680,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("attached-vi-selection"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("attached-vi-selection"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create attached vi selection session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16486,15 +16740,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("attached-vi-r"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("attached-vi-r"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create attached vi r session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16529,15 +16785,17 @@ bind -T copy-mode C-a send -X end-of-line
         state
             .create_session(
                 &shared,
-                Some("copy-line-state"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("copy-line-state"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create copy-line state session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16584,32 +16842,36 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("repeat"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("repeat"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create repeat session");
         state
             .new_window(
                 &shared,
-                Some("repeat:"),
-                Some("second"),
-                true,
-                None,
-                false,
-                None,
-                false,
-                false,
-                false,
-                true,
-                &[],
-                None,
+                NewWindowOptions {
+                    target: Some("repeat:"),
+                    name: Some("second"),
+                    detached: true,
+                    requested_index: None,
+                    force: false,
+                    format: None,
+                    after: false,
+                    before: false,
+                    select_existing: false,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("create repeat window");
         let (_, client_id) = state
@@ -16638,15 +16900,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("mouse"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 5),
+                CreateSessionOptions {
+                    name: Some("mouse"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 5),
+                },
             )
             .expect("create mouse session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16739,15 +17003,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("wheel-selection"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(40, 10),
+                CreateSessionOptions {
+                    name: Some("wheel-selection"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 10),
+                },
             )
             .expect("create wheel selection session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -16807,15 +17073,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("scrollbar-mouse"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("scrollbar-mouse"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create scrollbar mouse session");
         state
@@ -16897,15 +17165,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("scrollbar-grab"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("scrollbar-grab"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create scrollbar grab session");
         state
@@ -16962,15 +17232,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("scrollbar-render"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("scrollbar-render"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create scrollbar render session");
         state
@@ -17010,15 +17282,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("scrollbar-copy-render"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("scrollbar-copy-render"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create copy scrollbar session");
         state
@@ -17098,15 +17372,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("scrollbar-left-render"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("scrollbar-left-render"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create left scrollbar session");
         state
@@ -17162,15 +17438,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("copy-mouse-flags"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 6),
+                CreateSessionOptions {
+                    name: Some("copy-mouse-flags"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 6),
+                },
             )
             .expect("create copy mouse flags session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17323,15 +17601,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("copy-command"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("copy-command"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create copy command session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17380,15 +17660,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("incremental-origin"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 5),
+                CreateSessionOptions {
+                    name: Some("incremental-origin"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 5),
+                },
             )
             .expect("create incremental search session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17447,15 +17729,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("mouse-clicks"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("mouse-clicks"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create mouse click session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17490,15 +17774,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("mouse-drag"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("mouse-drag"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create mouse drag session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17549,15 +17835,17 @@ bind -r Right next-window
             state
                 .create_session(
                     &shared,
-                    Some("mouse-paste"),
-                    false,
-                    None,
-                    None,
-                    None,
-                    false,
-                    &command,
-                    None,
-                    Size::new(30, 6),
+                    CreateSessionOptions {
+                        name: Some("mouse-paste"),
+                        attach_existing: false,
+                        group_target: None,
+                        format: None,
+                        window_name: None,
+                        empty: false,
+                        command: &command,
+                        cwd: None,
+                        size: Size::new(30, 6),
+                    },
                 )
                 .expect("create mouse paste session");
             state.store_buffer(None, b"middle paste".to_vec(), false);
@@ -17588,15 +17876,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("mouse-wide"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 5),
+                CreateSessionOptions {
+                    name: Some("mouse-wide"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 5),
+                },
             )
             .expect("create wide mouse session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17632,30 +17922,34 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("mouse-select"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("mouse-select"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create mouse selection session");
         state
             .split_window(
                 &shared,
-                Some("mouse-select:"),
-                true,
-                false,
-                false,
-                false,
-                false,
-                true,
-                None,
-                &[],
-                None,
+                SplitWindowOptions {
+                    target: Some("mouse-select:"),
+                    horizontal: true,
+                    before: false,
+                    full: false,
+                    detached: false,
+                    zoom: false,
+                    empty: true,
+                    split_size: None,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("split mouse selection session");
         let window = &mut state.sessions[0].windows[0];
@@ -17704,15 +17998,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("mouse-format"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("mouse-format"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create mouse format session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17792,15 +18088,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("mouse-hyperlink"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(30, 6),
+                CreateSessionOptions {
+                    name: Some("mouse-hyperlink"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(30, 6),
+                },
             )
             .expect("create mouse hyperlink session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17834,32 +18132,36 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("swap-config"),
-                false,
-                None,
-                None,
-                Some("first"),
-                true,
-                &[],
-                None,
-                Size::new(40, 8),
+                CreateSessionOptions {
+                    name: Some("swap-config"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: Some("first"),
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(40, 8),
+                },
             )
             .expect("create swap session");
         state
             .new_window(
                 &shared,
-                Some("swap-config:"),
-                Some("second"),
-                true,
-                None,
-                false,
-                None,
-                false,
-                false,
-                false,
-                true,
-                &[],
-                None,
+                NewWindowOptions {
+                    target: Some("swap-config:"),
+                    name: Some("second"),
+                    detached: true,
+                    requested_index: None,
+                    force: false,
+                    format: None,
+                    after: false,
+                    before: false,
+                    select_existing: false,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                },
             )
             .expect("create second window");
         state
@@ -17880,15 +18182,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("checkpoint"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 4),
+                CreateSessionOptions {
+                    name: Some("checkpoint"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 4),
+                },
             )
             .expect("create checkpoint session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
@@ -17925,15 +18229,17 @@ bind -r Right next-window
         state
             .create_session(
                 &shared,
-                Some("clear-history"),
-                false,
-                None,
-                None,
-                None,
-                true,
-                &[],
-                None,
-                Size::new(20, 4),
+                CreateSessionOptions {
+                    name: Some("clear-history"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 4),
+                },
             )
             .expect("create clear-history session");
         let pane_id = state.sessions[0].windows[0].panes[0].id;

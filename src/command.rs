@@ -1489,15 +1489,14 @@ fn parse_choose_tree(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_choose_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let (target, filter, format, sort, reverse, kill_on_exit) =
-        parse_choose_list_options(arguments, true)?;
+    let options = parse_choose_list_options(arguments, true)?;
     Ok(InvocationSpec::plain(Request::ChooseBuffer {
-        target,
-        filter,
-        format,
-        sort,
-        reverse,
-        kill_on_exit,
+        target: options.target,
+        filter: options.filter,
+        format: options.format,
+        sort: options.sort,
+        reverse: options.reverse,
+        kill_on_exit: options.kill_on_exit,
     }))
 }
 
@@ -1535,20 +1534,19 @@ fn parse_choose_client(arguments: &[String]) -> Result<InvocationSpec, String> {
     }))
 }
 
+struct ChooseListOptions {
+    target: Option<String>,
+    filter: Option<String>,
+    format: Option<String>,
+    sort: String,
+    reverse: bool,
+    kill_on_exit: bool,
+}
+
 fn parse_choose_list_options(
     arguments: &[String],
     allow_sort: bool,
-) -> Result<
-    (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        bool,
-        bool,
-    ),
-    String,
-> {
+) -> Result<ChooseListOptions, String> {
     let mut target = None;
     let mut filter = None;
     let mut format = None;
@@ -1581,7 +1579,14 @@ fn parse_choose_list_options(
         }
         index += 1;
     }
-    Ok((target, filter, format, sort, reverse, kill_on_exit))
+    Ok(ChooseListOptions {
+        target,
+        filter,
+        format,
+        sort,
+        reverse,
+        kill_on_exit,
+    })
 }
 
 fn parse_capture_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
