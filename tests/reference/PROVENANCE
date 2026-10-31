@@ -1,0 +1,12 @@
+version: tmux 3.8
+source: https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz
+source-sha256: e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+configure: --enable-utf8proc --disable-jemalloc --prefix=/Users/josh/d/tm/.work/ref/tmux-3.8
+platform: Darwin 27.0.0 arm64
+cc: Apple clang version 21.0.0 (clang-2100.3.34.2)
+libevent: 2.1.13-stable
+utf8proc: 2.12.0
+ncurses: 6.0.20150808
+binary-sha256: 3356dfbcc30799928580f07a08b6915638d0581d9992686d720ae790be777e6c
+baseline: make test 20 s green, make lint 4 s green
+reference-probe: private -S socket with ambient TMUX, TMUX_PANE, and TMUX_TMPDIR cleared
