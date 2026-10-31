@@ -305,6 +305,7 @@ fn parse_attach(arguments: &[String]) -> Result<InvocationSpec, String> {
         request: Request::Attach {
             target: target.clone(),
             size,
+            term: std::env::var("TERM").unwrap_or_default(),
         },
         attach: true,
     })

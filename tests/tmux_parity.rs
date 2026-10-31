@@ -2,6 +2,7 @@
 #![cfg(feature = "parity")]
 
 #[path = "support/parity.rs"]
+#[allow(dead_code)]
 mod parity;
 #[path = "support/pty_harness.rs"]
 mod pty_harness;

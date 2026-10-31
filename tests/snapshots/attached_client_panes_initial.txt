@@ -1,6 +1,6 @@
 size: columns=40 rows=6
 cursor: row=3 column=0 visible=true
-modes: alternate-screen=false application-cursor=false application-keypad=false bracketed-paste=false
+modes: alternate-screen=true application-cursor=false application-keypad=false bracketed-paste=true
 00│VT_FIXTURE_READY····│VT_FIXTURE_READY···
 01│color···············│···················
 02│COLOR_FIXTURE·······│···················

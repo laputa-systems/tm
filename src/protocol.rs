@@ -21,6 +21,7 @@ pub(crate) enum Request {
     Attach {
         target: Option<String>,
         size: Size,
+        term: String,
     },
     ListSessions {
         format: Option<String>,
@@ -357,6 +358,7 @@ pub(crate) enum ClientMessage {
 pub(crate) enum ServerMessage {
     Response { ok: bool, body: String },
     Render(Vec<u8>),
+    Restore(Vec<u8>),
     Closed,
 }
 
@@ -387,10 +389,11 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
             put_optional_string(&mut payload, cwd);
             put_size(&mut payload, *size);
         }
-        Request::Attach { target, size } => {
+        Request::Attach { target, size, term } => {
             payload.push(2);
             put_optional_string(&mut payload, target);
             put_size(&mut payload, *size);
+            put_string(&mut payload, term);
         }
         Request::ListSessions { format } => {
             payload.push(3);
@@ -975,6 +978,7 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         2 => Request::Attach {
             target: decoder.optional_string()?,
             size: decoder.size()?,
+            term: decoder.string()?,
         },
         3 => Request::ListSessions {
             format: decoder.optional_string()?,
@@ -1324,6 +1328,10 @@ pub(crate) fn write_server_message(
             payload.push(2);
             put_bytes(&mut payload, bytes);
         }
+        ServerMessage::Restore(bytes) => {
+            payload.push(4);
+            put_bytes(&mut payload, bytes);
+        }
         ServerMessage::Closed => payload.push(3),
     }
     write_frame(stream, &payload)
@@ -1338,6 +1346,7 @@ pub(crate) fn read_server_message(stream: &mut impl Read) -> io::Result<ServerMe
             body: decoder.string()?,
         },
         2 => ServerMessage::Render(decoder.bytes()?),
+        4 => ServerMessage::Restore(decoder.bytes()?),
         3 => ServerMessage::Closed,
         _ => return Err(invalid_data("unknown server message tag")),
     };

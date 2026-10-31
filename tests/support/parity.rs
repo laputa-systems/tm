@@ -105,6 +105,11 @@ impl Mux {
         }
     }
 
+    pub fn with_term(mut self, term: &str) -> Self {
+        self.term = term.to_owned();
+        self
+    }
+
     pub fn implementation(&self) -> Implementation {
         self.implementation
     }

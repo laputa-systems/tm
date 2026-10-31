@@ -27,7 +27,10 @@ bindings, including the `C-b` prefix.
 The normal prefix is `C-a`. `C-a %` and `C-a "` split panes, `C-a h`, `C-a j`,
 and `C-a l` move between panes, `C-a k` kills the current pane, `C-a d`
 detaches, and `C-a [` enters copy mode. Settings and bindings are compiled in.
-`tm` does not read tmux configuration files or `TM_CONFIG`.
+`tm` does not read tmux configuration files or `TM_CONFIG`. Attaching uses the
+alternate screen and restores your shell screen on detach; mouse, focus, paste,
+sync, and extended-key sequences are enabled only when the terminal profile
+advertises them.
 
 Run `tm help` for the command summary. Report problems in the
 [issue tracker](https://github.com/laputa-systems/tm/issues). The project is

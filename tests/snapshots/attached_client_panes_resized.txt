@@ -1,6 +1,6 @@
 size: columns=40 rows=6
 cursor: row=4 column=0 visible=true
-modes: alternate-screen=false application-cursor=false application-keypad=false bracketed-paste=false
+modes: alternate-screen=true application-cursor=false application-keypad=false bracketed-paste=true
 00│SCROLL_15··········[5/24]│VT_FIXTURE_REA
 01│SCROLL_16················│··············
 02│SCROLL_17················│··············

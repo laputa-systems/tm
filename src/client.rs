@@ -92,9 +92,10 @@ fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream,
 fn attach_loop(socket: &std::path::Path, target: Option<String>) -> Result<(), String> {
     let mut stream = UnixStream::connect(socket).map_err(|error| error.to_string())?;
     let size = terminal::size();
+    let term = std::env::var("TERM").unwrap_or_default();
     write_request(
         &mut stream,
-        &crate::protocol::Request::Attach { target, size },
+        &crate::protocol::Request::Attach { target, size, term },
     )
     .map_err(|error| error.to_string())?;
     let response = read_server_message(&mut stream).map_err(|error| error.to_string())?;
@@ -129,9 +130,17 @@ fn attach_stream(mut stream: UnixStream, size: Size) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let mut stdout = io::stdout();
+    let mut restored = false;
     while alive.load(Ordering::Acquire) {
         match read_server_message(&mut stream) {
             Ok(ServerMessage::Render(bytes)) => {
+                stdout
+                    .write_all(&bytes)
+                    .map_err(|error| error.to_string())?;
+                stdout.flush().map_err(|error| error.to_string())?;
+            }
+            Ok(ServerMessage::Restore(bytes)) => {
+                restored = true;
                 stdout
                     .write_all(&bytes)
                     .map_err(|error| error.to_string())?;
@@ -145,10 +154,20 @@ fn attach_stream(mut stream: UnixStream, size: Size) -> Result<(), String> {
     }
     alive.store(false, Ordering::Release);
     let _ = raw.restore_for_drop();
-    stdout
-        .write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[>0u\x1b[?25h\x1b[0m\n")
-        .map_err(|error| error.to_string())?;
-    stdout.flush().map_err(|error| error.to_string())?;
+    if !restored {
+        let term = std::env::var("TERM").unwrap_or_default();
+        let features = crate::config::COMPILED_OPTIONS
+        .iter()
+        .find(|(key, _)| *key == "terminal-features")
+        .map(|(_, value)| *value)
+        .unwrap_or("");
+        let capabilities = terminal::Capabilities::for_term(&term, features);
+        let restore = terminal::restore_sequence(&capabilities);
+        stdout
+            .write_all(&restore)
+            .map_err(|error| error.to_string())?;
+        stdout.flush().map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

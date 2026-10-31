@@ -12,6 +12,22 @@ pub fn spawn_attached(
     arguments: &[&str],
     size: Size,
 ) -> PtyTest {
+    spawn_attached_with_profile(
+        mux,
+        name,
+        arguments,
+        size,
+        ProtocolProfile::disabled(),
+    )
+}
+
+pub fn spawn_attached_with_profile(
+    mux: &Mux,
+    name: &str,
+    arguments: &[&str],
+    size: Size,
+    profile: ProtocolProfile,
+) -> PtyTest {
     let environment = TestEnv::hermetic_utf8("en_US.UTF-8")
         .or_else(|_| TestEnv::hermetic())
         .expect("create hermetic attached environment")
@@ -40,7 +56,7 @@ pub fn spawn_attached(
     .command(command)
     .size(size)
     .environment(environment)
-    .protocol_profile(ProtocolProfile::disabled());
+    .protocol_profile(profile);
     PtyTest::spawn(scenario).expect("spawn attached parity client")
 }
 

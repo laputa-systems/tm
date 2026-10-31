@@ -133,8 +133,8 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
         Ok(request) => request,
         Err(_) => return,
     };
-    if let Request::Attach { target, size } = request {
-        attach_client(stream, shared, target, size);
+    if let Request::Attach { target, size, term } = request {
+        attach_client(stream, shared, target, size, term);
         return;
     }
 
@@ -153,9 +153,15 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
     let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
 }
 
-fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<String>, size: Size) {
+fn attach_client(
+    mut stream: UnixStream,
+    shared: SharedState,
+    target: Option<String>,
+    size: Size,
+    term: String,
+) {
     let (_session_id, client_id) = match shared.lock() {
-        Ok(mut state) => match state.register_client(target.as_deref(), size) {
+        Ok(mut state) => match state.register_client_with_term(target.as_deref(), size, &term) {
             Ok(client) => {
                 state.mark_render_dirty();
                 client
@@ -216,13 +222,22 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                             state.activate_client(client_id);
                             state.handle_client_input(client_id, &bytes, &input_state);
                             state.mark_render_dirty();
+                            if state
+                                .clients
+                                .get(&client_id)
+                                .is_some_and(|client| client.detach_requested)
+                            {
+                                break;
+                            }
                         }
                         ClientMessage::Resize(size) => {
                             state.resize_client(client_id, size);
                             state.mark_render_dirty();
                         }
                         ClientMessage::Detach => {
-                            state.remove_client_with_reflow(client_id);
+                            if let Some(client) = state.clients.get_mut(&client_id) {
+                                client.detach_requested = true;
+                            }
                             state.mark_render_dirty();
                             break;
                         }
@@ -250,6 +265,9 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                 let Some(client) = state.clients.get(&client_id) else {
                     break None;
                 };
+                if client.detach_requested {
+                    break None;
+                }
                 let session_id = client.session_id;
                 let render_size = client.size.bounded();
                 let revision = state.render_revision;
@@ -330,6 +348,13 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
     }
     alive.store(false, std::sync::atomic::Ordering::Release);
     if let Ok(mut state) = shared.lock() {
+        let restore = state
+            .pending_restores
+            .remove(&client_id)
+            .unwrap_or_else(|| state.take_client_restore(client_id));
+        if !restore.is_empty() {
+            let _ = write_server_message(&mut stream, &ServerMessage::Restore(restore));
+        }
         state.remove_client_with_reflow(client_id);
         state.mark_render_dirty();
     }
@@ -377,6 +402,7 @@ struct ServerState {
     exec_context: Option<ExecContext>,
     activity_counter: u64,
     key_timer_counter: u64,
+    pending_restores: HashMap<u64, Vec<u8>>,
 }
 
 /// A deterministic in-process render fixture for performance benchmarks.
@@ -523,6 +549,9 @@ struct AttachedClient {
     session_id: u64,
     size: Size,
     activity: u64,
+    term: String,
+    modes: terminal::TerminalModes,
+    detach_requested: bool,
     prefix_pending: bool,
     key_buffer: Vec<u8>,
     input_buffer: Vec<u8>,
@@ -1046,6 +1075,7 @@ impl ServerState {
             exec_context: None,
             activity_counter: 0,
             key_timer_counter: 0,
+            pending_restores: HashMap::new(),
         }
     }
 
@@ -1597,6 +1627,58 @@ impl ServerState {
         }
     }
 
+    fn desired_terminal_modes(&self, term: &str) -> terminal::TerminalModes {
+        let features = self
+            .global_options
+            .get("terminal-features")
+            .map(String::as_str)
+            .unwrap_or("");
+        let capabilities = terminal::Capabilities::for_term(term, features);
+        terminal::TerminalModes {
+            alternate: true,
+            mouse: self
+                .global_options
+                .get("mouse")
+                .is_some_and(|value| parse_on_off(value).unwrap_or(false))
+                && capabilities.mouse_enable.is_some(),
+            focus: self
+                .global_options
+                .get("focus-events")
+                .is_some_and(|value| parse_on_off(value).unwrap_or(true))
+                && capabilities.focus_enable.is_some(),
+            paste: capabilities.paste_enable.is_some(),
+            extkeys: self
+                .global_options
+                .get("extended-keys")
+                .is_some_and(|value| value != "off")
+                && capabilities.extkeys_enable.is_some(),
+        }
+    }
+
+    fn take_client_restore(&mut self, client_id: u64) -> Vec<u8> {
+        let Some(client) = self.clients.get(&client_id) else {
+            return Vec::new();
+        };
+        let features = self
+            .global_options
+            .get("terminal-features")
+            .cloned()
+            .unwrap_or_default();
+        let capabilities = terminal::Capabilities::for_term(&client.term, &features);
+        let mut restore = Vec::new();
+        terminal::mode_diff(
+            client.modes,
+            terminal::TerminalModes::default(),
+            &capabilities,
+            &mut restore,
+        );
+        if let Some(end) = capabilities.sync_end {
+            restore.extend_from_slice(end);
+        }
+        restore.extend_from_slice(b"\x1b[?25h\x1b[0m");
+        restore
+    }
+
     fn remove_client_with_reflow(&mut self, client_id: u64) {
         let Some(session_id) = self
             .clients
@@ -1613,6 +1695,15 @@ impl ServerState {
     }
 
     fn register_client(&mut self, target: Option<&str>, size: Size) -> Result<(u64, u64), String> {
+        self.register_client_with_term(target, size, "tmux-256color")
+    }
+
+    fn register_client_with_term(
+        &mut self,
+        target: Option<&str>,
+        size: Size,
+        term: &str,
+    ) -> Result<(u64, u64), String> {
         let session_id = self.attach_target(target, size)?;
         let client_id = self.next_client_id;
         self.next_client_id = self.next_client_id.saturating_add(1);
@@ -1624,6 +1715,9 @@ impl ServerState {
                 session_id,
                 size,
                 activity,
+                term: term.to_owned(),
+                modes: terminal::TerminalModes::default(),
+                detach_requested: false,
                 prefix_pending: false,
                 key_buffer: Vec::new(),
                 input_buffer: Vec::new(),
@@ -3715,7 +3809,9 @@ impl ServerState {
                 continue;
             }
             if command[0] == "__detach" {
-                self.remove_client_with_reflow(client_id);
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.detach_requested = true;
+                }
                 return Ok(String::new());
             }
             if command[0] == "send-prefix" {
@@ -5362,6 +5458,18 @@ impl ServerState {
             match scope {
                 OptionScope::Global => return self.set_global_option(key, value, unset),
                 OptionScope::Session => {
+                    if matches!(
+                        key,
+                        "default-terminal"
+                            | "terminal-features"
+                            | "set-clipboard"
+                            | "extended-keys"
+                            | "extended-keys-format"
+                            | "escape-time"
+                            | "focus-events"
+                    ) {
+                        return self.set_global_option(key, value, unset);
+                    }
                     let session_index = self.resolve_session_index(target)?;
                     if unset {
                         self.unset_session_option(session_index, key);
@@ -6157,8 +6265,11 @@ impl ServerState {
             return Err("no matching client".to_owned());
         }
         for id in ids {
+            let restore = self.take_client_restore(id);
+            self.pending_restores.insert(id, restore);
             self.remove_client_with_reflow(id);
         }
+        self.mark_render_dirty();
         Ok(String::new())
     }
 
@@ -7870,6 +7981,31 @@ impl ServerState {
                 .filter(|prompt| prompt.pane)
                 .map(AttachedPrompt::cursor_display)
         });
+        let (mode_output, sync_begin, sync_end) = if let Some(client_id) = client_id {
+            let info = self
+                .clients
+                .get(&client_id)
+                .map(|client| (client.term.clone(), client.modes));
+            if let Some((term, previous)) = info {
+                let features = self
+                    .global_options
+                    .get("terminal-features")
+                    .cloned()
+                    .unwrap_or_default();
+                let capabilities = terminal::Capabilities::for_term(&term, &features);
+                let desired = self.desired_terminal_modes(&term);
+                let mut bytes = Vec::new();
+                terminal::mode_diff(previous, desired, &capabilities, &mut bytes);
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.modes = desired;
+                }
+                (bytes, capabilities.sync_begin, capabilities.sync_end)
+            } else {
+                (Vec::new(), None, None)
+            }
+        } else {
+            (Vec::new(), None, None)
+        };
         let session = self
             .sessions
             .iter_mut()
@@ -7930,6 +8066,10 @@ impl ServerState {
             .find(|window| window.index == session.active_window)?;
         let history_limit = self.history_limit;
         let mut output = Vec::new();
+        if let Some(begin) = sync_begin {
+            output.extend_from_slice(begin);
+        }
+        output.extend(mode_output);
         let clipboard = self.clipboard_pending.take();
         let consumed_one_shot_state = message.is_some() || clipboard.is_some();
         if clear_screen {
@@ -7941,29 +8081,6 @@ impl ServerState {
             output.extend_from_slice(b"\x1b]52;c;");
             output.extend_from_slice(base64_encode(&data).as_bytes());
             output.push(0x07);
-        }
-        if self
-            .global_options
-            .get("mouse")
-            .is_some_and(|value| parse_on_off(value).unwrap_or(false))
-        {
-            // Button-event tracking is required for terminal drag updates;
-            // 1000 alone reports presses/releases but not motion while held.
-            output.extend_from_slice(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
-        }
-        if self
-            .global_options
-            .get("focus-events")
-            .is_some_and(|value| parse_on_off(value).unwrap_or(false))
-        {
-            output.extend_from_slice(b"\x1b[?1004h");
-        }
-        if self
-            .global_options
-            .get("extended-keys")
-            .is_some_and(|value| value != "off")
-        {
-            output.extend_from_slice(b"\x1b[>1u");
         }
         for pane in &mut window.panes {
             let content_rect =
@@ -8228,6 +8345,9 @@ impl ServerState {
             render_client_mode_overlay(&mut output, client_mode, session.size);
         } else if let Some(panes_mode) = panes_mode.as_ref() {
             render_panes_mode_overlay(&mut output, panes_mode, session.size);
+        }
+        if let Some(end) = sync_end {
+            output.extend_from_slice(end);
         }
         if consumed_one_shot_state {
             self.mark_render_dirty();
@@ -17386,6 +17506,21 @@ bind -r Right next-window
         );
         assert!(
             rendered
+                .windows(b"\x1b[?1049h".len())
+                .any(|window| window == b"\x1b[?1049h")
+        );
+        assert!(
+            rendered
+                .windows(b"\x1b[?2004h".len())
+                .any(|window| window == b"\x1b[?2004h")
+        );
+        assert!(
+            rendered
+                .windows(b"\x1b[?2026h".len())
+                .any(|window| window == b"\x1b[?2026h")
+        );
+        assert!(
+            !rendered
                 .windows(b"\x1b[>1u".len())
                 .any(|window| window == b"\x1b[>1u")
         );

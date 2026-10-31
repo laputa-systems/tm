@@ -276,6 +276,225 @@ pub(crate) fn size() -> Size {
     }
 }
 
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TerminalModes {
+    pub alternate: bool,
+    pub mouse: bool,
+    pub focus: bool,
+    pub paste: bool,
+    pub extkeys: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Capabilities {
+    pub alternate_enter: Option<&'static [u8]>,
+    pub alternate_leave: Option<&'static [u8]>,
+    pub mouse_enable: Option<&'static [u8]>,
+    pub mouse_disable: Option<&'static [u8]>,
+    pub paste_enable: Option<&'static [u8]>,
+    pub paste_disable: Option<&'static [u8]>,
+    pub focus_enable: Option<&'static [u8]>,
+    pub focus_disable: Option<&'static [u8]>,
+    pub sync_begin: Option<&'static [u8]>,
+    pub sync_end: Option<&'static [u8]>,
+    pub extkeys_enable: Option<&'static [u8]>,
+    pub extkeys_disable: Option<&'static [u8]>,
+    pub clipboard: bool,
+}
+
+const ALTERNATE_ENTER: &[u8] = b"\x1b[?1049h";
+const ALTERNATE_LEAVE: &[u8] = b"\x1b[?1049l";
+const MOUSE_ENABLE: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_DISABLE: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l";
+const PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
+const PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
+const FOCUS_ENABLE: &[u8] = b"\x1b[?1004h";
+const FOCUS_DISABLE: &[u8] = b"\x1b[?1004l";
+const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+const SYNC_END: &[u8] = b"\x1b[?2026l";
+const EXTKEYS_ENABLE: &[u8] = b"\x1b[>4;2m";
+const EXTKEYS_DISABLE: &[u8] = b"\x1b[>4m";
+
+impl Capabilities {
+    pub(crate) fn for_term(term: &str, features: &str) -> Self {
+        let mut capabilities = match term {
+            "tmux-256color" | "xterm-ghostty" => Self {
+                alternate_enter: Some(ALTERNATE_ENTER),
+                alternate_leave: Some(ALTERNATE_LEAVE),
+                mouse_enable: Some(MOUSE_ENABLE),
+                mouse_disable: Some(MOUSE_DISABLE),
+                paste_enable: Some(PASTE_ENABLE),
+                paste_disable: Some(PASTE_DISABLE),
+                focus_enable: Some(FOCUS_ENABLE),
+                focus_disable: Some(FOCUS_DISABLE),
+                sync_begin: Some(SYNC_BEGIN),
+                sync_end: Some(SYNC_END),
+                extkeys_enable: None,
+                extkeys_disable: None,
+                clipboard: true,
+            },
+            "xterm-256color" => Self {
+                sync_begin: None,
+                sync_end: None,
+                ..Self::for_term("tmux-256color", "")
+            },
+            _ => Self {
+                alternate_enter: Some(ALTERNATE_ENTER),
+                alternate_leave: Some(ALTERNATE_LEAVE),
+                mouse_enable: None,
+                mouse_disable: None,
+                paste_enable: None,
+                paste_disable: None,
+                focus_enable: None,
+                focus_disable: None,
+                sync_begin: None,
+                sync_end: None,
+                extkeys_enable: None,
+                extkeys_disable: None,
+                clipboard: false,
+            },
+        };
+        for entry in features.split([',', ' ']).filter(|entry| !entry.is_empty()) {
+            let mut parts = entry.split(':');
+            let Some(pattern) = parts.next() else {
+                continue;
+            };
+            if !wildcard_match(pattern, term) {
+                continue;
+            }
+            for feature in parts {
+                match feature.to_ascii_lowercase().as_str() {
+                    "sync" => {
+                        capabilities.sync_begin = Some(SYNC_BEGIN);
+                        capabilities.sync_end = Some(SYNC_END);
+                    }
+                    "clipboard" => capabilities.clipboard = true,
+                    "focus" => {
+                        capabilities.focus_enable = Some(FOCUS_ENABLE);
+                        capabilities.focus_disable = Some(FOCUS_DISABLE);
+                    }
+                    "bpaste" => {
+                        capabilities.paste_enable = Some(PASTE_ENABLE);
+                        capabilities.paste_disable = Some(PASTE_DISABLE);
+                    }
+                    "extkeys" => {
+                        capabilities.extkeys_enable = Some(EXTKEYS_ENABLE);
+                        capabilities.extkeys_disable = Some(EXTKEYS_DISABLE);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        capabilities
+    }
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut pattern_index = 0;
+    let mut value_index = 0;
+    let mut star = None;
+    let mut star_value = 0;
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index])
+        {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star = Some(pattern_index);
+            pattern_index += 1;
+            star_value = value_index;
+        } else if let Some(star_index) = star {
+            pattern_index = star_index + 1;
+            star_value += 1;
+            value_index = star_value;
+        } else {
+            return false;
+        }
+    }
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
+}
+
+pub(crate) fn mode_diff(
+    previous: TerminalModes,
+    desired: TerminalModes,
+    capabilities: &Capabilities,
+    output: &mut Vec<u8>,
+) {
+    if previous.alternate != desired.alternate {
+        if desired.alternate {
+            if let Some(bytes) = capabilities.alternate_enter {
+                output.extend_from_slice(bytes);
+            }
+        } else if let Some(bytes) = capabilities.alternate_leave {
+            output.extend_from_slice(bytes);
+        }
+    }
+    if previous.mouse != desired.mouse {
+        if desired.mouse {
+            if let Some(bytes) = capabilities.mouse_enable {
+                output.extend_from_slice(bytes);
+            }
+        } else if let Some(bytes) = capabilities.mouse_disable {
+            output.extend_from_slice(bytes);
+        }
+    }
+    if previous.paste != desired.paste {
+        if desired.paste {
+            if let Some(bytes) = capabilities.paste_enable {
+                output.extend_from_slice(bytes);
+            }
+        } else if let Some(bytes) = capabilities.paste_disable {
+            output.extend_from_slice(bytes);
+        }
+    }
+    if previous.focus != desired.focus {
+        if desired.focus {
+            if let Some(bytes) = capabilities.focus_enable {
+                output.extend_from_slice(bytes);
+            }
+        } else if let Some(bytes) = capabilities.focus_disable {
+            output.extend_from_slice(bytes);
+        }
+    }
+    if previous.extkeys != desired.extkeys {
+        if desired.extkeys {
+            if let Some(bytes) = capabilities.extkeys_enable {
+                output.extend_from_slice(bytes);
+            }
+        } else if let Some(bytes) = capabilities.extkeys_disable {
+            output.extend_from_slice(bytes);
+        }
+    }
+}
+
+pub(crate) fn restore_sequence(capabilities: &Capabilities) -> Vec<u8> {
+    let mut restore = Vec::new();
+    mode_diff(
+        TerminalModes {
+            alternate: true,
+            mouse: true,
+            paste: true,
+            focus: true,
+            extkeys: true,
+        },
+        TerminalModes::default(),
+        capabilities,
+        &mut restore,
+    );
+    if let Some(bytes) = capabilities.sync_end {
+        restore.extend_from_slice(bytes);
+    }
+    restore.extend_from_slice(b"\x1b[?25h\x1b[0m");
+    restore
+}
+
 pub(crate) struct RawTerminal {
     original: Termios,
     active: bool,
