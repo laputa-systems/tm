@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, FromRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -129,6 +129,21 @@ impl Pty {
 
     pub(crate) fn pid(&self) -> libc::pid_t {
         self.pid
+    }
+
+    pub(crate) fn current_dir(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let foreground = self.foreground_pgrp().unwrap_or(self.pid);
+        process_cwd(foreground).or_else(|| process_cwd(self.pid))
+    }
+
+    fn foreground_pgrp(&self) -> Option<libc::pid_t> {
+        let master = self.master.lock().ok()?;
+        // SAFETY: the master descriptor is a live terminal endpoint.
+        let pgrp = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+        (pgrp > 0).then_some(pgrp)
     }
 
     pub(crate) fn reap(pid: libc::pid_t) {
@@ -258,6 +273,43 @@ fn child_setup(
 fn close_fd(fd: RawFd) {
     // SAFETY: fd is an owned descriptor that must be closed on this path.
     unsafe { libc::close(fd) };
+}
+
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: libc::pid_t) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: libc::pid_t) -> Option<String> {
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    // SAFETY: info is a zeroed proc_vnodepathinfo of the declared size.
+    let result = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            std::ptr::addr_of_mut!(info).cast(),
+            size,
+        )
+    };
+    if result <= 0 {
+        return None;
+    }
+    let path = &info.pvi_cdir.vip_path;
+    let bytes = unsafe {
+        std::slice::from_raw_parts(path.as_ptr().cast::<u8>(), std::mem::size_of_val(path))
+    };
+    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    String::from_utf8(bytes[..end].to_vec()).ok()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_cwd(_pid: libc::pid_t) -> Option<String> {
+    None
 }
 
 fn invalid_command(error: std::ffi::NulError) -> io::Error {

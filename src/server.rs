@@ -1530,7 +1530,7 @@ impl ServerState {
         if empty {
             let mut pane = Pane::empty(pane_id, index, size).map_err(|error| error.to_string())?;
             pane.parser = Parser::new(size.rows.max(1), size.cols.max(1), self.history_limit);
-            pane.current_path = start_path.clone();
+            pane.current_path = None;
             pane.start_path = start_path;
             return Ok(pane);
         }
@@ -1557,7 +1557,7 @@ impl ServerState {
             command.to_vec(),
         );
         pane.parser = Parser::new(size.rows.max(1), size.cols.max(1), self.history_limit);
-        pane.current_path = start_path.clone();
+        pane.current_path = None;
         pane.start_path = start_path;
         spawn_reader(Arc::clone(shared), pane_id, pid, reader);
         Ok(pane)
@@ -3640,7 +3640,7 @@ impl ServerState {
                     session
                         .active_window()
                         .and_then(Window::active)
-                        .and_then(|pane| pane.current_path.clone())
+                        .and_then(pane_current_path)
                         .or_else(|| session.cwd.clone())
                 });
             if let Some(current_path) = current_path {
@@ -4781,7 +4781,7 @@ impl ServerState {
             ("pane_height", pane.rect.rows.to_string()),
             (
                 "pane_current_path",
-                pane.current_path.clone().unwrap_or_default(),
+                pane_current_path(pane).unwrap_or_default(),
             ),
             ("pane_title", pane.title.clone()),
             ("pane_dead", if pane.dead { "1" } else { "0" }.to_owned()),
@@ -7339,7 +7339,7 @@ impl ServerState {
             effective_command.join(" ")
         };
         pane.command_args = effective_command;
-        pane.current_path = start_path.clone();
+        pane.current_path = None;
         pane.start_path = start_path;
         pane.dead = false;
         if let Some(reader) = reader {
@@ -12467,6 +12467,13 @@ struct FormatPaneOptions<'a> {
     format: &'a str,
 }
 
+fn pane_current_path(pane: &Pane) -> Option<String> {
+    pane.current_path
+        .clone()
+        .or_else(|| pane.pty.current_dir())
+        .or_else(|| pane.start_path.clone())
+}
+
 fn format_pane(options: FormatPaneOptions<'_>) -> String {
     let FormatPaneOptions {
         session,
@@ -12667,8 +12674,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         ),
         (
             "pane_current_path",
-            pane.current_path
-                .clone()
+            pane_current_path(pane)
                 .or_else(|| session.cwd.clone())
                 .unwrap_or_default(),
         ),

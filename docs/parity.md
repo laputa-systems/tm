@@ -92,7 +92,7 @@ the proving slice and the test that must carry the evidence.
 
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
-| formats | supported format names expand in client context | T1 | `src/command.rs` format expansion | T1 `tests/tmux_targeting.rs::formats_use_client_context` | fail | none |
+| formats | supported format names expand in client context | T1, W2 | `src/command.rs` format expansion | T1 `tests/tmux_targeting.rs::formats_use_client_context`; W2 `tests/tmux_cwd.rs::foreground_shell_cwd_matches_reference` | fail | tm prefers an OSC 7 `pane_current_path` report; tmux 3.8 uses only the foreground process cwd (recorded in `tests/tmux_cwd.rs`) |
 | targeting | omitted and relative targets resolve in client context | T1 | `src/server.rs` target resolution | T1 `tests/tmux_targeting.rs::client_bindings_use_the_attached_session_and_window` | pass | none |
 | buffers | set/show/paste/delete with the compiled buffer limit | R5 | `src/server.rs` buffers | R5 `tests/tmux_notifications.rs::buffer_and_clipboard_side_effects` | fail | none |
 | capture | capture visible and history ranges | R1 | `src/server.rs` capture | R1 `tests/tmux_history.rs::capture_history_and_visible` | fail | none |
