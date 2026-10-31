@@ -1,6 +1,25 @@
 Prefix: TMUX
-Next: 8
+Next: 10
 
-No open findings. The campaign closed TMUX-1, TMUX-2, TMUX-3, TMUX-5,
-TMUX-6, and TMUX-7 with tests and commits recorded in git history. Add a new
-entry here only for a reproduced defect that the current suites do not cover.
+### TMUX-8 · P3 · An exited pipe helper stays a zombie while pipe-pane is active
+
+- **Area:** Lifecycle
+- **Where:** `src/server.rs:6608`, `src/server.rs:1127`
+- **Problem:** `pipe-pane -t S -- 'true'` leaves the helper `<defunct>` under the daemon until the pipe is turned off. The writer thread blocks in `recv()` and only calls `child.wait()` after `PipeMessage::Close`, so a helper that exits early is not reaped while the pipe remains registered.
+- **Recommendation:** Poll `try_wait` while the pipe is active, or reap the child in a separate wait thread, so an exited helper is collected before `pipe-pane` is turned off.
+- **Fix with:** lifecycle-concurrency
+- **Effort:** S
+
+### TMUX-9 · P3 · A command immediately after kill-server can fail with a short read
+
+- **Area:** Lifecycle
+- **Where:** `src/server.rs:224`, `src/server.rs:233`, `src/client.rs:53`
+- **Problem:** `tm kill-server` followed immediately by `tm new-session ...` fails 10/10 with `tm: failed to fill whole buffer` on both this tree and the base checkpoint `af1d5d7`. `connect_or_start` can connect to the old listener before the accept loop notices shutdown and removes the socket; the daemon then exits without answering the request.
+- **Recommendation:** Make `kill-server` wait until the socket no longer accepts, or retry a connect or request that fails with EOF immediately after startup. Cover the restart loop with a test.
+- **Fix with:** lifecycle-concurrency
+- **Effort:** S
+
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, and TMUX-7 are closed with tests and
+commits recorded in git history. TMUX-8 and TMUX-9 are open P3s from the final
+review. Add a new entry here only for a reproduced defect that the current
+suites do not cover.
