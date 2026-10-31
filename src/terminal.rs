@@ -20,6 +20,8 @@ pub(crate) struct OutputState {
     last_printed: Option<Vec<u8>>,
     wrap: bool,
     audible_bell: bool,
+    focus_events: bool,
+    extended_keys: bool,
 }
 
 impl Default for OutputState {
@@ -29,6 +31,8 @@ impl Default for OutputState {
             last_printed: None,
             wrap: true,
             audible_bell: false,
+            focus_events: false,
+            extended_keys: false,
         }
     }
 }
@@ -57,6 +61,8 @@ impl OutputState {
             &mut self.last_printed,
             &mut self.wrap,
             &mut self.audible_bell,
+            &mut self.focus_events,
+            &mut self.extended_keys,
         );
     }
 
@@ -64,6 +70,21 @@ impl OutputState {
     /// BEL. BEL terminators consumed as part of OSC/DCS/etc. are not reported.
     pub(crate) fn take_audible_bell(&mut self) -> bool {
         std::mem::take(&mut self.audible_bell)
+    }
+
+    pub(crate) fn focus_events(&self) -> bool {
+        self.focus_events
+    }
+
+    pub(crate) fn extended_keys(&self) -> bool {
+        self.extended_keys
+    }
+
+    pub(crate) fn reset_transient(&mut self) {
+        self.pending.clear();
+        self.last_printed = None;
+        self.wrap = true;
+        self.audible_bell = false;
     }
 
     pub(crate) fn finish(&mut self, parser: &mut Parser) {
@@ -92,7 +113,7 @@ fn incomplete_utf8_start(bytes: &[u8]) -> Option<usize> {
     error.error_len().is_none().then_some(error.valid_up_to())
 }
 
-fn escape_end(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn escape_end(bytes: &[u8], start: usize) -> Option<usize> {
     let kind = *bytes.get(start + 1)?;
     match kind {
         b'[' => bytes
@@ -150,6 +171,8 @@ fn replay_terminal_bytes(
     last_printed: &mut Option<Vec<u8>>,
     wrap: &mut bool,
     audible_bell: &mut bool,
+    focus_events: &mut bool,
+    extended_keys: &mut bool,
 ) {
     let mut index = 0;
     while index < bytes.len() {
@@ -181,6 +204,12 @@ fn replay_terminal_bytes(
                         write_terminal_character(parser, character, *wrap);
                     }
                 }
+            } else if let Some(enabled) = focus_mode(sequence) {
+                parser.process(sequence);
+                *focus_events = enabled;
+            } else if let Some(enabled) = extended_keys_mode(sequence) {
+                parser.process(sequence);
+                *extended_keys = enabled;
             } else {
                 if sequence.len() <= MAX_CONTROL_SEQUENCE_BYTES
                     || sequence.get(1) == Some(&b']')
@@ -221,6 +250,25 @@ fn replay_terminal_bytes(
         *last_printed = Some(bytes[index..index + length].to_vec());
         index += length;
     }
+}
+
+fn focus_mode(sequence: &[u8]) -> Option<bool> {
+    match sequence {
+        b"\x1b[?1004h" => Some(true),
+        b"\x1b[?1004l" => Some(false),
+        _ => None,
+    }
+}
+
+fn extended_keys_mode(sequence: &[u8]) -> Option<bool> {
+    let body = sequence.strip_prefix(b"\x1b[>4")?;
+    let body = body.strip_suffix(b"m")?;
+    if body.is_empty() {
+        return Some(false);
+    }
+    let body = body.strip_prefix(b";")?;
+    let level = std::str::from_utf8(body).ok()?.parse::<u32>().ok()?;
+    Some(level > 0)
 }
 
 fn wrap_mode(sequence: &[u8]) -> Option<bool> {
@@ -305,6 +353,8 @@ pub(crate) struct TerminalModes {
     pub focus: bool,
     pub paste: bool,
     pub extkeys: bool,
+    pub application_cursor: bool,
+    pub application_keypad: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -493,6 +543,20 @@ pub(crate) fn mode_diff(
             output.extend_from_slice(bytes);
         }
     }
+    if previous.application_cursor != desired.application_cursor {
+        output.extend_from_slice(if desired.application_cursor {
+            b"\x1b[?1h"
+        } else {
+            b"\x1b[?1l"
+        });
+    }
+    if previous.application_keypad != desired.application_keypad {
+        output.extend_from_slice(if desired.application_keypad {
+            b"\x1b="
+        } else {
+            b"\x1b>"
+        });
+    }
 }
 
 pub(crate) fn setup_sequence(capabilities: &Capabilities) -> Vec<u8> {
@@ -505,6 +569,8 @@ pub(crate) fn setup_sequence(capabilities: &Capabilities) -> Vec<u8> {
             paste: true,
             focus: true,
             extkeys: true,
+            application_cursor: false,
+            application_keypad: false,
         },
         capabilities,
         &mut setup,
@@ -521,6 +587,8 @@ pub(crate) fn restore_sequence(capabilities: &Capabilities) -> Vec<u8> {
             paste: true,
             focus: true,
             extkeys: true,
+            application_cursor: true,
+            application_keypad: true,
         },
         TerminalModes::default(),
         capabilities,
@@ -767,6 +835,18 @@ mod tests {
     fn output_state_is_chunk_invariant_for_reset_alt_and_malformed_sequences() {
         let bytes = b"prefix\x1b[?7l012345\x1b[?1049hALT\x1b[?1049l\x1bcpost\x1b[31\x1b[?25h\x1b]2;unterminated";
         assert_chunk_invariant(bytes, 3, 6);
+    }
+
+    #[test]
+    fn output_state_tracks_focus_and_extended_key_requests() {
+        let mut parser = Parser::new(2, 20, 100);
+        let mut state = OutputState::default();
+        state.process(&mut parser, b"\x1b[?1004h\x1b[>4;2m");
+        assert!(state.focus_events());
+        assert!(state.extended_keys());
+        state.process(&mut parser, b"\x1b[?1004l\x1b[>4m");
+        assert!(!state.focus_events());
+        assert!(!state.extended_keys());
     }
 
     #[test]

@@ -674,6 +674,8 @@ struct AttachedClient {
     clipboard: Option<Vec<u8>>,
     prefix_pending: bool,
     key_buffer: Vec<u8>,
+    key_events: Vec<DecodedKey>,
+    focused_pane: Option<u64>,
     input_buffer: Vec<u8>,
     root_key_buffer: Vec<u8>,
     copy_key_buffer: Vec<u8>,
@@ -1750,14 +1752,26 @@ impl ServerState {
         }
     }
 
-    fn desired_terminal_modes(&self, term: &str) -> terminal::TerminalModes {
+    fn desired_terminal_modes(&self, term: &str, session_id: u64) -> terminal::TerminalModes {
         let features = self
             .global_options
             .get("terminal-features")
             .map(String::as_str)
             .unwrap_or("");
         let capabilities = terminal::Capabilities::for_term(term, features);
+        let active = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(Session::active_window)
+            .and_then(Window::active);
         terminal::TerminalModes {
+            application_cursor: active.is_some_and(|pane| {
+                pane.parser.screen().application_cursor()
+            }),
+            application_keypad: active.is_some_and(|pane| {
+                pane.parser.screen().application_keypad()
+            }),
             alternate: true,
             mouse: self
                 .global_options
@@ -1803,13 +1817,20 @@ impl ServerState {
     }
 
     fn remove_client_with_reflow(&mut self, client_id: u64) {
-        let Some(session_id) = self
+        let Some((session_id, focused_pane)) = self
             .clients
             .remove(&client_id)
-            .map(|client| client.session_id)
+            .map(|client| (client.session_id, client.focused_pane))
         else {
             return;
         };
+        if let Some(pane_id) = focused_pane
+            && self
+                .find_pane(pane_id)
+                .is_some_and(|pane| pane.output_state.focus_events())
+        {
+            self.write_pane(pane_id, b"\x1b[O");
+        }
         if let Some(latest) = self.latest_client(session_id)
             && let Some(size) = self.clients.get(&latest).map(|client| client.size)
         {
@@ -1840,11 +1861,13 @@ impl ServerState {
                 activity,
                 term: term.to_owned(),
                 modes: terminal::TerminalModes::default(),
+                focused_pane: None,
                 detach_requested: false,
                 bell_pending: false,
                 clipboard: None,
                 prefix_pending: false,
                 key_buffer: Vec::new(),
+                key_events: Vec::new(),
                 input_buffer: Vec::new(),
                 root_key_buffer: Vec::new(),
                 copy_key_buffer: Vec::new(),
@@ -1893,11 +1916,7 @@ impl ServerState {
             .map(|client| std::mem::take(&mut client.input_buffer))
             .unwrap_or_default();
         input.extend_from_slice(bytes);
-        let (decoded, pending) = if extended_keys {
-            decode_extended_key_input(&input)
-        } else {
-            (input, Vec::new())
-        };
+        let (decoded, pending) = decode_client_input(&input, extended_keys);
         let pending_length = pending.len();
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.input_buffer = pending;
@@ -1914,142 +1933,293 @@ impl ServerState {
             }
             schedule_input_flush(shared, client_id, token, deadline);
         }
-        if decoded.is_empty() {
-            return;
-        }
-        let bytes = decoded.as_slice();
-        let mut index = 0;
-        while index < bytes.len() {
-            if let Some(consumed) = self.feed_panes_mode(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_tree_mode(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_buffer_mode(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_client_mode(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_client_prompt(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_client_mouse(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_copy_key_binding(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_copy_mode_input(client_id, &bytes[index..]) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_root_key_binding(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            if let Some(consumed) = self.feed_repeat_binding(client_id, &bytes[index..], shared) {
-                index += consumed;
-                continue;
-            }
-            // The prefix-number keys are built-in window selectors in tmux,
-            // rather than ordinary bindings. Consume them before the prefix
-            // table forwards an unbound digit to the active pane.
-            let numeric_window = self.clients.get(&client_id).and_then(|client| {
-                (client.prefix_pending && client.key_buffer.is_empty())
-                    .then_some((client.session_id, bytes[index]))
-                    .filter(|(_, byte)| byte.is_ascii_digit())
-                    .map(|(session_id, byte)| (session_id, u32::from(byte - b'0')))
-            });
-            if let Some((session_id, window_index)) = numeric_window {
-                if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.prefix_pending = false;
-                    client.key_buffer.clear();
-                    client.repeat_key = None;
-                    client.repeat_binding = None;
-                }
-                let _ = self.select_window(&format!("${session_id}:{window_index}"));
-                index += 1;
-                continue;
-            }
-            let byte = bytes[index];
-            let prefix_pending = self
-                .clients
-                .get(&client_id)
-                .is_some_and(|client| client.prefix_pending);
-            if byte == 0x1b && !prefix_pending {
-                let consumed = terminal_input_sequence_len(&bytes[index..]);
-                let session_id = self.clients.get(&client_id).map(|client| client.session_id);
-                if let Some(session_id) = session_id {
-                    self.write_active(session_id, &bytes[index..index + consumed]);
-                    index += consumed;
+        for key in decoded {
+            let mut cursor = 0;
+            while cursor < key.bytes.len() {
+                let slice = &key.bytes[cursor..];
+                let consumed = self
+                    .feed_panes_mode(client_id, slice, shared)
+                    .or_else(|| self.feed_tree_mode(client_id, slice, shared))
+                    .or_else(|| self.feed_buffer_mode(client_id, slice, shared))
+                    .or_else(|| self.feed_client_mode(client_id, slice, shared))
+                    .or_else(|| self.feed_client_prompt(client_id, slice, shared))
+                    .or_else(|| self.feed_client_mouse(client_id, slice, shared))
+                    .or_else(|| self.feed_copy_key_binding(client_id, slice, shared))
+                    .or_else(|| self.feed_copy_mode_input(client_id, slice))
+                    .or_else(|| self.feed_root_key_binding(client_id, slice, shared))
+                    .or_else(|| self.feed_repeat_binding(client_id, slice, shared));
+                if let Some(consumed) = consumed {
+                    if consumed == 0 {
+                        break;
+                    }
+                    cursor += consumed;
                     continue;
                 }
-            }
-            self.key_timer_counter = self.key_timer_counter.saturating_add(1);
-            let timer_token = self.key_timer_counter;
-            let Some(client) = self.clients.get_mut(&client_id) else {
-                return;
-            };
-            if !client.prefix_pending {
-                if self.prefix.as_slice() == [byte] {
-                    client.prefix_pending = true;
-                } else {
-                    let session_id = client.session_id;
-                    self.write_active(session_id, &[byte]);
+                if cursor == 0
+                    && let Some(focused) = key.focus
+                {
+                    self.forward_focus_event(client_id, focused);
+                    break;
                 }
-                index += 1;
-                continue;
+                let numeric_window = self.clients.get(&client_id).and_then(|client| {
+                    (cursor == 0
+                        && client.prefix_pending
+                        && client.key_buffer.is_empty()
+                        && slice.len() == 1)
+                        .then_some((client.session_id, slice[0]))
+                        .filter(|(_, byte)| byte.is_ascii_digit())
+                        .map(|(session_id, byte)| (session_id, u32::from(byte - b'0')))
+                });
+                if let Some((session_id, window_index)) = numeric_window {
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.prefix_pending = false;
+                        client.key_buffer.clear();
+                        client.key_events.clear();
+                        client.repeat_key = None;
+                        client.repeat_binding = None;
+                    }
+                    let _ = self.select_window(&format!("${session_id}:{window_index}"));
+                    break;
+                }
+                let prefix_pending = self
+                    .clients
+                    .get(&client_id)
+                    .is_some_and(|client| client.prefix_pending);
+                let unmodified = cursor != 0 || (key.modifier - 1) & 3 == 0;
+                if !prefix_pending {
+                    let is_prefix = unmodified && slice == self.prefix.as_slice();
+                    if is_prefix {
+                        if let Some(client) = self.clients.get_mut(&client_id) {
+                            client.prefix_pending = true;
+                        }
+                    } else {
+                        let session_id = self
+                            .clients
+                            .get(&client_id)
+                            .map(|client| client.session_id);
+                        if let Some(session_id) = session_id {
+                            self.write_active_key(session_id, &key, cursor);
+                        }
+                    }
+                    break;
+                }
+                self.key_timer_counter = self.key_timer_counter.saturating_add(1);
+                let timer_token = self.key_timer_counter;
+                let Some(session_id) = self
+                    .clients
+                    .get(&client_id)
+                    .map(|client| client.session_id)
+                else {
+                    return;
+                };
+                if (cursor == 0 && !unmodified) || key.focus.is_some() {
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.prefix_pending = false;
+                        client.key_buffer.clear();
+                        client.key_events.clear();
+                        client.key_deadline = None;
+                    }
+                    self.write_active_key(session_id, &key, cursor);
+                    break;
+                }
+                let mut remainder = key.clone();
+                remainder.bytes = slice.to_vec();
+                if cursor > 0 {
+                    remainder.codepoint = None;
+                    remainder.modifier = 1;
+                }
+                let (candidate, exact, partial) = {
+                    let Some(client) = self.clients.get_mut(&client_id) else {
+                        return;
+                    };
+                    client.key_buffer.extend_from_slice(slice);
+                    client.key_events.push(remainder);
+                    let candidate = client.key_buffer.clone();
+                    let exact = self.bindings.get(&candidate).cloned();
+                    let partial = self
+                        .bindings
+                        .keys()
+                        .any(|binding| binding.starts_with(&candidate));
+                    (candidate, exact, partial)
+                };
+                if partial && exact.is_none() {
+                    let deadline = Instant::now() + Duration::from_millis(escape_time.max(1));
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.key_deadline = Some((deadline, timer_token));
+                    }
+                    schedule_key_flush(shared, client_id, timer_token, deadline);
+                    break;
+                }
+                let (events, _) = {
+                    let Some(client) = self.clients.get_mut(&client_id) else {
+                        return;
+                    };
+                    client.prefix_pending = false;
+                    client.key_buffer.clear();
+                    client.key_deadline = None;
+                    (std::mem::take(&mut client.key_events), ())
+                };
+                if let Some(binding) = exact {
+                    if binding._repeat {
+                        let deadline = Instant::now() + Duration::from_millis(REPEAT_TIME_MS);
+                        if let Some(client) = self.clients.get_mut(&client_id) {
+                            client.repeat_key = Some(candidate.clone());
+                            client.repeat_binding = Some(binding.clone());
+                            client.repeat_deadline = Some((deadline, timer_token));
+                        }
+                        schedule_repeat_expiry(shared, client_id, timer_token, deadline);
+                    } else if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.repeat_key = None;
+                        client.repeat_binding = None;
+                        client.repeat_deadline = None;
+                    }
+                    self.execute_bound_commands_feedback(client_id, session_id, binding, shared);
+                } else {
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.repeat_key = None;
+                        client.repeat_binding = None;
+                        client.repeat_deadline = None;
+                    }
+                    self.write_active_key_events(session_id, &events);
+                }
+                break;
             }
+        }
+    }
 
-            client.key_buffer.push(byte);
-            let candidate = client.key_buffer.clone();
-            let exact = self.bindings.get(&candidate).cloned();
-            let partial = self
-                .bindings
-                .keys()
-                .any(|binding| binding.starts_with(&candidate));
-            if partial && exact.is_none() {
-                let deadline =
-                    Instant::now() + Duration::from_millis(escape_time.max(1));
-                client.key_deadline = Some((deadline, timer_token));
-                schedule_key_flush(shared, client_id, timer_token, deadline);
-                index += 1;
-                continue;
-            }
-            let session_id = client.session_id;
-            client.prefix_pending = false;
-            client.key_buffer.clear();
-            client.key_deadline = None;
-            if let Some(binding) = exact {
-                if binding._repeat {
-                    let deadline =
-                        Instant::now() + Duration::from_millis(REPEAT_TIME_MS);
-                    client.repeat_key = Some(candidate.clone());
-                    client.repeat_binding = Some(binding.clone());
-                    client.repeat_deadline = Some((deadline, timer_token));
-                    schedule_repeat_expiry(shared, client_id, timer_token, deadline);
-                } else {
-                    client.repeat_key = None;
-                    client.repeat_binding = None;
-                    client.repeat_deadline = None;
+    fn write_active_key(&mut self, session_id: u64, key: &DecodedKey, offset: usize) {
+        if offset >= key.bytes.len() {
+            return;
+        }
+        let mut key = key.clone();
+        key.bytes = key.bytes[offset..].to_vec();
+        if offset > 0 {
+            key.codepoint = None;
+            key.modifier = 1;
+        }
+        self.write_active_key_events(session_id, &[key]);
+    }
+
+    fn write_active_key_events(&mut self, session_id: u64, keys: &[DecodedKey]) {
+        if keys.is_empty() {
+            return;
+        }
+        let extended_setting = self
+            .global_options
+            .get("extended-keys")
+            .cloned()
+            .unwrap_or_else(|| "off".to_owned());
+        let format = self
+            .global_options
+            .get("extended-keys-format")
+            .cloned()
+            .unwrap_or_else(|| "csi-u".to_owned());
+        let writes = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(Session::active_window)
+            .map(|window| {
+                window
+                    .panes
+                    .iter()
+                    .filter(|pane| {
+                        pane.id == window.active_pane || window.synchronize_panes
+                    })
+                    .map(|pane| {
+                        let extended = match extended_setting.as_str() {
+                            "always" => true,
+                            "on" => pane.output_state.extended_keys(),
+                            _ => false,
+                        };
+                        let mut bytes = Vec::new();
+                        for key in keys {
+                            bytes.extend_from_slice(&encode_key_for_pane(
+                                key, pane, extended, &format,
+                            ));
+                        }
+                        (pane.id, bytes)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (pane_id, bytes) in writes {
+            self.write_pane(pane_id, &bytes);
+        }
+    }
+
+    fn forward_focus_event(&mut self, client_id: u64, focused: bool) {
+        let Some(client) = self.clients.get(&client_id) else {
+            return;
+        };
+        let session_id = client.session_id;
+        if focused {
+            let active = self
+                .sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .and_then(Session::active_window)
+                .and_then(Window::active)
+                .map(|pane| (pane.id, pane.output_state.focus_events()));
+            if let Some((pane_id, true)) = active {
+                let already = self.clients[&client_id].focused_pane == Some(pane_id);
+                if !already {
+                    self.write_pane(pane_id, b"\x1b[I");
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.focused_pane = Some(pane_id);
+                    }
                 }
-                self.execute_bound_commands_feedback(client_id, session_id, binding, shared);
-            } else {
-                client.repeat_key = None;
-                client.repeat_binding = None;
-                client.repeat_deadline = None;
-                self.write_active(session_id, &candidate);
             }
-            index += 1;
+        } else if let Some(pane_id) = self.clients[&client_id].focused_pane {
+            let focused = self
+                .find_pane(pane_id)
+                .is_some_and(|pane| pane.output_state.focus_events());
+            if focused {
+                self.write_pane(pane_id, b"\x1b[O");
+            }
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.focused_pane = None;
+            }
+        }
+    }
+
+    fn sync_client_focus(&mut self, client_id: u64) {
+        let Some(client) = self.clients.get(&client_id) else {
+            return;
+        };
+        let session_id = client.session_id;
+        let previous = client.focused_pane;
+        let active = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(Session::active_window)
+            .and_then(Window::active)
+            .map(|pane| (pane.id, pane.output_state.focus_events()));
+        let Some((active_id, active_requests)) = active else {
+            return;
+        };
+        if previous == Some(active_id) && active_requests {
+            return;
+        }
+        if let Some(previous_id) = previous
+            && previous_id != active_id
+            && self
+                .find_pane(previous_id)
+                .is_some_and(|pane| pane.output_state.focus_events())
+        {
+            self.write_pane(previous_id, b"\x1b[O");
+        }
+        let focused = if active_requests {
+            if previous != Some(active_id) {
+                self.write_pane(active_id, b"\x1b[I");
+            }
+            Some(active_id)
+        } else {
+            None
+        };
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.focused_pane = focused;
         }
     }
 
@@ -2217,6 +2387,7 @@ impl ServerState {
             client.input_deadline = None;
             client.prefix_pending = false;
             client.key_buffer.clear();
+            client.key_events.clear();
             client.key_deadline = None;
         }
         if !bytes.is_empty() {
@@ -2226,7 +2397,7 @@ impl ServerState {
     }
 
     fn flush_expired_key(&mut self, client_id: u64, token: u64) -> bool {
-        let (session_id, candidate) = {
+        let (session_id, events) = {
             let Some(client) = self.clients.get(&client_id) else {
                 return false;
             };
@@ -2236,17 +2407,16 @@ impl ServerState {
             if stored != token || Instant::now() < deadline || !client.prefix_pending {
                 return false;
             }
-            (
-                client.session_id,
-                std::mem::take(&mut self.clients.get_mut(&client_id).unwrap().key_buffer),
-            )
+            let client = self.clients.get_mut(&client_id).unwrap();
+            client.key_buffer.clear();
+            (client.session_id, std::mem::take(&mut client.key_events))
         };
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.key_deadline = None;
             client.prefix_pending = false;
         }
-        if !candidate.is_empty() {
-            self.write_active(session_id, &candidate);
+        if !events.is_empty() {
+            self.write_active_key_events(session_id, &events);
         }
         true
     }
@@ -6577,8 +6747,19 @@ impl ServerState {
             .get(&client_id)
             .map(|client| client.size)
             .unwrap_or(Size::new(80, 24));
+        if let Some(pane_id) = self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.focused_pane)
+            && self
+                .find_pane(pane_id)
+                .is_some_and(|pane| pane.output_state.focus_events())
+        {
+            self.write_pane(pane_id, b"\x1b[O");
+        }
         if let Some(attached) = self.clients.get_mut(&client_id) {
             attached.session_id = session_id;
+            attached.focused_pane = None;
         }
         self.resize_session(session_id, size, true);
         Ok(String::new())
@@ -8231,6 +8412,9 @@ impl ServerState {
         client_id: Option<u64>,
         clear_screen: bool,
     ) -> Option<Vec<u8>> {
+        if let Some(client_id) = client_id {
+            self.sync_client_focus(client_id);
+        }
         let client_prefix = client_id
             .and_then(|client_id| self.clients.get(&client_id))
             .is_some_and(|client| client.prefix_pending);
@@ -8276,15 +8460,15 @@ impl ServerState {
             let info = self
                 .clients
                 .get(&client_id)
-                .map(|client| (client.term.clone(), client.modes));
-            if let Some((term, previous)) = info {
+                .map(|client| (client.term.clone(), client.modes, client.session_id));
+            if let Some((term, previous, session_id)) = info {
                 let features = self
                     .global_options
                     .get("terminal-features")
                     .cloned()
                     .unwrap_or_default();
                 let capabilities = terminal::Capabilities::for_term(&term, &features);
-                let desired = self.desired_terminal_modes(&term);
+                let desired = self.desired_terminal_modes(&term, session_id);
                 let mut bytes = Vec::new();
                 terminal::mode_diff(previous, desired, &capabilities, &mut bytes);
                 if let Some(client) = self.clients.get_mut(&client_id) {
@@ -9200,52 +9384,146 @@ fn parser_for_pane(pane: &Pane) -> Parser {
     parser
 }
 
-/// Decode the CSI-u keyboard reports emitted after tm enables extended keys
-/// on an attached terminal. The result is ordinary terminal input bytes so
-/// the existing prefix, binding, prompt, and copy-mode state machines keep one
-/// key representation. Incomplete CSI sequences stay buffered on the client
-/// and are completed by the next input read.
-fn decode_extended_key_input(input: &[u8]) -> (Vec<u8>, Vec<u8>) {
+#[derive(Clone, Debug)]
+struct DecodedKey {
+    bytes: Vec<u8>,
+    codepoint: Option<u32>,
+    modifier: u8,
+    focus: Option<bool>,
+}
+
+impl DecodedKey {
+    fn plain(bytes: Vec<u8>, codepoint: Option<u32>) -> Self {
+        Self {
+            bytes,
+            codepoint,
+            modifier: 1,
+            focus: None,
+        }
+    }
+}
+
+fn decode_client_input(input: &[u8], extended_keys: bool) -> (Vec<DecodedKey>, Vec<u8>) {
     let mut output = Vec::with_capacity(input.len());
     let mut index = 0;
     while index < input.len() {
         if input[index] != 0x1b {
-            output.push(input[index]);
-            index += 1;
+            let character = std::str::from_utf8(&input[index..])
+                .ok()
+                .and_then(|value| value.chars().next());
+            if let Some(character) = character {
+                let length = character.len_utf8();
+                let bytes = input[index..index + length].to_vec();
+                output.push(DecodedKey::plain(bytes, Some(character as u32)));
+                index += length;
+            } else {
+                output.push(DecodedKey::plain(
+                    vec![input[index]],
+                    Some(u32::from(input[index])),
+                ));
+                index += 1;
+            }
             continue;
         }
-        if input.get(index + 1) != Some(&b'[') {
-            output.push(input[index]);
+        let Some(&kind) = input.get(index + 1) else {
+            output.push(DecodedKey::plain(vec![0x1b], Some(27)));
             index += 1;
             continue;
-        }
-        let Some(final_offset) = input[index + 2..]
-            .iter()
-            .position(|byte| (0x40..=0x7e).contains(byte))
-            .map(|offset| index + 2 + offset)
-        else {
-            return (output, input[index..].to_vec());
         };
-        let end = final_offset + 1;
-        let body = &input[index + 2..final_offset];
-        let key = if input[final_offset] == b'u' {
-            decode_csi_u(body)
-        } else if input[final_offset] == b'~' {
-            decode_xterm_extended_key(body)
-        } else {
-            None
-        };
-        if let Some(key) = key {
-            output.extend_from_slice(&key);
-        } else {
-            output.extend_from_slice(&input[index..end]);
+        if kind == b'[' {
+            let Some(final_offset) = input[index + 2..]
+                .iter()
+                .position(|byte| (0x40..=0x7e).contains(byte))
+                .map(|offset| index + 2 + offset)
+            else {
+                return (output, input[index..].to_vec());
+            };
+            let end = final_offset + 1;
+            let body = &input[index + 2..final_offset];
+            let sequence = input[index..end].to_vec();
+            let extended = if extended_keys {
+                match input[final_offset] {
+                    b'u' => decode_csi_u(body),
+                    b'~' => decode_xterm_extended_key(body),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let decoded = if let Some((codepoint, modifier)) = extended {
+                Some(DecodedKey {
+                    bytes: decode_extended_key_codepoint(codepoint, modifier)
+                        .unwrap_or_else(|| sequence.clone()),
+                    codepoint: Some(codepoint),
+                    modifier,
+                    focus: None,
+                })
+            } else if input[final_offset] == b'I' && body.is_empty() {
+                Some(DecodedKey {
+                    bytes: sequence.clone(),
+                    codepoint: None,
+                    modifier: 1,
+                    focus: Some(true),
+                })
+            } else if input[final_offset] == b'O' && body.is_empty() {
+                Some(DecodedKey {
+                    bytes: sequence.clone(),
+                    codepoint: None,
+                    modifier: 1,
+                    focus: Some(false),
+                })
+            } else {
+                None
+            };
+            output.push(decoded.unwrap_or_else(|| DecodedKey::plain(sequence, None)));
+            index = end;
+            continue;
         }
-        index = end;
+        if kind == b']' || kind == b'P' || kind == b'^' || kind == b'_' {
+            let Some(end) = crate::terminal::escape_end(input, index) else {
+                return (output, input[index..].to_vec());
+            };
+            output.push(DecodedKey::plain(input[index..end].to_vec(), None));
+            index = end;
+            continue;
+        }
+        if kind == b'O' {
+            if input.get(index + 2).is_none() {
+                return (output, input[index..].to_vec());
+            }
+            output.push(DecodedKey::plain(input[index..index + 3].to_vec(), None));
+            index += 3;
+            continue;
+        }
+        if kind == b'#' {
+            if input.get(index + 2).is_none() {
+                return (output, input[index..].to_vec());
+            }
+            output.push(DecodedKey::plain(input[index..index + 3].to_vec(), None));
+            index += 3;
+            continue;
+        }
+        let character = std::str::from_utf8(&input[index + 1..])
+            .ok()
+            .and_then(|value| value.chars().next());
+        if let Some(character) = character {
+            let length = 1 + character.len_utf8();
+            output.push(DecodedKey {
+                bytes: input[index..index + length].to_vec(),
+                codepoint: extended_keys.then_some(u32::from(character)),
+                modifier: if extended_keys { 3 } else { 1 },
+                focus: None,
+            });
+            index += length;
+        } else {
+            output.push(DecodedKey::plain(vec![0x1b], Some(27)));
+            index += 1;
+        }
     }
     (output, Vec::new())
 }
 
-fn decode_csi_u(body: &[u8]) -> Option<Vec<u8>> {
+fn decode_csi_u(body: &[u8]) -> Option<(u32, u8)> {
     let mut fields = body.split(|byte| *byte == b';');
     let codepoint = std::str::from_utf8(fields.next()?)
         .ok()?
@@ -9258,10 +9536,10 @@ fn decode_csi_u(body: &[u8]) -> Option<Vec<u8>> {
     if fields.next().is_some() || !(1..=8).contains(&modifier) {
         return None;
     }
-    decode_extended_key_codepoint(codepoint, modifier)
+    Some((codepoint, modifier))
 }
 
-fn decode_xterm_extended_key(body: &[u8]) -> Option<Vec<u8>> {
+fn decode_xterm_extended_key(body: &[u8]) -> Option<(u32, u8)> {
     let mut fields = body.split(|byte| *byte == b';');
     let introducer = std::str::from_utf8(fields.next()?)
         .ok()?
@@ -9278,18 +9556,19 @@ fn decode_xterm_extended_key(body: &[u8]) -> Option<Vec<u8>> {
         .ok()?
         .parse::<u32>()
         .ok()?;
-    if fields.next().is_some() {
+    if fields.next().is_some() || !(1..=8).contains(&modifier) {
         return None;
     }
-    decode_extended_key_codepoint(codepoint, modifier)
+    Some((codepoint, modifier))
 }
 
 fn decode_extended_key_codepoint(codepoint: u32, modifier: u8) -> Option<Vec<u8>> {
     if !(1..=8).contains(&modifier) {
         return None;
     }
-    let control = modifier & 4 != 0;
-    let meta = modifier & 2 != 0;
+    let bits = modifier - 1;
+    let control = bits & 4 != 0;
+    let meta = bits & 2 != 0;
     let character = char::from_u32(codepoint)?;
     let mut encoded = [0; 4];
     let bytes = character.encode_utf8(&mut encoded).as_bytes();
@@ -9311,6 +9590,48 @@ fn decode_extended_key_codepoint(codepoint: u32, modifier: u8) -> Option<Vec<u8>
         output.extend_from_slice(bytes);
     }
     Some(output)
+}
+
+fn encode_key_for_pane(key: &DecodedKey, pane: &Pane, extended: bool, format: &str) -> Vec<u8> {
+    let mut bytes = if extended
+        && let (Some(codepoint), modifier) = (key.codepoint, key.modifier)
+        && modifier > 1
+    {
+        if modifier == 2
+            && codepoint >= 0x20
+            && codepoint != 0x7f
+            && let Some(character) = char::from_u32(codepoint)
+        {
+            let mut encoded = [0; 4];
+            character.encode_utf8(&mut encoded).as_bytes().to_vec()
+        } else if format == "xterm" {
+            format!("\x1b[27;{modifier};{codepoint}~").into_bytes()
+        } else {
+            format!("\x1b[{codepoint};{modifier}u").into_bytes()
+        }
+    } else {
+        key.bytes.clone()
+    };
+    normalize_application_arrows(&mut bytes, pane.parser.screen().application_cursor());
+    bytes
+}
+
+fn normalize_application_arrows(bytes: &mut Vec<u8>, application: bool) {
+    if bytes.len() != 3 {
+        return;
+    }
+    let arrow = match bytes.as_slice() {
+        b"\x1b[A" | b"\x1bOA" => b'A',
+        b"\x1b[B" | b"\x1bOB" => b'B',
+        b"\x1b[C" | b"\x1bOC" => b'C',
+        b"\x1b[D" | b"\x1bOD" => b'D',
+        _ => return,
+    };
+    if application {
+        *bytes = vec![0x1b, b'O', arrow];
+    } else {
+        *bytes = vec![0x1b, b'[', arrow];
+    }
 }
 
 /// Rebuild the isolated terminal view used by `copy-mode -s`. Ordinary copy
@@ -9522,18 +9843,6 @@ fn marker_suffix_len(bytes: &[u8], marker: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-fn terminal_input_sequence_len(bytes: &[u8]) -> usize {
-    if bytes.len() < 2 || bytes[0] != 0x1b {
-        return 1;
-    }
-    if matches!(bytes[1], b'[' | b'O') {
-        return bytes[2..]
-            .iter()
-            .position(|byte| (0x40..=0x7e).contains(byte))
-            .map_or(bytes.len(), |offset| offset + 3);
-    }
-    2.min(bytes.len())
-}
 
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -11421,7 +11730,7 @@ fn checkpoint_raw_output(pane: &mut Pane) {
     checkpoint.extend_from_slice(&screen.state_formatted());
     checkpoint.extend_from_slice(&screen.cursor_state_formatted());
     pane.raw_output = checkpoint;
-    pane.output_state = terminal::OutputState::default();
+    pane.output_state.reset_transient();
 }
 
 /// Extract the most recent OSC 2 title from the bytes retained for a pane.
@@ -17426,14 +17735,18 @@ bind -T copy-mode C-a send -X end-of-line
 
     #[test]
     fn csi_u_decoding_preserves_meta_and_ctrl_key_contracts() {
-        assert_eq!(decode_csi_u(b"127;5"), Some(vec![0x08]));
+        assert_eq!(decode_csi_u(b"127;5"), Some((127, 5)));
         assert_eq!(decode_csi_u(b"x;3"), None);
         assert_eq!(decode_csi_u("é".as_bytes()), None);
-        assert_eq!(decode_csi_u(b"233;3"), Some(vec![0x1b, 0xc3, 0xa9]));
         assert_eq!(
-            decode_extended_key_input(b"\x1b[27;5;97~"),
-            (vec![0x01], Vec::new())
+            decode_extended_key_codepoint(233, 3),
+            Some(vec![0x1b, 0xc3, 0xa9])
         );
+        let (keys, pending) = decode_client_input(b"\x1b[27;5;97~", true);
+        assert!(pending.is_empty());
+        assert_eq!(keys[0].bytes, vec![0x01]);
+        assert_eq!(keys[0].codepoint, Some(97));
+        assert_eq!(keys[0].modifier, 5);
     }
 
     #[test]

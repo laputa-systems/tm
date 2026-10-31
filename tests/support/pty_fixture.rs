@@ -76,6 +76,30 @@ fn main() -> io::Result<()> {
                 expect_mouse_event(&event, b"\x1b[<64;5;2M")?;
                 emit_mouse_ack(&event)?;
             }
+            b"extkeys" => {
+                enable_raw_input()?;
+                emit(b"\x1b[>4;2mEXTKEYS_READY\r\n")?;
+                let bytes = read_until_nul()?;
+                emit(&format!("EXTKEYS_ACK:{}\r\n", hex(&bytes)).into_bytes())?;
+            }
+            b"legacy-keys" => {
+                enable_raw_input()?;
+                emit(b"LEGACY_READY\r\n")?;
+                let bytes = read_until_nul()?;
+                emit(&format!("LEGACY_ACK:{}\r\n", hex(&bytes)).into_bytes())?;
+            }
+            b"focus" => {
+                enable_raw_input()?;
+                emit(b"\x1b[?1004hFOCUS_READY\r\n")?;
+                let bytes = read_until_nul()?;
+                emit(&format!("FOCUS_ACK:{}\r\n", hex(&bytes)).into_bytes())?;
+            }
+            b"app-cursor" => {
+                enable_raw_input()?;
+                emit(b"\x1b[?1h\x1b=APP_CURSOR_READY\r\n")?;
+                let bytes = read_until_nul()?;
+                emit(&format!("CURSOR_ACK:{}\r\n", hex(&bytes)).into_bytes())?;
+            }
             b"app-drag" => {
                 enable_application_mouse()?;
                 let press = read_sgr_mouse()?;
@@ -131,6 +155,48 @@ fn enable_raw_input() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn read_until_nul() -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    loop {
+        wait_for_input(50)?;
+        let mut byte = [0_u8; 1];
+        // SAFETY: fd 0 is the fixture's PTY slave inherited from the test.
+        let read = unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) };
+        if read == 1 {
+            if byte[0] == 0 {
+                return Ok(bytes);
+            }
+            bytes.push(byte[0]);
+            continue;
+        }
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "input ended before the terminator",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted || error.kind() == io::ErrorKind::WouldBlock {
+            continue;
+        }
+        if error.raw_os_error() == Some(libc::EIO) {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "input ended before the terminator",
+            ));
+        }
+        return Err(error);
+    }
 }
 
 fn read_until_paste_end() -> io::Result<Vec<u8>> {

@@ -796,7 +796,7 @@ impl Window {
                     // The re-anchor is synthetic terminal output. Reset the
                     // PTY stream normalizer so its wrap/REP state cannot refer
                     // to bytes that were only used to restore the screen.
-                    pane.output_state = OutputState::default();
+                    pane.output_state.reset_transient();
                 }
             }
         }
