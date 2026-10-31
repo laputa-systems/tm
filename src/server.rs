@@ -10525,6 +10525,7 @@ fn render_status_line(
     {
         return;
     }
+    let cols = usize::from(session.size.cols.max(1));
     let row = if options
         .get("status-position")
         .is_some_and(|value| value == "top")
@@ -10534,6 +10535,86 @@ fn render_status_line(
         session.size.rows.max(1)
     };
     output.extend_from_slice(format!("\x1b[{row};1H\x1b[K").as_bytes());
+    append_status_base(output, options);
+    if let Some(message) = message.or(prompt) {
+        let message = message.lines().next().unwrap_or("");
+        output.extend_from_slice(take_display_width(message, cols, false).as_bytes());
+        output.extend_from_slice(b"\x1b[0m");
+        return;
+    }
+    let left_format = options.get("status-left").map_or("", String::as_str);
+    let mut left = render_status_span(left_format, session, active_window, client_prefix, options);
+    let status_window_format = options
+        .get("window-status-format")
+        .map_or("#I:#W", String::as_str);
+    let current_window_format = options
+        .get("window-status-current-format")
+        .map_or("#I:#W", String::as_str);
+    let windows = session
+        .windows
+        .iter()
+        .map(|window| {
+            let format = if window.index == session.active_window {
+                current_window_format
+            } else {
+                status_window_format
+            };
+            render_status_span(format, session, window, client_prefix, options)
+        })
+        .collect::<Vec<_>>();
+    let right_format = options.get("status-right").map_or("", String::as_str);
+    let mut right = render_status_span(right_format, session, active_window, client_prefix, options);
+    let left_length = options
+        .get("status-left-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(32);
+    left.truncate(left_length.min(cols));
+    if !right.plain.is_empty() {
+        let right_limit = cols.saturating_sub(left.plain_width().saturating_add(1));
+        right.truncate_from_end(right_limit);
+    }
+    let reserved = left.plain_width()
+        + if right.plain.is_empty() {
+            0
+        } else {
+            right.plain_width() + 2
+        };
+    let window_area = cols
+        .saturating_sub(reserved)
+        .saturating_sub(usize::from(!windows.is_empty()));
+    let active_position = session
+        .windows
+        .iter()
+        .position(|window| window.index == session.active_window)
+        .unwrap_or(0);
+    let (start, end) = visible_window_range(&windows, active_position, window_area);
+    output.extend_from_slice(left.styled.as_bytes());
+    output.extend_from_slice(b"\x1b[0m");
+    append_status_base(output, options);
+    if start < end {
+        output.push(b' ');
+        for (index, window) in windows.iter().enumerate().take(end).skip(start) {
+            if index > start {
+                output.push(b' ');
+            }
+            let styled = if window.plain_width() <= window_area {
+                window.styled.as_str()
+            } else {
+                window.plain.as_str()
+            };
+            output.extend_from_slice(styled.as_bytes());
+            output.extend_from_slice(b"\x1b[0m");
+            append_status_base(output, options);
+        }
+    }
+    if !right.plain.is_empty() {
+        output.extend_from_slice(b"  ");
+        output.extend_from_slice(right.styled.as_bytes());
+    }
+    output.extend_from_slice(b"\x1b[0m");
+}
+
+fn append_status_base(output: &mut Vec<u8>, options: &HashMap<String, String>) {
     output.extend_from_slice(match options.get("status-bg").map(String::as_str) {
         Some("black") | None => b"\x1b[40m",
         Some("red") => b"\x1b[41m",
@@ -10549,56 +10630,67 @@ fn render_status_line(
         Some("white") | None => b"\x1b[37m",
         _ => b"\x1b[37m",
     });
-    if let Some(message) = message.or(prompt) {
-        output.extend_from_slice(message.lines().next().unwrap_or("").as_bytes());
-        output.extend_from_slice(b"\x1b[0m");
-        return;
-    }
-    let left_format = options.get("status-left").map_or("", String::as_str);
-    let left = render_status_format(left_format, session, active_window, client_prefix, options);
-    let status_window_format = options
-        .get("window-status-format")
-        .map_or("#I:#W", String::as_str);
-    let current_window_format = options
-        .get("window-status-current-format")
-        .map_or("#I:#W", String::as_str);
-    let mut windows = String::new();
-    for window in &session.windows {
-        if !windows.is_empty() {
-            windows.push(' ');
-        }
-        let format = if window.index == session.active_window {
-            current_window_format
-        } else {
-            status_window_format
-        };
-        windows.push_str(&render_status_format(
-            format,
-            session,
-            window,
-            client_prefix,
-            options,
-        ));
-    }
-    let right_format = options.get("status-right").map_or("", String::as_str);
-    let right = render_status_format(right_format, session, active_window, client_prefix, options);
-    let left_length = options
-        .get("status-left-length")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(32);
-    let left = take_display_width(&left, left_length, false);
-    output.extend_from_slice(left.as_bytes());
-    if !windows.is_empty() {
-        output.push(b' ');
-        output.extend_from_slice(windows.as_bytes());
-    }
-    if !right.is_empty() {
-        output.extend_from_slice(b"  ");
-        output.extend_from_slice(right.as_bytes());
-    }
-    output.extend_from_slice(b"\x1b[0m");
 }
 
+struct StatusSpan {
+    styled: String,
+    plain: String,
+}
+
+impl StatusSpan {
+    fn plain_width(&self) -> usize {
+        format_display_width(&self.plain)
+    }
+
+    fn truncate(&mut self, limit: usize) {
+        if self.plain_width() <= limit {
+            return;
+        }
+        self.plain = take_display_width(&self.plain, limit, false);
+        self.styled = self.plain.clone();
+    }
+
+    fn truncate_from_end(&mut self, limit: usize) {
+        if self.plain_width() <= limit {
+            return;
+        }
+        self.plain = take_display_width(&self.plain, limit, true);
+        self.styled = self.plain.clone();
+    }
+}
+
+fn visible_window_range(windows: &[StatusSpan], active: usize, area: usize) -> (usize, usize) {
+    if windows.is_empty() {
+        return (0, 0);
+    }
+    let active = active.min(windows.len() - 1);
+    let mut start = active;
+    let mut end = active + 1;
+    let mut width = windows[active].plain_width();
+    while end < windows.len()
+        && width
+            .saturating_add(1)
+            .saturating_add(windows[end].plain_width())
+            <= area
+    {
+        width = width
+            .saturating_add(1)
+            .saturating_add(windows[end].plain_width());
+        end += 1;
+    }
+    while start > 0
+        && width
+            .saturating_add(1)
+            .saturating_add(windows[start - 1].plain_width())
+            <= area
+    {
+        width = width
+            .saturating_add(1)
+            .saturating_add(windows[start - 1].plain_width());
+        start -= 1;
+    }
+    (start, end)
+}
 fn window_alert_flags(window: &Window) -> String {
     if window.bell_alert {
         "!".to_owned()
@@ -10607,13 +10699,13 @@ fn window_alert_flags(window: &Window) -> String {
     }
 }
 
-fn render_status_format(
+fn render_status_span(
     format: &str,
     session: &Session,
     window: &Window,
     client_prefix: bool,
     options: &HashMap<String, String>,
-) -> String {
+) -> StatusSpan {
     let format = format
         .replace("#I", &window.index.to_string())
         .replace("#W", &window.name)
@@ -10648,7 +10740,10 @@ fn render_status_format(
         ),
     ];
     let expanded = render_format_with_options(&format, &values, options);
-    render_status_styles(&expanded)
+    StatusSpan {
+        styled: render_status_styles(&expanded),
+        plain: strip_status_styles(&expanded),
+    }
 }
 
 fn render_status_styles(value: &str) -> String {
@@ -18204,6 +18299,11 @@ bind -r Right next-window
             .expect("render display message");
         assert!(
             message_render
+                .windows(b"configuration reload".len())
+                .any(|window| window == b"configuration reload")
+        );
+        assert!(
+            !message_render
                 .windows(b"configuration reloaded.".len())
                 .any(|window| window == b"configuration reloaded.")
         );
