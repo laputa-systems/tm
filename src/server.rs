@@ -443,6 +443,7 @@ fn attach_client(
             let delta = if full_render
                 .windows(2)
                 .any(|window| window == b"\x1b]" || window == b"\x1bP")
+                || full_render.contains(&0x07)
             {
                 Err(())
             } else {
@@ -669,6 +670,8 @@ struct AttachedClient {
     term: String,
     modes: terminal::TerminalModes,
     detach_requested: bool,
+    bell_pending: bool,
+    clipboard: Option<Vec<u8>>,
     prefix_pending: bool,
     key_buffer: Vec<u8>,
     input_buffer: Vec<u8>,
@@ -1838,6 +1841,8 @@ impl ServerState {
                 term: term.to_owned(),
                 modes: terminal::TerminalModes::default(),
                 detach_requested: false,
+                bell_pending: false,
+                clipboard: None,
                 prefix_pending: false,
                 key_buffer: Vec::new(),
                 input_buffer: Vec::new(),
@@ -2129,6 +2134,7 @@ impl ServerState {
                     }
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.paste_active = None;
+                        client.paste_deadline = None;
                     }
                     active = false;
                     index += END.len();
@@ -2138,6 +2144,7 @@ impl ServerState {
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.paste_pending = pending[index..].to_vec();
                         client.paste_active = Some(Instant::now());
+                        client.paste_deadline = None;
                     }
                     return normal;
                 }
@@ -2159,6 +2166,7 @@ impl ServerState {
                 }
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.paste_active = Some(Instant::now());
+                    client.paste_deadline = None;
                 }
                 active = true;
                 index += START.len();
@@ -5435,6 +5443,16 @@ impl ServerState {
                     .is_some_and(|value| matches!(value.as_str(), "on" | "external"))
             {
                 self.clipboard_pending = Some(data.clone());
+                let features = self
+                    .global_options
+                    .get("terminal-features")
+                    .cloned()
+                    .unwrap_or_default();
+                for client in self.clients.values_mut() {
+                    if terminal::Capabilities::for_term(&client.term, &features).clipboard {
+                        client.clipboard = Some(data.clone());
+                    }
+                }
             }
             if let Some(command) = pipe_command.map(|command| {
                 if command.is_empty() {
@@ -8343,7 +8361,16 @@ impl ServerState {
             output.extend_from_slice(begin);
         }
         output.extend(mode_output);
-        let clipboard = self.clipboard_pending.take();
+        let clipboard = match client_id {
+            Some(client_id) => self
+                .clients
+                .get_mut(&client_id)
+                .and_then(|client| client.clipboard.take()),
+            None => self.clipboard_pending.take(),
+        };
+        let bell = client_id
+            .and_then(|client_id| self.clients.get_mut(&client_id))
+            .is_some_and(|client| std::mem::take(&mut client.bell_pending));
         let consumed_one_shot_state = message.is_some() || clipboard.is_some();
         if clear_screen {
             output.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H\x1b[0m");
@@ -8353,6 +8380,9 @@ impl ServerState {
         if let Some(data) = clipboard {
             output.extend_from_slice(b"\x1b]52;c;");
             output.extend_from_slice(base64_encode(&data).as_bytes());
+            output.push(0x07);
+        }
+        if bell {
             output.push(0x07);
         }
         for pane in &mut window.panes {
@@ -11288,6 +11318,16 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                             if updated && audible_bell {
                                 let global_monitor_bell =
                                     state.global_options.get("monitor-bell").cloned();
+                                let visual_bell = state
+                                    .global_options
+                                    .get("visual-bell")
+                                    .is_some_and(|value| parse_on_off(value).unwrap_or(false));
+                                let bell_action = state
+                                    .global_options
+                                    .get("bell-action")
+                                    .cloned()
+                                    .unwrap_or_else(|| "any".to_owned());
+                                let mut alerting = Vec::new();
                                 for session in &mut state.sessions {
                                     for window in &mut session.windows {
                                         if !window.panes.iter().any(|pane| pane.pty.pid() == pid) {
@@ -11302,7 +11342,15 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                             });
                                         if monitor_bell {
                                             window.bell_alert = true;
+                                            if !visual_bell && bell_action == "any" {
+                                                alerting.push(session.id);
+                                            }
                                         }
+                                    }
+                                }
+                                for client in state.clients.values_mut() {
+                                    if alerting.contains(&client.session_id) {
+                                        client.bell_pending = true;
                                     }
                                 }
                             }

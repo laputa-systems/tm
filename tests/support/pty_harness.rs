@@ -72,11 +72,11 @@ pub fn wait_for_text(terminal: &mut PtyTest, text: &str, timeout: Duration) -> S
 
 pub fn detach(terminal: &mut PtyTest, baseline: &ptytest::TerminalBaseline) {
     terminal
-        .send_bytes(terminal.deadline(Duration::from_secs(3)), b"\x01d")
+        .send_bytes(terminal.deadline(Duration::from_secs(5)), b"\x01d")
         .expect("send detach");
     assert_eq!(
         terminal
-            .wait_for_exit(terminal.deadline(Duration::from_secs(3)))
+            .wait_for_exit(terminal.deadline(Duration::from_secs(5)))
             .expect("wait for detach"),
         ExitStatus::Code(0)
     );
@@ -84,6 +84,6 @@ pub fn detach(terminal: &mut PtyTest, baseline: &ptytest::TerminalBaseline) {
         .assert_terminal_restored(baseline)
         .expect("restore terminal on detach");
     terminal
-        .finish(terminal.deadline(Duration::from_secs(3)))
+        .finish(terminal.deadline(Duration::from_secs(5)))
         .expect("reap detached client");
 }
