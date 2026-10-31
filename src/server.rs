@@ -10858,7 +10858,7 @@ fn capture_formatted_row(
     }
     let saved = parser.screen().scrollback();
     let (rows, cols) = parser.screen().size();
-    let formatted = if row < history_rows {
+    let mut formatted = if row < history_rows {
         parser
             .screen_mut()
             .set_scrollback(history_rows.saturating_sub(row));
@@ -10876,6 +10876,9 @@ fn capture_formatted_row(
             .unwrap_or_default()
     };
     parser.screen_mut().set_scrollback(saved);
+    if !formatted.is_empty() {
+        formatted.extend_from_slice(b"\x1b[0m");
+    }
     formatted
 }
 
@@ -11576,6 +11579,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                 .pane_pipes
                                 .get(&pane_id)
                                 .map(|pipe| Arc::clone(&pipe.stdin));
+                            let history_limit = state.history_limit;
                             for pane in state
                                 .sessions
                                 .iter_mut()
@@ -11588,7 +11592,9 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                 {
                                     let _ = stdin.write_all(&buffer[..length]);
                                 }
-                                retain_raw_output(pane, &buffer[..length]);
+                                pane.output_state
+                                    .process(&mut pane.parser, &buffer[..length]);
+                                retain_raw_output(pane, &buffer[..length], history_limit);
                                 // OSC 2/7 metadata is emitted near the live
                                 // cursor. Scanning the complete retained
                                 // history for every PTY read made sustained
@@ -11605,9 +11611,11 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                     pane.current_path = Some(path);
                                 }
                                 let title = terminal_title(metadata);
-                                pane.output_state
-                                    .process(&mut pane.parser, &buffer[..length]);
                                 audible_bell |= pane.output_state.take_audible_bell();
+                                let replies = pane.output_state.take_query_replies();
+                                if !replies.is_empty() {
+                                    let _ = pane.pty.write(&replies);
+                                }
                                 let refresh_live = pane.copy_source.is_none()
                                     && pane
                                         .copy_mode
@@ -11706,31 +11714,74 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
         .ok();
 }
 
-const RAW_OUTPUT_LIMIT: usize = 1 << 20;
+const RAW_OUTPUT_MIN_BUDGET: usize = 1 << 20;
+const RAW_OUTPUT_MAX_BUDGET: usize = 32 << 20;
 const TERMINAL_METADATA_SCAN_LIMIT: usize = 4096;
 
-fn retain_raw_output(pane: &mut Pane, bytes: &[u8]) {
+fn raw_output_budget(cols: u16, history_limit: usize) -> usize {
+    history_limit
+        .saturating_mul((usize::from(cols) + 16) * 2)
+        .clamp(RAW_OUTPUT_MIN_BUDGET, RAW_OUTPUT_MAX_BUDGET)
+}
+
+fn retain_raw_output(pane: &mut Pane, bytes: &[u8], history_limit: usize) {
     pane.raw_output.extend_from_slice(bytes);
-    if pane.raw_output.len() > RAW_OUTPUT_LIMIT {
+    let (_, cols) = pane.parser.screen().size();
+    if pane.raw_output.len() > raw_output_budget(cols, history_limit) {
         checkpoint_raw_output(pane);
     }
 }
 
-/// Replace an overgrown retained stream with a replayable terminal snapshot.
-/// Dropping an arbitrary byte prefix can cut a UTF-8 scalar or control string,
-/// making replay disagree with the live parser. `Screen::state_formatted`
-/// produces a complete visible-state checkpoint, so future replay remains
-/// well-formed even after the bounded history window rolls forward.
 fn checkpoint_raw_output(pane: &mut Pane) {
-    let screen = pane.parser.screen();
+    let (rows, alternate) = {
+        let screen = pane.parser.screen();
+        let (rows, _) = screen.size();
+        (rows, screen.alternate_screen())
+    };
+    let wrap = pane.output_state.wrap_enabled();
+    let pending = pane.output_state.pending().to_vec();
     let mut checkpoint = Vec::new();
-    if screen.alternate_screen() {
+    let mut history = if alternate {
+        Vec::new()
+    } else {
+        let (mut history, _) = history_rows(&mut pane.parser);
+        let floor = pane.history_floor.min(history.len());
+        history.drain(..floor);
+        history
+    };
+    let retained_history = history.len();
+    if !history.is_empty() {
+        checkpoint.extend_from_slice(b"\x1b[?7l");
+        for (index, row) in history.drain(..).enumerate() {
+            if index > 0 {
+                checkpoint.extend_from_slice(b"\r\n");
+            }
+            checkpoint.extend_from_slice(row.trim_end().as_bytes());
+        }
+        checkpoint.extend_from_slice(
+            format!("\x1b[{}S", retained_history.min(usize::from(rows))).as_bytes(),
+        );
+    }
+    checkpoint.extend_from_slice(if wrap {
+        b"\x1b[?7h"
+    } else {
+        b"\x1b[?7l"
+    });
+    if alternate {
         checkpoint.extend_from_slice(b"\x1b[?1049h");
     }
+    let screen = pane.parser.screen();
     checkpoint.extend_from_slice(&screen.state_formatted());
     checkpoint.extend_from_slice(&screen.cursor_state_formatted());
+    if pane.output_state.focus_events() {
+        checkpoint.extend_from_slice(b"\x1b[?1004h");
+    }
+    if pane.output_state.extended_keys() {
+        checkpoint.extend_from_slice(b"\x1b[>4;2m");
+    }
+    checkpoint.extend_from_slice(&pending);
     pane.raw_output = checkpoint;
-    pane.output_state.reset_transient();
+    pane.history_floor = 0;
 }
 
 /// Extract the most recent OSC 2 title from the bytes retained for a pane.
@@ -19411,6 +19462,136 @@ bind -r Right next-window
     }
 
     #[test]
+    fn checkpoint_retains_scrollback_history_and_visible_state() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                CreateSessionOptions {
+                    name: Some("history-checkpoint"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 5),
+                },
+            )
+            .expect("create history checkpoint session");
+        let pane_id = state.sessions[0].windows[0].panes[0].id;
+        let pane = state.find_pane_mut(pane_id).expect("history checkpoint pane");
+        for line in 0..80 {
+            let output = format!("LINE_{line:03}\r\n");
+            pane.output_state
+                .process(&mut pane.parser, output.as_bytes());
+            pane.raw_output.extend_from_slice(output.as_bytes());
+        }
+        let (expected_history, expected_live) = history_rows(&mut pane.parser);
+        let expected_contents = pane.parser.screen().contents_formatted();
+        checkpoint_raw_output(pane);
+
+        let mut replayed = Parser::new(5, 20, 10_000);
+        terminal::replay(&mut replayed, &pane.raw_output);
+        let (history, live) = history_rows(&mut replayed);
+        assert_eq!(history, expected_history);
+        assert_eq!(live, expected_live);
+        assert_eq!(replayed.screen().contents_formatted(), expected_contents);
+        assert_eq!(replayed.screen().cursor_position(), pane.parser.screen().cursor_position());
+    }
+
+    #[test]
+    fn checkpoint_survives_split_utf8_osc_repeat_and_later_output() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                CreateSessionOptions {
+                    name: Some("checkpoint-chunks"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(12, 4),
+                },
+            )
+            .expect("create checkpoint chunk session");
+        let pane_id = state.sessions[0].windows[0].panes[0].id;
+        let pane = state.find_pane_mut(pane_id).expect("checkpoint chunk pane");
+        for chunk in [
+            b"\x1b[?7lABC\x1b[2b".as_slice(),
+            b"\xe3".as_slice(),
+            b"\x81\x82\x1b]2;title".as_slice(),
+            b"\x07wide\xe7\x95\x8c\r\n".as_slice(),
+        ] {
+            pane.output_state.process(&mut pane.parser, chunk);
+            retain_raw_output(pane, chunk, 100);
+        }
+        checkpoint_raw_output(pane);
+        for chunk in [b"\x1b[31mred\x1b[0m tail".as_slice(), b"\r\nnext".as_slice()] {
+            pane.output_state.process(&mut pane.parser, chunk);
+            retain_raw_output(pane, chunk, 100);
+        }
+
+        let mut replayed = Parser::new(4, 12, 100);
+        terminal::replay(&mut replayed, &pane.raw_output);
+        assert_eq!(
+            replayed.screen().contents_formatted(),
+            pane.parser.screen().contents_formatted()
+        );
+        assert_eq!(
+            replayed.screen().cursor_position(),
+            pane.parser.screen().cursor_position()
+        );
+    }
+
+    #[test]
+    fn alternate_screen_checkpoint_replays_the_alternate_view() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                CreateSessionOptions {
+                    name: Some("checkpoint-alt"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(12, 4),
+                },
+            )
+            .expect("create alternate checkpoint session");
+        let pane_id = state.sessions[0].windows[0].panes[0].id;
+        let pane = state.find_pane_mut(pane_id).expect("alternate checkpoint pane");
+        let output = b"normal\x1b[?1049hALT\x1b[2;3Hview";
+        pane.output_state.process(&mut pane.parser, output);
+        retain_raw_output(pane, output, 100);
+        checkpoint_raw_output(pane);
+
+        let mut replayed = Parser::new(4, 12, 100);
+        terminal::replay(&mut replayed, &pane.raw_output);
+        assert!(replayed.screen().alternate_screen());
+        assert_eq!(
+            replayed.screen().contents_formatted(),
+            pane.parser.screen().contents_formatted()
+        );
+        assert_eq!(
+            replayed.screen().cursor_position(),
+            pane.parser.screen().cursor_position()
+        );
+    }
+
+    #[test]
     fn raw_output_checkpoint_replays_the_live_terminal_state() {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
@@ -19446,9 +19627,10 @@ bind -r Right next-window
 
         pane.history_floor = 7;
         pane.parser.process(b"\x1b[2J\x1b[Hcheckpoint");
-        retain_raw_output(pane, &vec![b'x'; RAW_OUTPUT_LIMIT + 1]);
-        assert!(pane.raw_output.len() < RAW_OUTPUT_LIMIT);
-        assert_eq!(pane.history_floor, 7);
+        let budget = raw_output_budget(pane.parser.screen().size().1, 10_000);
+        retain_raw_output(pane, &vec![b'x'; budget + 1], 10_000);
+        assert!(pane.raw_output.len() < budget);
+        assert_eq!(pane.history_floor, 0);
         let mut replayed = Parser::new(4, 20, 100);
         terminal::replay(&mut replayed, &pane.raw_output);
         assert_eq!(

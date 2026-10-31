@@ -76,6 +76,39 @@ fn main() -> io::Result<()> {
                 expect_mouse_event(&event, b"\x1b[<64;5;2M")?;
                 emit_mouse_ack(&event)?;
             }
+            b"corpus" => {
+                emit(concat!(
+                    "\x1b[2J\x1b[H",
+                    "\x1b[31mred\x1b[0m \x1b[1;32mbold\x1b[0m\r\n",
+                    "wide 界 e\u{301}\tTAB\r\n",
+                    "1234567890\rAB\r\n",
+                    "\x1b[2;1H\x1b[Kclear-end\r\n",
+                    "\x1b[3;1Hinsert\x1b[2@XX\r\n",
+                    "\x1b[4;1Hdelete\x1b[2P\r\n",
+                    "\x1b[1;1H\x1b[sSAVE\x1b[uRESTORE\r\n",
+                    "\x1b[6;1HX\x1b[3b\r\n",
+                    "CORPUS_DONE\r\n",
+                )
+                .as_bytes())?;
+            }
+            b"da1" => {
+                enable_raw_input()?;
+                emit(b"\x1b[c")?;
+                let bytes = read_exact_bytes(7)?;
+                emit(&format!("DA1_ACK:{}\r\n", hex(&bytes)).into_bytes())?;
+            }
+            b"da2" => {
+                enable_raw_input()?;
+                emit(b"\x1b[>c")?;
+                let bytes = read_exact_bytes(10)?;
+                emit(&format!("DA2_ACK:{}\r\n", hex(&bytes)).into_bytes())?;
+            }
+            b"decrqss" => {
+                enable_raw_input()?;
+                emit(b"\x1bP$qm\x1b\\")?;
+                let bytes = read_exact_bytes(7)?;
+                emit(&format!("DECRQSS_ACK:{}\r\n", hex(&bytes)).into_bytes())?;
+            }
             b"extkeys" => {
                 enable_raw_input()?;
                 emit(b"\x1b[>4;2mEXTKEYS_READY\r\n")?;
@@ -163,6 +196,38 @@ fn hex(bytes: &[u8]) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn read_exact_bytes(count: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(count);
+    while bytes.len() < count {
+        wait_for_input(50)?;
+        let mut byte = [0_u8; 1];
+        // SAFETY: fd 0 is the fixture's PTY slave inherited from the test.
+        let read = unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) };
+        if read == 1 {
+            bytes.push(byte[0]);
+            continue;
+        }
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "reply ended before its expected length",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted || error.kind() == io::ErrorKind::WouldBlock {
+            continue;
+        }
+        if error.raw_os_error() == Some(libc::EIO) {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "reply ended before its expected length",
+            ));
+        }
+        return Err(error);
+    }
+    Ok(bytes)
 }
 
 fn read_until_nul() -> io::Result<Vec<u8>> {
@@ -300,7 +365,7 @@ fn read_line_with_resize(buffer: &mut Vec<u8>) -> io::Result<bool> {
         let read = unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) };
         if read == 1 {
             buffer.push(byte[0]);
-            if byte[0] == b'\n' {
+            if matches!(byte[0], b'\n' | b'\r') {
                 return Ok(true);
             }
             continue;

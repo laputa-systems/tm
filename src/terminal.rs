@@ -22,6 +22,7 @@ pub(crate) struct OutputState {
     audible_bell: bool,
     focus_events: bool,
     extended_keys: bool,
+    query_replies: Vec<u8>,
 }
 
 impl Default for OutputState {
@@ -33,6 +34,7 @@ impl Default for OutputState {
             audible_bell: false,
             focus_events: false,
             extended_keys: false,
+            query_replies: Vec::new(),
         }
     }
 }
@@ -55,15 +57,15 @@ impl OutputState {
         let ready_len =
             incomplete_utf8_start(&self.pending[..escape_ready_len]).unwrap_or(escape_ready_len);
         let ready = self.pending.drain(..ready_len).collect::<Vec<_>>();
-        replay_terminal_bytes(
-            parser,
-            &ready,
-            &mut self.last_printed,
-            &mut self.wrap,
-            &mut self.audible_bell,
-            &mut self.focus_events,
-            &mut self.extended_keys,
-        );
+        let mut replay = ReplayState {
+            last_printed: &mut self.last_printed,
+            wrap: &mut self.wrap,
+            audible_bell: &mut self.audible_bell,
+            focus_events: &mut self.focus_events,
+            extended_keys: &mut self.extended_keys,
+            query_replies: &mut self.query_replies,
+        };
+        replay_terminal_bytes(parser, &ready, &mut replay);
     }
 
     /// Return whether the most recent processed bytes contained a standalone
@@ -78,6 +80,18 @@ impl OutputState {
 
     pub(crate) fn extended_keys(&self) -> bool {
         self.extended_keys
+    }
+
+    pub(crate) fn wrap_enabled(&self) -> bool {
+        self.wrap
+    }
+
+    pub(crate) fn pending(&self) -> &[u8] {
+        &self.pending
+    }
+
+    pub(crate) fn take_query_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.query_replies)
     }
 
     pub(crate) fn reset_transient(&mut self) {
@@ -165,22 +179,36 @@ fn repeat_count(sequence: &[u8]) -> Option<usize> {
     )
 }
 
-fn replay_terminal_bytes(
-    parser: &mut Parser,
-    bytes: &[u8],
-    last_printed: &mut Option<Vec<u8>>,
-    wrap: &mut bool,
-    audible_bell: &mut bool,
-    focus_events: &mut bool,
-    extended_keys: &mut bool,
-) {
+struct ReplayState<'a> {
+    last_printed: &'a mut Option<Vec<u8>>,
+    wrap: &'a mut bool,
+    audible_bell: &'a mut bool,
+    focus_events: &'a mut bool,
+    extended_keys: &'a mut bool,
+    query_replies: &'a mut Vec<u8>,
+}
+
+fn replay_terminal_bytes(parser: &mut Parser, bytes: &[u8], state: &mut ReplayState<'_>) {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == 0x1b
             && let Some(end) = escape_end(bytes, index)
         {
             let sequence = &bytes[index..end];
-            if sequence == b"\x1b#8" {
+            if sequence == b"\x1b[s" {
+                parser.process(b"\x1b7");
+            } else if sequence == b"\x1b[u" {
+                parser.process(b"\x1b8");
+            } else if sequence == b"\x1b[c" {
+                state.query_replies.extend_from_slice(b"\x1b[?1;2c");
+                parser.process(sequence);
+            } else if sequence == b"\x1b[>c" {
+                state.query_replies.extend_from_slice(b"\x1b[>84;0;0c");
+                parser.process(sequence);
+            } else if sequence.starts_with(b"\x1bP$q") && sequence.ends_with(b"\x1b\\") {
+                state.query_replies.extend_from_slice(b"\x1bP0$r\x1b\\");
+                parser.process(sequence);
+            } else if sequence == b"\x1b#8" {
                 parser.process(&screen_alignment(parser));
             } else if let Some(mode) = wrap_mode(sequence) {
                 // vt100 intentionally leaves DECAWM to its caller.  It
@@ -188,28 +216,28 @@ fn replay_terminal_bytes(
                 // sequence (for example ?7;25h), so process the escape
                 // first and then update our local mode bit.
                 parser.process(sequence);
-                *wrap = mode;
+                *state.wrap = mode;
             } else if sequence == b"\x1bc" {
                 // RIS reconstructs vt100's Screen, including its mode
                 // state. Keep the local DECAWM and REP state in lockstep.
                 parser.process(sequence);
-                *wrap = true;
-                *last_printed = None;
+                *state.wrap = true;
+                *state.last_printed = None;
             } else if let Some(count) = repeat_count(sequence) {
-                if let Some(character) = last_printed.as_ref() {
+                if let Some(character) = state.last_printed.as_ref() {
                     let (_, column) = parser.screen().cursor_position();
                     let (_, columns) = parser.screen().size();
                     let limit = usize::from(columns.saturating_sub(column));
                     for _ in 0..count.min(limit) {
-                        write_terminal_character(parser, character, *wrap);
+                        write_terminal_character(parser, character, *state.wrap);
                     }
                 }
             } else if let Some(enabled) = focus_mode(sequence) {
                 parser.process(sequence);
-                *focus_events = enabled;
+                *state.focus_events = enabled;
             } else if let Some(enabled) = extended_keys_mode(sequence) {
                 parser.process(sequence);
-                *extended_keys = enabled;
+                *state.extended_keys = enabled;
             } else {
                 if sequence.len() <= MAX_CONTROL_SEQUENCE_BYTES
                     || sequence.get(1) == Some(&b']')
@@ -226,11 +254,11 @@ fn replay_terminal_bytes(
         };
         if character.is_ascii() {
             if character >= b' ' && character != 0x7f {
-                write_terminal_character(parser, &[character], *wrap);
-                *last_printed = Some(vec![character]);
+                write_terminal_character(parser, &[character], *state.wrap);
+                *state.last_printed = Some(vec![character]);
             } else {
                 if character == 0x07 {
-                    *audible_bell = true;
+                    *state.audible_bell = true;
                 }
                 parser.process(&[character]);
             }
@@ -246,8 +274,8 @@ fn replay_terminal_bytes(
             break;
         };
         let length = character.len_utf8();
-        write_terminal_character(parser, &bytes[index..index + length], *wrap);
-        *last_printed = Some(bytes[index..index + length].to_vec());
+        write_terminal_character(parser, &bytes[index..index + length], *state.wrap);
+        *state.last_printed = Some(bytes[index..index + length].to_vec());
         index += length;
     }
 }
@@ -835,6 +863,17 @@ mod tests {
     fn output_state_is_chunk_invariant_for_reset_alt_and_malformed_sequences() {
         let bytes = b"prefix\x1b[?7l012345\x1b[?1049hALT\x1b[?1049l\x1bcpost\x1b[31\x1b[?25h\x1b]2;unterminated";
         assert_chunk_invariant(bytes, 3, 6);
+    }
+
+    #[test]
+    fn output_state_replies_to_pane_terminal_queries() {
+        let mut parser = Parser::new(2, 20, 100);
+        let mut state = OutputState::default();
+        state.process(&mut parser, b"\x1b[c\x1b[>c\x1bP$qm\x1b\\");
+        assert_eq!(
+            state.take_query_replies(),
+            b"\x1b[?1;2c\x1b[>84;0;0c\x1bP0$r\x1b\\".to_vec()
+        );
     }
 
     #[test]
