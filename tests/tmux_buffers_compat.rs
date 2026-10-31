@@ -139,9 +139,11 @@ fn buffers_match_the_headless_tmux_command_contract() {
 
     tm.ok(&["set-buffer", "-b", "paste", "bracketed"]);
     tm.ok(&["paste-buffer", "-p", "-b", "paste", "-t", "B:0.0"]);
+    let captured = tm.capture_until("B:0.0", "bracketed");
+    assert!(captured.contains("bracketed"));
     assert!(
-        tm.capture_until("B:0.0", "^[[200~bracketed^[[201~")
-            .contains("^[[200~bracketed^[[201~")
+        !captured.contains("^[[200~"),
+        "a pane that did not request bracketed paste must receive the payload only"
     );
 
     let source = std::env::temp_dir().join(format!("tm-buffer-source-{}", std::process::id()));

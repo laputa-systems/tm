@@ -62,6 +62,14 @@ fn main() -> io::Result<()> {
                     emit(line.as_bytes())?;
                 }
             }
+            b"app-paste" => {
+                enable_raw_input()?;
+                emit(b"\x1b[?2004hPASTE_READY\r\n")?;
+                let bytes = read_until_paste_end()?;
+                let message = format!("PASTE_ACK:{}\r\n", bytes.len());
+                emit(message.as_bytes())?;
+                emit(b"\x1b[?2004l")?;
+            }
             b"app-mouse" => {
                 enable_application_mouse()?;
                 let event = read_sgr_mouse()?;
@@ -123,6 +131,41 @@ fn enable_raw_input() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn read_until_paste_end() -> io::Result<Vec<u8>> {
+    const END: &[u8] = b"\x1b[201~";
+    let mut bytes = Vec::new();
+    loop {
+        wait_for_input(50)?;
+        let mut byte = [0_u8; 1];
+        // SAFETY: fd 0 is the fixture's PTY slave inherited from the test.
+        let read = unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) };
+        if read == 1 {
+            bytes.push(byte[0]);
+            if bytes.ends_with(END) {
+                return Ok(bytes);
+            }
+            continue;
+        }
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "paste ended before the closing marker",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted || error.kind() == io::ErrorKind::WouldBlock {
+            continue;
+        }
+        if error.raw_os_error() == Some(libc::EIO) {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "paste ended before the closing marker",
+            ));
+        }
+        return Err(error);
+    }
 }
 
 fn read_sgr_mouse() -> io::Result<Vec<u8>> {

@@ -562,6 +562,9 @@ struct AttachedClient {
     key_deadline: Option<(Instant, u64)>,
     repeat_deadline: Option<(Instant, u64)>,
     input_deadline: Option<(Instant, u64)>,
+    paste_active: Option<Instant>,
+    paste_pending: Vec<u8>,
+    paste_deadline: Option<(Instant, u64)>,
     mouse_buffer: Vec<u8>,
     mouse_drag_button: Option<u16>,
     mouse_slider_offset: Option<usize>,
@@ -1728,6 +1731,9 @@ impl ServerState {
                 key_deadline: None,
                 repeat_deadline: None,
                 input_deadline: None,
+                paste_active: None,
+                paste_pending: Vec::new(),
+                paste_deadline: None,
                 mouse_buffer: Vec::new(),
                 mouse_drag_button: None,
                 mouse_slider_offset: None,
@@ -1744,6 +1750,16 @@ impl ServerState {
     }
 
     fn handle_client_input(&mut self, client_id: u64, bytes: &[u8], shared: &SharedState) {
+        let bytes = self.process_paste_input(client_id, bytes, shared);
+        self.handle_client_input_bytes(client_id, &bytes, shared);
+    }
+
+    fn handle_client_input_bytes(
+        &mut self,
+        client_id: u64,
+        bytes: &[u8],
+        shared: &SharedState,
+    ) {
         let escape_time = self.escape_time_ms();
         let extended_keys = self
             .global_options
@@ -1913,6 +1929,143 @@ impl ServerState {
             }
             index += 1;
         }
+    }
+
+    fn take_expired_paste(&mut self, client_id: u64, token: u64) -> Option<Vec<u8>> {
+        let client = self.clients.get(&client_id)?;
+        let (deadline, stored) = client.paste_deadline?;
+        if stored != token || Instant::now() < deadline {
+            return None;
+        }
+        let client = self.clients.get_mut(&client_id)?;
+        client.paste_deadline = None;
+        Some(std::mem::take(&mut client.paste_pending))
+    }
+
+    fn process_paste_input(
+        &mut self,
+        client_id: u64,
+        bytes: &[u8],
+        shared: &SharedState,
+    ) -> Vec<u8> {
+        const START: &[u8] = b"\x1b[200~";
+        const END: &[u8] = b"\x1b[201~";
+        const PASTE_RESET: Duration = Duration::from_secs(5);
+        let interactive = self
+            .clients
+            .get(&client_id)
+            .is_some_and(|client| {
+                client.prompt.is_some()
+                    || client.tree_mode.is_some()
+                    || client.buffer_mode.is_some()
+                    || client.client_mode.is_some()
+                    || client.panes_mode.is_some()
+            })
+            || self.copy_pane_for_client(client_id).is_some();
+        if interactive {
+            let pending = self
+                .clients
+                .get_mut(&client_id)
+                .map(|client| {
+                    client.paste_deadline = None;
+                    std::mem::take(&mut client.paste_pending)
+                })
+                .unwrap_or_default();
+            let mut combined = pending;
+            combined.extend_from_slice(bytes);
+            return combined;
+        }
+        let escape_time = self.escape_time_ms();
+        self.key_timer_counter = self.key_timer_counter.saturating_add(1);
+        let timer_token = self.key_timer_counter;
+        let (session_id, active, mut pending) = match self.clients.get_mut(&client_id) {
+            Some(client) => {
+                if let Some(started) = client.paste_active
+                    && started.elapsed() >= PASTE_RESET
+                {
+                    client.paste_active = None;
+                    client.paste_pending.clear();
+                }
+                let active = client.paste_active;
+                client.paste_deadline = None;
+                let pending = std::mem::take(&mut client.paste_pending);
+                (client.session_id, active, pending)
+            }
+            None => return bytes.to_vec(),
+        };
+        pending.extend_from_slice(bytes);
+        let pane_paste = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(Session::active_window)
+            .and_then(Window::active)
+            .is_some_and(|pane| pane.parser.screen().bracketed_paste());
+        let mut normal = Vec::new();
+        let mut active = active.is_some();
+        let mut index = 0;
+        while index < pending.len() {
+            if active {
+                if pending[index..].starts_with(END) {
+                    if pane_paste {
+                        self.write_active(session_id, END);
+                    }
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.paste_active = None;
+                    }
+                    active = false;
+                    index += END.len();
+                    continue;
+                }
+                if END.starts_with(&pending[index..]) {
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.paste_pending = pending[index..].to_vec();
+                        client.paste_active = Some(Instant::now());
+                    }
+                    return normal;
+                }
+                let end = pending[index..]
+                    .windows(END.len())
+                    .position(|window| window == END);
+                let length = end.unwrap_or(pending.len() - index);
+                let payload = pending[index..index + length].to_vec();
+                if !payload.is_empty() {
+                    self.write_active(session_id, &payload);
+                }
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.paste_active = Some(Instant::now());
+                }
+                index += length;
+            } else if pending[index..].starts_with(START) {
+                if pane_paste {
+                    self.write_active(session_id, START);
+                }
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.paste_active = Some(Instant::now());
+                }
+                active = true;
+                index += START.len();
+            } else if let Some(start) = pending[index..]
+                .windows(START.len())
+                .position(|window| window == START)
+            {
+                normal.extend_from_slice(&pending[index..index + start]);
+                index += start;
+            } else {
+                let keep = marker_suffix_len(&pending[index..], START);
+                normal.extend_from_slice(&pending[index..pending.len() - keep]);
+                if keep > 0 {
+                    let deadline = Instant::now() + Duration::from_millis(escape_time.max(1));
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.paste_pending = pending[pending.len() - keep..].to_vec();
+                        client.paste_deadline = Some((deadline, timer_token));
+                    }
+                    schedule_paste_flush(shared, client_id, timer_token, deadline);
+                }
+                break;
+            }
+        }
+        normal
     }
 
     fn escape_time_ms(&self) -> u64 {
@@ -5394,14 +5547,17 @@ impl ServerState {
             }
             data.extend_from_slice(&buffer_data[start..]);
         }
-        if bracketed {
+        let (_, _, pane_id) = self.resolve_pane_target(target)?;
+        let pane_paste = self
+            .find_pane(pane_id)
+            .is_some_and(|pane| pane.parser.screen().bracketed_paste());
+        if bracketed && pane_paste {
             let mut wrapped = Vec::with_capacity(data.len() + 16);
             wrapped.extend_from_slice(b"\x1b[200~");
             wrapped.extend_from_slice(&data);
             wrapped.extend_from_slice(b"\x1b[201~");
             data = wrapped;
         }
-        let (_, _, pane_id) = self.resolve_pane_target(target)?;
         let pane = self
             .find_pane(pane_id)
             .ok_or_else(|| "target pane no longer exists".to_owned())?;
@@ -9211,6 +9367,14 @@ fn previous_utf8_boundary(bytes: &[u8], cursor: usize) -> usize {
     position
 }
 
+fn marker_suffix_len(bytes: &[u8], marker: &[u8]) -> usize {
+    let maximum = bytes.len().min(marker.len().saturating_sub(1));
+    (1..=maximum)
+        .rev()
+        .find(|length| bytes[bytes.len() - length..] == marker[..*length])
+        .unwrap_or(0)
+}
+
 fn terminal_input_sequence_len(bytes: &[u8]) -> usize {
     if bytes.len() < 2 || bytes[0] != 0x1b {
         return 1;
@@ -10869,6 +11033,24 @@ fn execute_request_inner(
         }
         Request::Attach { .. } => Err("attach request was handled separately".to_owned()),
     }
+}
+
+fn schedule_paste_flush(shared: &SharedState, client_id: u64, token: u64, deadline: Instant) {
+    let shared = Arc::clone(shared);
+    let _ = thread::Builder::new()
+        .name("tm-paste-deadline".to_owned())
+        .spawn(move || {
+            let now = Instant::now();
+            if deadline > now {
+                thread::sleep(deadline - now);
+            }
+            if let Ok(mut state) = shared.lock()
+                && let Some(bytes) = state.take_expired_paste(client_id, token)
+            {
+                state.handle_client_input_bytes(client_id, &bytes, &shared);
+                state.mark_render_dirty();
+            }
+        });
 }
 
 fn schedule_input_flush(shared: &SharedState, client_id: u64, token: u64, deadline: Instant) {
@@ -18436,7 +18618,7 @@ bind -r Right next-window
             .capture_pane(Some("mouse-paste:0.0"), None, None, false, false, false)
             .expect("capture mouse paste pane");
         assert!(
-            captured.contains("^[[200~middle paste^[[201~"),
+            captured.contains("middle paste") && !captured.contains("^[[200~"),
             "capture: {captured:?}"
         );
     }
