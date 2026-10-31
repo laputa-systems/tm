@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -250,6 +250,22 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
         return;
     }
 
+    let request = match request {
+        Request::RunShell {
+            command,
+            background: false,
+            target,
+        } => {
+            let result = run_foreground_shell(&shared, &command, target.as_deref());
+            let (ok, body) = match result {
+                Ok(body) => (true, body),
+                Err(error) => (false, error),
+            };
+            let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
+            return;
+        }
+        request => request,
+    };
     let result = match shared.lock() {
         Ok(mut state) => {
             let result = execute_request(&mut state, &shared, request, None);
@@ -263,6 +279,33 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
         Err(error) => (false, error),
     };
     let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
+}
+
+fn run_foreground_shell(
+    shared: &SharedState,
+    command: &str,
+    target: Option<&str>,
+) -> CommandResult {
+    let (environment, suppress_output) = {
+        let state = shared
+            .lock()
+            .map_err(|_| "server state lock is poisoned".to_owned())?;
+        if let Some(target) = target {
+            state.resolve_pane_target(Some(target))?;
+        }
+        (state.environment.clone(), target.is_some())
+    };
+    let output = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .envs(environment.iter())
+        .output()
+        .map_err(|error| format!("run-shell: {error}"))?;
+    if suppress_output {
+        Ok(String::new())
+    } else {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
 }
 
 fn attach_client(
@@ -659,9 +702,14 @@ struct Buffer {
     created: i64,
 }
 
+enum PipeMessage {
+    Data(Vec<u8>),
+    Close,
+}
+
 struct PanePipe {
-    stdin: Arc<Mutex<ChildStdin>>,
-    child: Child,
+    sender: std::sync::mpsc::SyncSender<PipeMessage>,
+    pid: libc::pid_t,
 }
 
 struct AttachedClient {
@@ -1077,8 +1125,12 @@ impl AttachedPrompt {
 
 impl Drop for PanePipe {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.sender.try_send(PipeMessage::Close);
+        // SAFETY: pid is the pipe helper spawned for this pipe and is not
+        // reaped by another owner.
+        unsafe {
+            libc::kill(self.pid, libc::SIGTERM);
+        }
     }
 }
 
@@ -6537,13 +6589,28 @@ impl ServerState {
             .stdin
             .take()
             .ok_or_else(|| "pipe-pane could not open command stdin".to_owned())?;
-        self.pane_pipes.insert(
-            pane_id,
-            PanePipe {
-                stdin: Arc::new(Mutex::new(stdin)),
-                child,
-            },
-        );
+        let pid = libc::pid_t::try_from(child.id()).unwrap_or_default();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        thread::Builder::new()
+            .name(format!("tm-pipe-{pane_id}"))
+            .spawn(move || {
+                let mut stdin = stdin;
+                let mut child = child;
+                while let Ok(message) = receiver.recv() {
+                    match message {
+                        PipeMessage::Data(bytes) => {
+                            if stdin.write_all(&bytes).is_err() {
+                                break;
+                            }
+                        }
+                        PipeMessage::Close => break,
+                    }
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            })
+            .map_err(|error| format!("pipe-pane: {error}"))?;
+        self.pane_pipes.insert(pane_id, PanePipe { sender, pid });
         Ok(String::new())
     }
 
@@ -6783,7 +6850,7 @@ impl ServerState {
             let _ = self.resolve_pane_target(Some(target))?;
         }
         if background {
-            Command::new("/bin/sh")
+            let mut child = Command::new("/bin/sh")
                 .arg("-c")
                 .arg(command)
                 .envs(self.environment.iter())
@@ -6792,6 +6859,12 @@ impl ServerState {
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(|error| format!("run-shell: {error}"))?;
+            thread::Builder::new()
+                .name("tm-run-shell".to_owned())
+                .spawn(move || {
+                    let _ = child.wait();
+                })
+                .ok();
             return Ok(String::new());
         }
         let output = Command::new("/bin/sh")
@@ -11652,13 +11725,14 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(length) => {
+                        let mut pipe_payload = None;
                         if let Ok(mut state) = shared.lock() {
                             let mut updated = false;
                             let mut audible_bell = false;
                             let pipe = state
                                 .pane_pipes
                                 .get(&pane_id)
-                                .map(|pipe| Arc::clone(&pipe.stdin));
+                                .map(|pipe| pipe.sender.clone());
                             let history_limit = state.history_limit;
                             for pane in state
                                 .sessions
@@ -11667,11 +11741,6 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                 .flat_map(|window| &mut window.panes)
                                 .filter(|pane| pane.pty.pid() == pid)
                             {
-                                if let Some(pipe) = pipe.as_ref()
-                                    && let Ok(mut stdin) = pipe.lock()
-                                {
-                                    let _ = stdin.write_all(&buffer[..length]);
-                                }
                                 pane.output_state
                                     .process(&mut pane.parser, &buffer[..length]);
                                 retain_raw_output(pane, &buffer[..length], history_limit);
@@ -11753,12 +11822,19 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                             }
                             if updated {
                                 state.mark_render_dirty();
+                                if let Some(pipe) = pipe {
+                                    pipe_payload =
+                                        Some((pipe, buffer[..length].to_vec()));
+                                }
                             }
                             if !updated {
                                 break;
                             }
                         } else {
                             break;
+                        }
+                        if let Some((pipe, bytes)) = pipe_payload {
+                            let _ = pipe.send(PipeMessage::Data(bytes));
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -14608,12 +14684,20 @@ fn run_copy_pipe(
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|error| format!("copy pipe: {error}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(data)
-            .map_err(|error| format!("copy pipe: {error}"))?;
-    }
-    let _ = child.wait();
+    let data = data.to_vec();
+    let mut stdin = child.stdin.take();
+    thread::Builder::new()
+        .name("tm-copy-pipe".to_owned())
+        .spawn(move || {
+            if let Some(stdin) = stdin.as_mut()
+                && stdin.write_all(&data).is_err()
+            {
+                let _ = stdin.flush();
+            }
+            drop(stdin);
+            let _ = child.wait();
+        })
+        .map_err(|error| format!("copy pipe: {error}"))?;
     Ok(String::new())
 }
 
@@ -18986,6 +19070,15 @@ bind -r Right next-window
 
         state.handle_client_input(client_id, b"\x17", &shared);
 
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if fs::read_to_string(&path).is_ok_and(|value| value == "alpha beta")
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert_eq!(
             fs::read_to_string(&path).expect("copy command output"),
             "alpha beta"

@@ -8,6 +8,21 @@ use std::time::{Duration, Instant};
 
 static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
 
+fn wait_for_file(path: &str, expected: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(value) = fs::read_to_string(path)
+            && value == expected
+        {
+            return value;
+        }
+        if Instant::now() >= deadline {
+            return fs::read_to_string(path).expect("copy-pipe output file");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 struct Tm {
     socket: String,
 }
@@ -720,7 +735,7 @@ fn attached_client_key_bytes_drive_copy_mode_actions_headlessly() {
     }
     tm.ok(&["send-keys", "-t", "keys", "Enter"]);
     assert_eq!(
-        fs::read_to_string(pipe_path).expect("vi Enter copy-command output"),
+        wait_for_file(pipe_path, "abcdef"),
         "abcdef"
     );
     let _ = fs::remove_file(pipe_path);
@@ -2031,7 +2046,7 @@ fn copy_mode_pipe_and_remaining_command_table_are_headless() {
         &format!("cat > {pipe_path}"),
     ]);
     assert_eq!(
-        fs::read_to_string(pipe_path).expect("copy-pipe output"),
+        wait_for_file(pipe_path, "first line"),
         "first line"
     );
     assert_eq!(tm.body(&["show-buffer"]), "first line");
@@ -2048,10 +2063,11 @@ fn copy_mode_pipe_and_remaining_command_table_are_headless() {
     tm.ok(&["send-keys", "-X", "history-top", "-t", "pipe"]);
     tm.ok(&["send-keys", "-X", "copy-pipe-line", "-t", "pipe"]);
     assert_eq!(
-        fs::read_to_string(default_pipe_path).expect("default copy-command output"),
+        wait_for_file(default_pipe_path, "first line"),
         "first line"
     );
 
+    let _ = fs::remove_file(pipe_path);
     tm.ok(&["send-keys", "-X", "history-top", "-t", "pipe"]);
     tm.ok(&["send-keys", "-X", "start-of-line", "-t", "pipe"]);
     tm.ok(&["send-keys", "-X", "begin-selection", "-t", "pipe"]);
@@ -2066,7 +2082,7 @@ fn copy_mode_pipe_and_remaining_command_table_are_headless() {
         &format!("tr '[:lower:]' '[:upper:]' > {pipe_path}"),
     ]);
     assert_eq!(
-        fs::read_to_string(pipe_path).expect("copy-pipe-and-cancel output"),
+        wait_for_file(pipe_path, "FIRST LINE"),
         "FIRST LINE"
     );
     assert_eq!(

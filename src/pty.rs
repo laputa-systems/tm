@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use crate::model::Size;
 use rustix::termios::{Winsize, tcsetwinsize};
@@ -12,6 +12,7 @@ use rustix::termios::{Winsize, tcsetwinsize};
 /// One Unix PTY master and the process group it owns.
 pub(crate) struct Pty {
     master: Arc<Mutex<File>>,
+    writer: Option<mpsc::Sender<Vec<u8>>>,
     pid: libc::pid_t,
 }
 
@@ -19,6 +20,7 @@ impl Clone for Pty {
     fn clone(&self) -> Self {
         Self {
             master: Arc::clone(&self.master),
+            writer: self.writer.clone(),
             pid: self.pid,
         }
     }
@@ -29,6 +31,7 @@ impl Pty {
         let master = File::open("/dev/null")?;
         Ok(Self {
             master: Arc::new(Mutex::new(master)),
+            writer: None,
             pid: 0,
         })
     }
@@ -94,6 +97,8 @@ impl Pty {
         if result == -1 {
             return Err(io::Error::last_os_error());
         }
+        set_cloexec(master)?;
+        set_cloexec(slave)?;
 
         // SAFETY: both fds were initialized by the successful openpty call.
         let pid = unsafe { libc::fork() };
@@ -117,8 +122,22 @@ impl Pty {
         close_fd(slave);
         // SAFETY: the parent owns the master descriptor returned by openpty.
         let master_file = unsafe { File::from_raw_fd(master) };
+        let writer_file = master_file.try_clone()?;
+        let (writer, receiver) = mpsc::channel::<Vec<u8>>();
+        std::thread::Builder::new()
+            .name(format!("tm-pane-write-{pid}"))
+            .spawn(move || {
+                let mut writer_file = writer_file;
+                for bytes in receiver {
+                    if writer_file.write_all(&bytes).is_err() {
+                        break;
+                    }
+                }
+            })
+            ?;
         Ok(Self {
             master: Arc::new(Mutex::new(master_file)),
+            writer: Some(writer),
             pid,
         })
     }
@@ -161,7 +180,10 @@ impl Pty {
         if self.is_empty() {
             return Ok(());
         }
-        self.master.lock().map_err(|_| poisoned())?.write_all(bytes)
+        let writer = self.writer.as_ref().ok_or_else(poisoned)?;
+        writer
+            .send(bytes.to_vec())
+            .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))
     }
 
     pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
@@ -271,6 +293,14 @@ fn child_setup(
         libc::execvp(argv[0], argv.as_ptr());
         libc::_exit(127);
     }
+}
+
+fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    // SAFETY: fcntl only inspects the live descriptor owned by this call.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn close_fd(fd: RawFd) {
