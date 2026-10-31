@@ -122,7 +122,100 @@ fn attach_loop(socket: &std::path::Path, target: Option<String>) -> Result<(), S
     attach_stream(stream, size)
 }
 
+fn restore_bytes() -> Vec<u8> {
+    let term = std::env::var("TERM").unwrap_or_default();
+    let features = crate::config::COMPILED_OPTIONS
+        .iter()
+        .find(|(key, _)| *key == "terminal-features")
+        .map(|(_, value)| *value)
+        .unwrap_or("");
+    let capabilities = terminal::Capabilities::for_term(&term, features);
+    terminal::restore_sequence(&capabilities)
+}
+
+fn attach_signals() -> libc::sigset_t {
+    let mut set = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+    unsafe {
+        libc::sigemptyset(&mut set);
+        for signal in [
+            libc::SIGTERM,
+            libc::SIGHUP,
+            libc::SIGINT,
+            libc::SIGQUIT,
+            libc::SIGTSTP,
+            libc::SIGCONT,
+        ] {
+            libc::sigaddset(&mut set, signal);
+        }
+    }
+    set
+}
+
+fn block_signals(set: &libc::sigset_t) -> Result<(), String> {
+    // SAFETY: set points to the initialized signal mask for this process.
+    let result = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, set, std::ptr::null_mut()) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(result).to_string())
+    }
+}
+
+fn start_signal_thread(
+    set: libc::sigset_t,
+    original: rustix::termios::Termios,
+    raw: rustix::termios::Termios,
+    restore: Vec<u8>,
+    setup: Vec<u8>,
+    writer: Arc<Mutex<UnixStream>>,
+    size: Size,
+) {
+    let _ = thread::Builder::new()
+        .name("tm-signals".to_owned())
+        .spawn(move || {
+            loop {
+                let mut signal = 0;
+                // SAFETY: set is a valid signal set for sigwait.
+                if unsafe { libc::sigwait(&set, &mut signal) } != 0 {
+                    continue;
+                }
+                if signal == libc::SIGTSTP {
+                    let mut stdout = io::stdout();
+                    let _ = stdout.write_all(&restore);
+                    let _ = stdout.flush();
+                    let _ = terminal::apply_termios(&original);
+                    unsafe {
+                        libc::kill(libc::getpid(), libc::SIGSTOP);
+                    }
+                    let _ = terminal::apply_termios(&raw);
+                    let mut stdout = io::stdout();
+                    let _ = stdout.write_all(&setup);
+                    let _ = stdout.flush();
+                    if let Ok(mut stream) = writer.lock() {
+                        let _ = crate::protocol::write_client_message(
+                            &mut *stream,
+                            &crate::protocol::ClientMessage::Resize(size),
+                        );
+                    }
+                    continue;
+                }
+                if signal == libc::SIGCONT {
+                    continue;
+                }
+                let mut stdout = io::stdout();
+                let _ = stdout.write_all(&restore);
+                let _ = stdout.flush();
+                let _ = terminal::apply_termios(&original);
+                unsafe {
+                    libc::_exit(128 + signal);
+                }
+            }
+        });
+}
+
 fn attach_stream(mut stream: UnixStream, size: Size) -> Result<(), String> {
+    let signals = attach_signals();
+    block_signals(&signals)?;
     let mut raw =
         RawTerminal::enter().map_err(|error| format!("enter raw terminal mode: {error}"))?;
     let alive = Arc::new(AtomicBool::new(true));
@@ -135,6 +228,23 @@ fn attach_stream(mut stream: UnixStream, size: Size) -> Result<(), String> {
         .name("tm-input".to_owned())
         .spawn(move || forward_input(input_writer, input_alive))
         .map_err(|error| error.to_string())?;
+    start_signal_thread(
+        signals,
+        raw.original_termios(),
+        terminal::make_raw(&raw.original_termios()),
+        restore_bytes(),
+        {
+            let term = std::env::var("TERM").unwrap_or_default();
+            let features = crate::config::COMPILED_OPTIONS
+                .iter()
+                .find(|(key, _)| *key == "terminal-features")
+                .map(|(_, value)| *value)
+                .unwrap_or("");
+            terminal::setup_sequence(&terminal::Capabilities::for_term(&term, features))
+        },
+        Arc::clone(&writer),
+        size,
+    );
     let resize_alive = Arc::clone(&alive);
     let resize_writer = Arc::clone(&writer);
     thread::Builder::new()

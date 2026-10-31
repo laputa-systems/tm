@@ -237,6 +237,9 @@ fn child_setup(
     // SAFETY: this branch is the child immediately after fork. It performs
     // only the Unix session/descriptor operations needed before exec.
     unsafe {
+        let mut empty: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut empty);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
         libc::close(master);
         libc::setsid();
         // TIOCSCTTY already has the ioctl request type on Linux but needs a

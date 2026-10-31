@@ -139,7 +139,23 @@ pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
     result
 }
 
+fn daemon_signal_set() -> libc::sigset_t {
+    let mut set = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+    unsafe {
+        libc::sigemptyset(&mut set);
+        for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT] {
+            libc::sigaddset(&mut set, signal);
+        }
+    }
+    set
+}
+
 fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
+    let signals = daemon_signal_set();
+    // SAFETY: signals points to the initialized mask for this process.
+    if unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     let lock_path = socket_sidecar_path(path, "lock");
     let lock = fs::OpenOptions::new()
         .create(true)
@@ -170,6 +186,29 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
         initial_state.apply_compiled_interactive_config();
     }
     let state = Arc::new(Mutex::new(initial_state));
+    let signal_state = Arc::clone(&state);
+    let signal_log = log.path.clone();
+    let _ = thread::Builder::new()
+        .name("tm-daemon-signals".to_owned())
+        .spawn(move || loop {
+            let mut signal = 0;
+            // SAFETY: signals is the process mask built above.
+            if unsafe { libc::sigwait(&signals, &mut signal) } != 0 {
+                continue;
+            }
+            if let Ok(mut file) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&signal_log)
+            {
+                let _ = writeln!(file, "signal {signal}");
+            }
+            if let Ok(mut state) = signal_state.lock() {
+                state.shutdown = true;
+                state.mark_render_dirty();
+            }
+            break;
+        });
 
     loop {
         match listener.accept() {

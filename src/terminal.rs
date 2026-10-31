@@ -474,6 +474,23 @@ pub(crate) fn mode_diff(
     }
 }
 
+pub(crate) fn setup_sequence(capabilities: &Capabilities) -> Vec<u8> {
+    let mut setup = Vec::new();
+    mode_diff(
+        TerminalModes::default(),
+        TerminalModes {
+            alternate: true,
+            mouse: true,
+            paste: true,
+            focus: true,
+            extkeys: true,
+        },
+        capabilities,
+        &mut setup,
+    );
+    setup
+}
+
 pub(crate) fn restore_sequence(capabilities: &Capabilities) -> Vec<u8> {
     let mut restore = Vec::new();
     mode_diff(
@@ -515,6 +532,10 @@ impl RawTerminal {
         })
     }
 
+    pub(crate) fn original_termios(&self) -> Termios {
+        self.original.clone()
+    }
+
     pub(crate) fn restore(&mut self) -> io::Result<()> {
         if !self.active {
             return Ok(());
@@ -525,6 +546,19 @@ impl RawTerminal {
         self.active = false;
         result
     }
+}
+
+pub(crate) fn make_raw(original: &Termios) -> Termios {
+    let mut raw = original.clone();
+    raw.make_raw();
+    raw.special_codes[SpecialCodeIndex::VMIN] = 1;
+    raw.special_codes[SpecialCodeIndex::VTIME] = 0;
+    raw
+}
+
+pub(crate) fn apply_termios(termios: &Termios) -> io::Result<()> {
+    let stdin = io::stdin();
+    tcsetattr(stdin.as_fd(), OptionalActions::Now, termios).map_err(io::Error::from)
 }
 
 impl Drop for RawTerminal {
