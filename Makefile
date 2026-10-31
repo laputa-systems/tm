@@ -9,7 +9,7 @@ comma      := ,
 RELEASE_RUSTFLAGS := -Zlocation-detail=none -Zunstable-options -Cpanic=immediate-abort $(if $(findstring apple-darwin,$(TARGET)),-Clink-arg=-Wl$(comma)-dead_strip_dylibs)
 cargo = $(if $(findstring -linux-musl,$(TARGET)),,$(if $(filter release-static test,$(1)),CARGO_TARGET_$(TARGET_ENV)_LINKER=clang ,)$(if $(filter release-static,$(1)),RUSTFLAGS="$(RELEASE_RUSTFLAGS)")) MUSL_TARGET="$(TARGET)" MUSL_BUILD_MODE="$(1)" $(CARGO_CMD)
 
-.PHONY: build test test-ci lint release verify-release install perf
+.PHONY: build test test-ci lint parity release verify-release install perf
 
 build:
 	$(call cargo,dev) build
@@ -22,6 +22,10 @@ test-ci:
 
 lint:
 	cargo clippy --all-targets --all-features -- --deny warnings
+
+parity:
+	tests/support/install-tmux-ref.sh
+	$(call cargo,test) test --features parity --test tmux_parity
 
 release:
 	$(call cargo,release-static) clean -p $(NAME) --profile dist --target $(TARGET)

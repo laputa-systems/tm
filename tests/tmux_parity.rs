@@ -230,8 +230,11 @@ fn pane_input_bytes_match_reference() {
             "--",
             "sh",
             "-c",
-            "stty -echo raw; od -An -tx1 -N3; sleep 30",
+            "stty -echo raw; printf 'READY\\n'; od -An -tx1 -N3; sleep 30",
         ]);
+    }
+    for mux in [&tm, &reference] {
+        mux.capture_until("parity", "READY", Duration::from_secs(3));
     }
     parity::compare_commands(&tm, &reference, &[&["send-keys", "-t", "parity", "a", "b", "Enter"]]);
     let tm_capture = tm.capture_until("parity", "61", Duration::from_secs(3));

@@ -1,7 +1,8 @@
 # Testing
 
 Run the host test suite with `make test`. `make test-ci` runs it in the release
-profile.
+profile. `make parity` installs the pinned tmux 3.8 reference when needed and
+runs the differential suite with `--features parity`.
 
 The integration tests use private `TM_SOCKET` paths and do not invoke tmux or
 connect to an existing tmux server. [`tests/tmux_core_compat.rs`](../tests/tmux_core_compat.rs)
