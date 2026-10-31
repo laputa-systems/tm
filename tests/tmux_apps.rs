@@ -99,9 +99,7 @@ fn vim_edits_and_restores_the_attached_screen() {
         ],
     );
     let (mut client, baseline) = attach(&tm, "vim", 80, 24);
-    client
-        .wait_for_quiescence(client.deadline(Duration::from_secs(5)), Duration::from_millis(200))
-        .expect("vim ready");
+    pty_harness::wait_for_text(&mut client, "~", Duration::from_secs(5));
     send(&mut client, b"ihello from vim\x1b:wq\r");
     wait_file(&output, b"hello from vim\n");
     assert_eq!(

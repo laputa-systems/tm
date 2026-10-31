@@ -44,7 +44,9 @@ impl OutputState {
         self.pending.extend_from_slice(bytes);
         if self.pending.len() > MAX_PENDING_BYTES {
             let overflow = self.pending.len() - MAX_PENDING_BYTES;
-            if let Some(start) = self.pending[overflow..]
+            if let Some(end) = control_string_end(&self.pending[overflow..]) {
+                self.pending.drain(..overflow + end);
+            } else if let Some(start) = self.pending[overflow..]
                 .iter()
                 .position(|byte| *byte == 0x1b)
             {
@@ -115,6 +117,20 @@ pub(crate) fn replay(parser: &mut Parser, bytes: &[u8]) {
     let mut state = OutputState::default();
     state.process(parser, bytes);
     state.finish(parser);
+}
+
+fn control_string_end(bytes: &[u8]) -> Option<usize> {
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == 0x07 {
+            return Some(index + 1);
+        }
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+            return Some(index + 2);
+        }
+        index += 1;
+    }
+    None
 }
 
 fn incomplete_escape_start(bytes: &[u8]) -> Option<usize> {

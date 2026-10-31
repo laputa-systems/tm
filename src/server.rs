@@ -1948,6 +1948,7 @@ impl ServerState {
     }
 
     fn handle_client_input(&mut self, client_id: u64, bytes: &[u8], shared: &SharedState) {
+        self.last_message = None;
         let bytes = self.process_paste_input(client_id, bytes, shared);
         self.handle_client_input_bytes(client_id, &bytes, shared);
     }
@@ -8563,7 +8564,7 @@ impl ServerState {
             .iter_mut()
             .find(|session| session.id == session_id)?;
         let mut status_output = Vec::new();
-        let message = self.last_message.take();
+        let message = self.last_message.clone();
         let prompt_message = client_id
             .and_then(|client_id| {
                 self.clients.get(&client_id).and_then(|client| {
@@ -11067,6 +11068,7 @@ fn execute_request_inner(
     shared: &SharedState,
     request: Request,
 ) -> CommandResult {
+    state.last_message = None;
     match request {
         Request::NewSession {
             name,
