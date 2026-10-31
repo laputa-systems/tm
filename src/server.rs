@@ -17,9 +17,10 @@ use crate::config;
 use crate::config::ConfigLine;
 use crate::copy_mode::{
     CopyAction, CopyLineNumberMode, CopyModeKeys, CopyModeOptions, CopyModeState, CopyPromptKind,
-    CopyScrollbarHit, DEFAULT_WORD_SEPARATORS, SelectionMode, display_column_to_char_index,
-    display_prompt_input, history_rows, scrollbar_geometry_for, scrollbar_hit_for,
+    CopyScrollbarHit, DEFAULT_WORD_SEPARATORS, SelectionMode, display_prompt_input, history_rows,
+    scrollbar_geometry_for, scrollbar_hit_for,
 };
+use crate::cells::display_column_to_char_index;
 use crate::model::{Axis, CopySource, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
     ClientMessage, OptionScope, PaneDirection, Request, ServerMessage, read_client_message,
@@ -8653,7 +8654,7 @@ impl ServerState {
                                 output.extend_from_slice(b"\x1b[7m");
                             }
                         }
-                        display_col += if is_wide_copy_character(character) {
+                        display_col += if crate::cells::is_wide(character) {
                             2
                         } else {
                             1
@@ -9265,22 +9266,6 @@ impl ServerState {
     }
 }
 
-fn is_wide_copy_character(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x1100..=0x115f
-            | 0x2329..=0x232a
-            | 0x2e80..=0xa4cf
-            | 0xac00..=0xd7a3
-            | 0xf900..=0xfaff
-            | 0xfe10..=0xfe19
-            | 0xfe30..=0xfe6f
-            | 0xff00..=0xff60
-            | 0xffe0..=0xffe6
-            | 0x1f300..=0x1faff
-    )
-}
-
 fn parse_sgr_mouse(bytes: &[u8]) -> Option<(u16, u16, u16, bool)> {
     let last = *bytes.last()?;
     let body = bytes.strip_prefix(b"\x1b[<")?.strip_suffix(&[last])?;
@@ -9717,7 +9702,7 @@ fn mouse_hyperlink_at(output: &[u8], target_row: usize, target_col: usize, rect:
                     index += 1;
                     continue;
                 };
-                let width = if is_wide_copy_character(character) {
+                let width = if crate::cells::is_wide(character) {
                     2
                 } else {
                     1
@@ -12320,33 +12305,11 @@ fn modifier_parts(body: &str, prefix: &str) -> Option<(String, String)> {
 }
 
 fn format_char_width(character: char, current: usize) -> usize {
-    if character == '\t' {
-        8 - current % 8
-    } else if matches!(
-        character as u32,
-        0x1100..=0x115f
-            | 0x2329..=0x232a
-            | 0x2e80..=0xa4cf
-            | 0xac00..=0xd7a3
-            | 0xf900..=0xfaff
-            | 0xfe10..=0xfe19
-            | 0xfe30..=0xfe6f
-            | 0xff00..=0xff60
-            | 0xffe0..=0xffe6
-            | 0x1f300..=0x1faff
-    ) {
-        2
-    } else if character.is_control() {
-        0
-    } else {
-        1
-    }
+    crate::cells::char_width(character, current)
 }
 
 fn format_display_width(value: &str) -> usize {
-    value.chars().fold(0, |width, character| {
-        width.saturating_add(format_char_width(character, width))
-    })
+    crate::cells::display_width(value)
 }
 
 fn take_display_width(value: &str, limit: usize, from_end: bool) -> String {

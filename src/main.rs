@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+mod cells;
 mod client;
 mod command;
 mod config;

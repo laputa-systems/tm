@@ -1,6 +1,8 @@
 #![cfg(unix)]
 #![allow(dead_code, unused_imports)]
 
+#[path = "../src/cells.rs"]
+mod cells;
 #[path = "../src/client.rs"]
 mod client;
 #[path = "../src/command.rs"]

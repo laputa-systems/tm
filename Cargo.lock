@@ -160,6 +160,7 @@ dependencies = [
  "libc",
  "rustix",
  "rustybench",
+ "unicode-width",
  "vt100",
 ]
 

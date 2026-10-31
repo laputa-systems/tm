@@ -530,7 +530,7 @@ impl CopyModeState {
             .chain(live)
             .nth(self.cursor.row)
             .unwrap_or_default();
-        self.cursor.col = display_column_to_char_index(&line, viewport_col);
+        self.cursor.col = crate::cells::display_column_to_char_index(&line, viewport_col);
     }
 
     pub(crate) fn execute(
@@ -1950,7 +1950,7 @@ impl CopyModeState {
         let lines = history.into_iter().chain(live).collect::<Vec<_>>();
         self.cursor_x = lines
             .get(self.cursor.row)
-            .map(|line| display_width(line.chars().take(self.cursor.col)))
+            .map(|line| crate::cells::char_index_to_display_column(line, self.cursor.col))
             .unwrap_or(0);
     }
 
@@ -2329,57 +2329,6 @@ fn char_to_byte_offset(line: &str, col: usize) -> usize {
         .nth(col)
         .map(|(offset, _)| offset)
         .unwrap_or(line.len())
-}
-
-fn display_width(chars: impl Iterator<Item = char>) -> usize {
-    let mut width = 0;
-    for character in chars {
-        width += if character == '\t' {
-            8 - width % 8
-        } else if is_wide(character) {
-            2
-        } else {
-            1
-        };
-    }
-    width
-}
-
-/// Convert an attached-terminal cell column into the character column used by
-/// copy-mode state. A wide character owns two terminal cells and a tab owns
-/// the cells up to its next tab stop; clicking either part must address the
-/// same logical character.
-pub(crate) fn display_column_to_char_index(line: &str, column: usize) -> usize {
-    let mut display_column: usize = 0;
-    for (index, character) in line.chars().enumerate() {
-        let width = if character == '\t' {
-            8 - display_column % 8
-        } else if is_wide(character) {
-            2
-        } else {
-            1
-        };
-        if column < display_column.saturating_add(width) {
-            return index;
-        }
-        display_column = display_column.saturating_add(width);
-    }
-    line.chars().count()
-}
-
-fn is_wide(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x1100..=0x115f
-            | 0x2329..=0x232a
-            | 0x2e80..=0xa4cf
-            | 0xac00..=0xd7a3
-            | 0xf900..=0xfaff
-            | 0xfe10..=0xfe19
-            | 0xfe30..=0xfe6f
-            | 0xff00..=0xff60
-            | 0xffe0..=0xffe6
-    )
 }
 
 fn restore_tab_cells(history: &mut [String], live: &mut [String], raw_output: &[u8]) {
