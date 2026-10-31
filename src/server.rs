@@ -1736,7 +1736,7 @@ impl ServerState {
                     client.repeat_key = None;
                     client.repeat_binding = None;
                 }
-                let _ = self.execute_bound_commands(client_id, session_id, binding, shared);
+                self.execute_bound_commands_feedback(client_id, session_id, binding, shared);
             } else {
                 client.repeat_key = None;
                 client.repeat_binding = None;
@@ -3438,6 +3438,49 @@ impl ServerState {
         }
     }
 
+    fn validate_bound_command(&self, command: &[String]) -> CommandResult {
+        match command[0].as_str() {
+            "__detach" | "send-prefix" | "command-prompt" => Ok(String::new()),
+            "select-layout" => match command.get(1).map(String::as_str) {
+                Some("even-horizontal" | "even-vertical") => Ok(String::new()),
+                Some(layout) => Err(format!("unknown layout: {layout}")),
+                None => Err("select-layout requires a layout".to_owned()),
+            },
+            "display-panes" => {
+                parse_panes_mode_command(&command[1..])?;
+                Ok(String::new())
+            }
+            "choose-tree" => {
+                parse_tree_mode_command(&command[1..])?;
+                Ok(String::new())
+            }
+            "choose-buffer" => {
+                parse_buffer_mode_command(&command[1..])?;
+                Ok(String::new())
+            }
+            "choose-client" => {
+                parse_client_mode_command(&command[1..])?;
+                Ok(String::new())
+            }
+            _ => {
+                crate::command::parse(command)?;
+                Ok(String::new())
+            }
+        }
+    }
+
+    fn execute_bound_commands_feedback(
+        &mut self,
+        client_id: u64,
+        session_id: u64,
+        binding: ConfigBinding,
+        shared: &SharedState,
+    ) {
+        if let Err(error) = self.execute_bound_commands(client_id, session_id, binding, shared) {
+            self.last_message = Some(error);
+        }
+    }
+
     fn execute_bound_commands(
         &mut self,
         client_id: u64,
@@ -3445,6 +3488,16 @@ impl ServerState {
         binding: ConfigBinding,
         shared: &SharedState,
     ) -> CommandResult {
+        for raw_command in &binding.commands {
+            let command = raw_command
+                .iter()
+                .map(|value| self.expand_mouse_format(value))
+                .collect::<Vec<_>>();
+            if command.is_empty() {
+                continue;
+            }
+            self.validate_bound_command(&command)?;
+        }
         for raw_command in binding.commands {
             let command = raw_command
                 .iter()
@@ -4142,7 +4195,7 @@ impl ServerState {
                 .map(|value| value.replace("%%", &format!("%{pane_id}")))
                 .collect();
             if let Some(session_id) = session_id {
-                let _ = self.execute_bound_commands(
+                self.execute_bound_commands_feedback(
                     client_id,
                     session_id,
                     ConfigBinding {
@@ -6923,6 +6976,13 @@ impl ServerState {
         Ok(String::new())
     }
 
+    fn next_free_window_index(&self, session_index: usize) -> u32 {
+        let session = &self.sessions[session_index];
+        (session.base_index..=session.next_window_index)
+            .find(|index| session.windows.iter().all(|window| window.index != *index))
+            .unwrap_or_else(|| session.next_window_index.saturating_add(1))
+    }
+
     fn break_pane(
         &mut self,
         source: Option<&str>,
@@ -6931,13 +6991,46 @@ impl ServerState {
         detached: bool,
         format: Option<&str>,
     ) -> CommandResult {
-        let source_target = source.or(target);
-        let (source_session, source_window, source_id) = self.resolve_pane_target(source_target)?;
-        let target_session = self.resolve_session_index(target)?;
+        let (source_session, source_window, source_id) = match source {
+            Some(source) => self.resolve_pane_target(Some(source))?,
+            None => self.resolve_pane_target(None)?,
+        };
+        let (target_session_target, target_window_part) = match target {
+            Some(target) if target.contains(':') => target
+                .split_once(':')
+                .map_or(("", None), |(session, window)| {
+                    (session, (!window.is_empty()).then_some(window))
+                }),
+            Some(target)
+                if !target.is_empty()
+                    && !target.starts_with('$')
+                    && self.find_session(target).is_none() =>
+            {
+                ("", Some(target))
+            }
+            Some(target) => (target, None),
+            None => ("", None),
+        };
+        let target_session = self.resolve_session_index(Some(target_session_target))?;
         if source_session != target_session {
             return Err("source and target must be in the same session".to_owned());
         }
         let session_id = self.sessions[source_session].id;
+        let new_index = if let Some(part) = target_window_part {
+            let index = part
+                .parse::<u32>()
+                .map_err(|_| format!("can't find window: {part}"))?;
+            if self.sessions[target_session]
+                .windows
+                .iter()
+                .any(|window| window.index == index)
+            {
+                return Err(format!("index in use: {index}"));
+            }
+            index
+        } else {
+            self.next_free_window_index(target_session)
+        };
         let pane_position = self.sessions[source_session].windows[source_window]
             .panes
             .iter()
@@ -6950,18 +7043,21 @@ impl ServerState {
         let source_empty = self.sessions[source_session].windows[source_window]
             .panes
             .is_empty();
+        let removed_active =
+            self.sessions[source_session].active_window
+                == self.sessions[source_session].windows[source_window].index;
         let _ = self.sessions[source_session].windows[source_window]
             .layout
             .remove(source_id);
         if source_empty {
             self.sessions[source_session].windows.remove(source_window);
             if self.sessions[source_session].windows.is_empty() {
-                self.sessions.remove(source_session);
-                return Ok(String::new());
+                self.sessions[source_session].active_window = new_index;
+            } else if removed_active {
+                let index = self.sessions[source_session].windows[0].index;
+                self.sessions[source_session].select_window(index);
             }
         }
-        let new_index = self.sessions[target_session].next_window_index;
-        self.sessions[target_session].next_window_index += 1;
         let window_size = self.sessions[target_session].size;
         let window_id = self.next_window_id;
         self.next_window_id += 1;
@@ -6973,7 +7069,10 @@ impl ServerState {
             pane,
         );
         self.sessions[target_session].windows.push(window);
-        if !detached {
+        self.sessions[target_session].next_window_index = self.sessions[target_session]
+            .next_window_index
+            .max(new_index.saturating_add(1));
+        if !detached || removed_active || self.sessions[target_session].windows.len() == 1 {
             self.sessions[target_session].select_window(new_index);
         }
         self.reflow_session(session_id);
@@ -6998,7 +7097,7 @@ impl ServerState {
                 ],
             ))
         } else {
-            Ok(format!("{new_index}"))
+            Ok(String::new())
         }
     }
 
@@ -7012,7 +7111,12 @@ impl ServerState {
         split_size: Option<&str>,
     ) -> CommandResult {
         let (source_session, source_window, source_id) = self.resolve_pane_target(source)?;
-        let (target_session, mut target_window, target_id) = self.resolve_pane_target(target)?;
+        let (target_session, mut target_window, target_id) = self
+            .resolve_pane_target(target)
+            .map_err(|error| match error.strip_prefix("window not found: ") {
+                Some(rest) => format!("can't find window: {rest}"),
+                None => error,
+            })?;
         if source_id == target_id {
             return Err("source and target panes must be different".to_owned());
         }
@@ -7023,6 +7127,35 @@ impl ServerState {
         let source_window_number = self.sessions[source_session].windows[source_window].index;
         let target_window_number = self.sessions[target_session].windows[target_window].index;
         let source_was_active = self.sessions[source_session].active_window == source_window_number;
+        let target_rect = self.sessions[target_session].windows[target_window]
+            .pane(target_id)
+            .map(|pane| pane.rect)
+            .ok_or_else(|| "target pane no longer exists".to_owned())?;
+        let requested =
+            split_size.and_then(|value| parse_split_size(value, horizontal, target_rect));
+        let available = if horizontal {
+            target_rect.cols.saturating_sub(1)
+        } else {
+            target_rect.rows.saturating_sub(1)
+        };
+        let first_size = requested.map(|requested| {
+            if before {
+                requested.min(available)
+            } else {
+                available.saturating_sub(requested)
+            }
+        });
+        let axis = if horizontal {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        };
+        let mut preflight = self.sessions[target_session].windows[target_window]
+            .layout
+            .clone();
+        if !preflight.split_with_size(target_id, source_id, axis, before, false, first_size) {
+            return Err("target pane is not in the active layout".to_owned());
+        }
         let pane_position = self.sessions[source_session].windows[source_window]
             .panes
             .iter()
@@ -7050,35 +7183,13 @@ impl ServerState {
                 self.sessions[target_session].last_window = None;
             }
         }
-        let target_rect = self.sessions[target_session].windows[target_window]
-            .pane(target_id)
-            .map(|pane| pane.rect)
-            .ok_or_else(|| "target pane no longer exists".to_owned())?;
-        let requested =
-            split_size.and_then(|value| parse_split_size(value, horizontal, target_rect));
-        let available = if horizontal {
-            target_rect.cols.saturating_sub(1)
-        } else {
-            target_rect.rows.saturating_sub(1)
-        };
-        let first_size = requested.map(|requested| {
-            if before {
-                requested.min(available)
-            } else {
-                available.saturating_sub(requested)
-            }
-        });
         let pane_id = pane.id;
         let window = &mut self.sessions[target_session].windows[target_window];
         let pane_index = window.next_pane_index;
         if !window.layout.split_with_size(
             target_id,
             pane_id,
-            if horizontal {
-                Axis::Horizontal
-            } else {
-                Axis::Vertical
-            },
+            axis,
             before,
             false,
             first_size,

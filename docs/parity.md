@@ -61,7 +61,7 @@ the proving slice and the test that must carry the evidence.
 | `\` | split horizontal in the current path, even-horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
 | `-` | split vertical in the current path, even-vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
 | `z` | toggle pane zoom | W1 | `src/server.rs` zoom state | W1 `tests/tmux_layouts.rs::zoom_and_last_pane` | fail | none |
-| `k` | kill the current pane, then display a message | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_atomicity.rs::kill_and_break_preflight` | fail | none |
+| `k` | kill the current pane, then display a message | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `m` | prompt for a join target | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::break_and_join_bindings_use_client_context` | pass | none |
 | `C-n` | break pane to the next free index | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::break_and_join_bindings_use_client_context` | pass | none |
 | `%` | split horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
@@ -69,8 +69,8 @@ the proving slice and the test that must carry the evidence.
 | `h` | select pane left | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
 | `j` | select pane down | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
 | `l` | select pane right | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
-| `x` | kill pane | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_atomicity.rs::kill_and_break_preflight` | fail | none |
-| `&` | kill window | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_atomicity.rs::kill_and_break_preflight` | fail | none |
+| `x` | kill pane | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
+| `&` | kill window | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `c` | new window | W3 | `src/config.rs` compiled binding | W3 `tests/tmux_windows.rs::base_index_and_renumbering` | fail | none |
 | `b` | send the prefix to the pane | I1 | `src/config.rs` compiled binding | I1 `tests/tmux_input.rs::prefix_and_repeat_state` | fail | none |
 | `[` | enter copy mode | R2, R3 | `src/config.rs` compiled binding | R3 `tests/tmux_copy_cells.rs::copy_mode_entry_and_selection` | fail | none |
@@ -99,7 +99,7 @@ the proving slice and the test that must carry the evidence.
 | copy mode | selection, copy, search, and cursor movement | R3 | `src/copy_mode.rs` | R3 `tests/tmux_copy_cells.rs::selection_copy_and_search` | fail | none |
 | session lifecycle | create, rename, kill, attach, and detach | L2 | `src/server.rs` sessions | L2 `tests/tmux_lifecycle.rs::session_lifecycle_and_detach` | fail | none |
 | window lifecycle | create, rename, select, swap, and kill | W3 | `src/server.rs` windows | W3 `tests/tmux_windows.rs::window_lifecycle` | fail | none |
-| pane lifecycle | split, break, join, move, swap, and kill | T2 | `src/server.rs` panes | T2 `tests/tmux_atomicity.rs::break_join_and_move_atomicity` | fail | none |
+| pane lifecycle | split, break, join, move, swap, and kill | T2 | `src/server.rs` panes | T2 `tests/tmux_atomicity.rs::invalid_join_and_swap_targets_error_without_mutation` | pass | none |
 | attached terminal | alternate screen, mode ownership, and restoration | C1 | `src/client.rs` terminal | C1 `tests/tmux_terminal_modes.rs::mode_ownership_and_restoration` | fail | none |
 | input | prefix, repeat, escape, paste, and extended keys | I1 | `src/server.rs` input state machine | I1 `tests/tmux_input.rs::input_state_machine` | fail | none |
 | daemon lifecycle | startup lock, private socket, and diagnostics | L2 | `src/server.rs` daemon startup | L2 `tests/tmux_lifecycle.rs::startup_lock_and_diagnostics` | fail | none |

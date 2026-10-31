@@ -110,6 +110,85 @@ fn relative_window_targets_match_reference() {
 }
 
 #[test]
+fn break_and_join_preflight_matches_reference() {
+    let scratch = Scratch::new("break-join-parity");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        mux.ok(&[
+            "new-session",
+            "-d",
+            "-s",
+            "break",
+            "-n",
+            "one",
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ]);
+        mux.ok(&["new-window", "-d", "-t", "break", "-n", "two"]);
+        mux.ok(&["split-window", "-h", "-t", "break:1"]);
+        mux.ok(&[
+            "new-session",
+            "-d",
+            "-s",
+            "sole",
+            "-n",
+            "one",
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ]);
+        mux.ok(&[
+            "new-session",
+            "-d",
+            "-s",
+            "join",
+            "-n",
+            "one",
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ]);
+        mux.ok(&["new-window", "-d", "-t", "join", "-n", "two"]);
+        mux.ok(&["split-window", "-h", "-t", "join:1"]);
+    }
+    parity::compare_commands(
+        &tm,
+        &reference,
+        &[
+            &["break-pane", "-t", "break:2"],
+            &[
+                "list-windows",
+                "-t",
+                "break",
+                "-F",
+                "#{window_index}:#{window_panes}",
+            ],
+            &["break-pane", "-s", "sole:1.0", "-t", "sole:"],
+            &[
+                "list-windows",
+                "-t",
+                "sole",
+                "-F",
+                "#{window_index}:#{window_panes}",
+            ],
+            &["join-pane", "-t", "join:9"],
+            &[
+                "list-panes",
+                "-t",
+                "join",
+                "-F",
+                "#{pane_id}:#{pane_index}",
+            ],
+        ],
+    );
+}
+
+#[test]
 fn attached_client_renders_normal_profile_fixture() {
     let scratch = Scratch::new("attached-screen");
     let tm = Mux::tm(&scratch, "tm");

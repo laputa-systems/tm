@@ -333,6 +333,34 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
             "1"
         );
         assert!(tm.ok(&["has-session", "-t", &first]).is_empty());
+        match *label {
+            "x" | "k" => assert_eq!(
+                tm.body(&["display-message", "-p", "-t", &second, "#{window_panes}"]),
+                "1",
+                "binding {label} did not kill a pane"
+            ),
+            "&" => assert_eq!(
+                tm.ok(&["list-windows", "-t", &second]).lines().count(),
+                1,
+                "binding & did not kill a window"
+            ),
+            "c" | "C-n" => assert_eq!(
+                tm.ok(&["list-windows", "-t", &second]).lines().count(),
+                3,
+                "binding {label} did not create a window"
+            ),
+            "%" | "quote" | "backslash" | "minus" => assert_eq!(
+                tm.body(&["display-message", "-p", "-t", &second, "#{window_panes}"]),
+                "3",
+                "binding {label} did not split a pane"
+            ),
+            "z" => assert_eq!(
+                tm.body(&["display-message", "-p", "-t", &second, "#{window_zoomed_flag}"]),
+                "1",
+                "binding z did not zoom the pane"
+            ),
+            _ => {}
+        }
     }
 }
 

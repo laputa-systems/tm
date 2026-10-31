@@ -276,6 +276,9 @@ pub fn compare_commands(tm: &Mux, reference: &Mux, commands: &[&[&str]]) {
 
 pub fn normalize(value: &str, mux: &Mux) -> String {
     let mut output = value
+        .strip_prefix("tmux: ")
+        .or_else(|| value.strip_prefix("tm: "))
+        .unwrap_or(value)
         .replace(mux.socket.to_string_lossy().as_ref(), "<socket>")
         .replace(mux.root.to_string_lossy().as_ref(), "<root>")
         .replace(mux.home.to_string_lossy().as_ref(), "<home>");
