@@ -223,7 +223,7 @@ fn switching_to_a_normal_pane_disables_application_modes() {
         "--",
         "sh",
         "-c",
-        "sleep 30",
+        "sleep 300",
     ]);
     let (mut client, baseline) = attach(&tm, "cursor-switch");
     client
@@ -276,7 +276,7 @@ fn mouse_routes_only_to_the_pane_that_requested_it() {
         "--",
         "sh",
         "-c",
-        "sleep 30",
+        "sleep 300",
     ]);
     let (mut client, baseline) = attach(&tm, "mouse");
     send(&mut client, b"\x1b[<64;5;2M");
