@@ -4,6 +4,11 @@ Run the host test suite with `make test`. `make test-ci` runs it in the release
 profile. `make parity` installs the pinned tmux 3.8 reference when needed and
 runs the differential suite with `--features parity`.
 
+Linux PTY coverage runs in the release container with the platform and Rust
+target that match the host CPU. On an arm64 Mac use `--platform linux/arm64`
+and `aarch64-unknown-linux-musl`; the amd64 image is emulated and much slower.
+See [release](release.md) for the commands.
+
 The integration tests use private `TM_SOCKET` paths and do not invoke tmux or
 connect to an existing tmux server. [`tests/tmux_core_compat.rs`](../tests/tmux_core_compat.rs)
 covers command, session, window, pane, PTY, capture, format, option, and
