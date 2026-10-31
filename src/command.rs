@@ -944,7 +944,7 @@ fn parse_list_panes(arguments: &[String]) -> Result<InvocationSpec, String> {
 
 fn parse_select_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
     let mut target = None;
-    let mut direction = PaneDirection::Last;
+    let mut direction = PaneDirection::Target;
     let mut mark = None;
     let mut title = None;
     let mut enabled = None;

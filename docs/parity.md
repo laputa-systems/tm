@@ -58,17 +58,17 @@ the proving slice and the test that must carry the evidence.
 | `C-Right` | next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::two_clients_keep_binding_context_independent` | pass | none |
 | `Left` | swap and select the previous window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::client_bindings_use_the_attached_session_and_window` | pass | none |
 | `Right` | swap and select the next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::client_bindings_use_the_attached_session_and_window` | pass | none |
-| `\` | split horizontal in the current path, even-horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
-| `-` | split vertical in the current path, even-vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
-| `z` | toggle pane zoom | W1 | `src/server.rs` zoom state | W1 `tests/tmux_layouts.rs::zoom_and_last_pane` | fail | none |
+| `\` | split horizontal in the current path, even-horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::even_layouts_match_reference_for_two_to_five_panes`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
+| `-` | split vertical in the current path, even-vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::even_layouts_match_reference_for_two_to_five_panes`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
+| `z` | toggle pane zoom | W1 | `src/server.rs` zoom state | W1 `tests/tmux_layouts.rs::zoom_and_unzoom_match_reference_geometry` | pass | none |
 | `k` | kill the current pane, then display a message | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `m` | prompt for a join target | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::break_and_join_bindings_use_client_context` | pass | none |
 | `C-n` | break pane to the next free index | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::break_and_join_bindings_use_client_context` | pass | none |
-| `%` | split horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
-| `"` | split vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
-| `h` | select pane left | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
-| `j` | select pane down | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
-| `l` | select pane right | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
+| `%` | split horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::even_layouts_match_reference_for_two_to_five_panes`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
+| `"` | split vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::even_layouts_match_reference_for_two_to_five_panes`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
+| `h` | select pane left | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::pane_navigation_and_last_targets_match_reference`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
+| `j` | select pane down | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::pane_navigation_and_last_targets_match_reference`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
+| `l` | select pane right | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::pane_navigation_and_last_targets_match_reference`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `x` | kill pane | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `&` | kill window | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `c` | new window | W3 | `src/config.rs` compiled binding | W3 `tests/tmux_windows.rs::base_index_and_renumbering` | fail | none |

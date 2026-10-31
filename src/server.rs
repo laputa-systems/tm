@@ -2258,7 +2258,7 @@ impl ServerState {
         }
         if !release && !motion && base_button == 1 && !pane_in_copy_mode {
             let target = format!("%{pane_id}");
-            let _ = self.select_pane(Some(&target), PaneDirection::Last, None, None, None);
+            let _ = self.select_pane(Some(&target), PaneDirection::Target, None, None, None);
             let _ = self.paste_buffer(Some(&target), None, false, true, None, false);
             return;
         }
@@ -2294,7 +2294,7 @@ impl ServerState {
         }
         if !motion {
             let target = format!("%{pane_id}");
-            let _ = self.select_pane(Some(&target), PaneDirection::Last, None, None, None);
+            let _ = self.select_pane(Some(&target), PaneDirection::Target, None, None, None);
         }
         let history_limit = self.history_limit;
         if let Some(pane) = self.find_pane_mut(pane_id) {
@@ -3707,21 +3707,37 @@ impl ServerState {
             .iter_mut()
             .find(|window| window.index == session.active_window)
             .expect("active window exists");
-        window.layout = crate::model::Layout::Leaf(pane_ids[0]);
-        let mut target = pane_ids[0];
-        for pane_id in pane_ids.into_iter().skip(1) {
-            if !window
-                .layout
-                .split_with_size(target, pane_id, axis, false, false, None)
-            {
+        let count = pane_ids.len();
+        let size = match axis {
+            Axis::Horizontal => window.layout_rect().cols,
+            Axis::Vertical => window.layout_rect().rows,
+        } as usize;
+        let available = size.saturating_sub(count.saturating_sub(1));
+        let each = (available / count).max(1);
+        let mut sizes = vec![each; count];
+        let mut extra = size.saturating_sub(count * each + count.saturating_sub(1));
+        for value in &mut sizes {
+            if extra == 0 {
+                break;
+            }
+            *value += 1;
+            extra -= 1;
+        }
+        let mut tree = crate::model::Layout::Leaf(pane_ids[0]);
+        for index in 1..count {
+            let first_size = u16::try_from(sizes[index - 1]).unwrap_or(u16::MAX);
+            if !tree.split_with_size(
+                pane_ids[index - 1],
+                pane_ids[index],
+                axis,
+                false,
+                false,
+                Some(first_size),
+            ) {
                 return;
             }
-            // Keep extending the leaf just added. The active pane can be a
-            // different pane when a layout is selected through a chained
-            // binding, and using it here can leave the new pane unreachable
-            // from the layout tree.
-            target = pane_id;
         }
+        window.layout = tree;
         self.reflow_session(session_id);
     }
 
@@ -4208,7 +4224,7 @@ impl ServerState {
         } else {
             let _ = self.select_pane(
                 Some(&format!("%{pane_id}")),
-                PaneDirection::Last,
+                PaneDirection::Target,
                 None,
                 None,
                 None,
@@ -6808,11 +6824,7 @@ impl ServerState {
         let next = match direction {
             PaneDirection::Next => next_pane_id(window, pane_id, 1),
             PaneDirection::Previous => next_pane_id(window, pane_id, -1),
-            PaneDirection::Last
-                if target.is_some() || mark.is_some() || title.is_some() || enabled.is_some() =>
-            {
-                Some(pane_id)
-            }
+            PaneDirection::Target => Some(pane_id),
             PaneDirection::Last => window.last_pane.or(Some(pane_id)),
             PaneDirection::Left
             | PaneDirection::Right
@@ -16045,8 +16057,8 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
             .expect("render three vertical panes");
         let mut terminal = Parser::new(8, 40, 0);
         terminal.process(&rendered);
-        assert_eq!(terminal.screen().cell(0, 20).map(|cell| cell.contents()), Some("│"));
-        assert_eq!(terminal.screen().cell(0, 30).map(|cell| cell.contents()), Some("│"));
+        assert_eq!(terminal.screen().cell(0, 13).map(|cell| cell.contents()), Some("│"));
+        assert_eq!(terminal.screen().cell(0, 27).map(|cell| cell.contents()), Some("│"));
     }
 
     #[test]

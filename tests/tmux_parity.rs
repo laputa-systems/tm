@@ -40,7 +40,7 @@ fn reference_profile_config_loads_and_lists_the_compiled_table() {
 }
 
 #[test]
-fn even_horizontal_geometry_documents_the_reference_gap() {
+fn even_horizontal_geometry_matches_reference() {
     let scratch = Scratch::new("layout-gap");
     let tm = Mux::tm(&scratch, "tm");
     let reference = Mux::reference(&scratch, "reference");
@@ -65,12 +65,8 @@ fn even_horizontal_geometry_documents_the_reference_gap() {
         "-F",
         "#{pane_width}",
     ]);
-    assert_eq!(tm_geometry, "40\n19\n19");
-    assert_eq!(reference_geometry, "26\n26\n26");
-    assert_ne!(
-        tm_geometry, reference_geometry,
-        "the initial parity check must reproduce the known even-horizontal mismatch"
-    );
+    assert_eq!(tm_geometry, "26\n26\n26");
+    assert_eq!(tm_geometry, reference_geometry);
 }
 
 #[test]

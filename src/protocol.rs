@@ -343,6 +343,7 @@ pub(crate) enum PaneDirection {
     Next,
     Previous,
     Last,
+    Target,
 }
 
 #[derive(Debug)]
@@ -1470,6 +1471,7 @@ fn direction_code(direction: PaneDirection) -> u8 {
         PaneDirection::Next => 5,
         PaneDirection::Previous => 6,
         PaneDirection::Last => 7,
+        PaneDirection::Target => 8,
     }
 }
 
@@ -1482,6 +1484,7 @@ fn decode_direction(code: u8) -> io::Result<PaneDirection> {
         5 => Ok(PaneDirection::Next),
         6 => Ok(PaneDirection::Previous),
         7 => Ok(PaneDirection::Last),
+        8 => Ok(PaneDirection::Target),
         _ => Err(invalid_data("unknown pane direction")),
     }
 }
