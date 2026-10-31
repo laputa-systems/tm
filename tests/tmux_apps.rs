@@ -140,8 +140,9 @@ fn less_survives_resize_detach_and_reattach_without_idle_frames() {
     client
         .resize(Size::new(100, 30).expect("size"))
         .expect("resize attached client");
+    pty_harness::wait_for_text(&mut client, "LINE_028", Duration::from_secs(5));
     client
-        .wait_for_quiescence(client.deadline(Duration::from_secs(3)), Duration::from_millis(150))
+        .wait_for_quiescence(client.deadline(Duration::from_secs(3)), Duration::from_millis(200))
         .expect("resize frame");
     let stable = client.raw_output().len();
     client
