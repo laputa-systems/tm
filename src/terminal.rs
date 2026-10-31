@@ -7,6 +7,9 @@ use rustix::termios::{
 };
 use vt100::Parser;
 
+const MAX_PENDING_BYTES: usize = 1024 * 1024;
+const MAX_CONTROL_SEQUENCE_BYTES: usize = 4096;
+
 /// State needed to replay PTY output while preserving terminal sequences that
 /// may be split across read boundaries. `vt100` handles the terminal state;
 /// this small wrapper only expands DEC REP (`CSI Ps b`), which vt100 does not
@@ -33,6 +36,17 @@ impl Default for OutputState {
 impl OutputState {
     pub(crate) fn process(&mut self, parser: &mut Parser, bytes: &[u8]) {
         self.pending.extend_from_slice(bytes);
+        if self.pending.len() > MAX_PENDING_BYTES {
+            let overflow = self.pending.len() - MAX_PENDING_BYTES;
+            if let Some(start) = self.pending[overflow..]
+                .iter()
+                .position(|byte| *byte == 0x1b)
+            {
+                self.pending.drain(..overflow + start);
+            } else {
+                self.pending.clear();
+            }
+        }
         let escape_ready_len = incomplete_escape_start(&self.pending).unwrap_or(self.pending.len());
         let ready_len =
             incomplete_utf8_start(&self.pending[..escape_ready_len]).unwrap_or(escape_ready_len);
@@ -160,12 +174,19 @@ fn replay_terminal_bytes(
                 *last_printed = None;
             } else if let Some(count) = repeat_count(sequence) {
                 if let Some(character) = last_printed.as_ref() {
-                    for _ in 0..count {
+                    let (_, column) = parser.screen().cursor_position();
+                    let (_, columns) = parser.screen().size();
+                    let limit = usize::from(columns.saturating_sub(column));
+                    for _ in 0..count.min(limit) {
                         write_terminal_character(parser, character, *wrap);
                     }
                 }
             } else {
-                parser.process(sequence);
+                if sequence.len() <= MAX_CONTROL_SEQUENCE_BYTES
+                    || sequence.get(1) == Some(&b']')
+                {
+                    parser.process(sequence);
+                }
             }
             index = end;
             continue;
@@ -629,6 +650,25 @@ mod tests {
         let mut replay_parser = Parser::new(rows, cols, 100);
         replay(&mut replay_parser, bytes);
         assert_eq!(snapshot(&replay_parser), expected, "replay diverged");
+    }
+
+    #[test]
+    fn output_state_clamps_dec_repeat_to_the_remaining_row() {
+        let mut parser = Parser::new(3, 10, 100);
+        let mut state = OutputState::default();
+        state.process(&mut parser, b"X\x1b[1000000b");
+        assert_eq!(parser.screen().rows(0, 10).next(), Some("XXXXXXXXXX".to_owned()));
+        assert_eq!(parser.screen().cursor_position(), (0, 10));
+    }
+
+    #[test]
+    fn output_state_caps_an_incomplete_sequence() {
+        let mut parser = Parser::new(3, 10, 100);
+        let mut state = OutputState::default();
+        let mut bytes = b"\x1b]52;c;".to_vec();
+        bytes.resize(MAX_PENDING_BYTES * 2, b'A');
+        state.process(&mut parser, &bytes);
+        assert!(state.pending.len() <= MAX_PENDING_BYTES);
     }
 
     #[test]
