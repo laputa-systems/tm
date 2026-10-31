@@ -212,24 +212,16 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
                 if let Ok(mut state) = input_state.lock() {
                     match message {
                         ClientMessage::Input(bytes) => {
+                            state.activate_client(client_id);
                             state.handle_client_input(client_id, &bytes, &input_state);
                             state.mark_render_dirty();
                         }
                         ClientMessage::Resize(size) => {
-                            if let Some(session_id) = state
-                                .clients
-                                .get(&client_id)
-                                .map(|client| client.session_id)
-                            {
-                                if let Some(client) = state.clients.get_mut(&client_id) {
-                                    client.size = size;
-                                }
-                                state.resize_session(session_id, size, true);
-                            }
+                            state.resize_client(client_id, size);
                             state.mark_render_dirty();
                         }
                         ClientMessage::Detach => {
-                            state.clients.remove(&client_id);
+                            state.remove_client_with_reflow(client_id);
                             state.mark_render_dirty();
                             break;
                         }
@@ -337,7 +329,7 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
     }
     alive.store(false, std::sync::atomic::Ordering::Release);
     if let Ok(mut state) = shared.lock() {
-        state.clients.remove(&client_id);
+        state.remove_client_with_reflow(client_id);
         state.mark_render_dirty();
     }
     let _ = write_server_message(&mut stream, &ServerMessage::Closed);
@@ -382,6 +374,7 @@ struct ServerState {
     mouse_bindings: HashMap<(String, String), ConfigBinding>,
     mouse_context: Option<MouseContext>,
     exec_context: Option<ExecContext>,
+    activity_counter: u64,
 }
 
 /// A deterministic in-process render fixture for performance benchmarks.
@@ -527,6 +520,7 @@ struct PanePipe {
 struct AttachedClient {
     session_id: u64,
     size: Size,
+    activity: u64,
     prefix_pending: bool,
     key_buffer: Vec<u8>,
     input_buffer: Vec<u8>,
@@ -801,21 +795,6 @@ impl AttachedPrompt {
         inputs
     }
 
-    fn expanded_command(&self) -> String {
-        let inputs = self.all_inputs();
-        if self.command.is_empty() {
-            return inputs.last().cloned().unwrap_or_default();
-        }
-        let mut command = self.command.clone();
-        for (index, input) in inputs.iter().enumerate() {
-            command = command.replace(&format!("%{}", index + 1), input);
-        }
-        if inputs.len() == 1 {
-            command = command.replace("%%", &inputs[0]);
-        }
-        command
-    }
-
     fn advance_prompt(&mut self) -> bool {
         if self.current_prompt + 1 >= self.labels.len() {
             return false;
@@ -1060,6 +1039,7 @@ impl ServerState {
             mouse_bindings: HashMap::new(),
             mouse_context: None,
             exec_context: None,
+            activity_counter: 0,
         }
     }
 
@@ -1407,6 +1387,8 @@ impl ServerState {
                     ("window_panes", window.panes.len().to_string()),
                 ],
             ))
+        } else if detached {
+            Ok(String::new())
         } else {
             Ok(format!("{session_id}:{window_index}"))
         }
@@ -1570,15 +1552,72 @@ impl ServerState {
         Ok(id)
     }
 
+    fn latest_client(&self, session_id: u64) -> Option<u64> {
+        self.clients
+            .iter()
+            .filter(|(_, client)| client.session_id == session_id)
+            .max_by_key(|(_, client)| client.activity)
+            .map(|(id, _)| *id)
+    }
+
+    fn activate_client(&mut self, client_id: u64) {
+        let Some((session_id, size)) = self
+            .clients
+            .get(&client_id)
+            .map(|client| (client.session_id, client.size))
+        else {
+            return;
+        };
+        let was_latest = self.latest_client(session_id) == Some(client_id);
+        self.activity_counter = self.activity_counter.saturating_add(1);
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.activity = self.activity_counter;
+        }
+        if !was_latest {
+            self.resize_session(session_id, size, true);
+        }
+    }
+
+    fn resize_client(&mut self, client_id: u64, size: Size) {
+        let Some(session_id) = self.clients.get(&client_id).map(|client| client.session_id)
+        else {
+            return;
+        };
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.size = size;
+        }
+        if self.latest_client(session_id) == Some(client_id) {
+            self.resize_session(session_id, size, true);
+        }
+    }
+
+    fn remove_client_with_reflow(&mut self, client_id: u64) {
+        let Some(session_id) = self
+            .clients
+            .remove(&client_id)
+            .map(|client| client.session_id)
+        else {
+            return;
+        };
+        if let Some(latest) = self.latest_client(session_id)
+            && let Some(size) = self.clients.get(&latest).map(|client| client.size)
+        {
+            self.resize_session(session_id, size, true);
+        }
+    }
+
     fn register_client(&mut self, target: Option<&str>, size: Size) -> Result<(u64, u64), String> {
         let session_id = self.attach_target(target, size)?;
         let client_id = self.next_client_id;
         self.next_client_id = self.next_client_id.saturating_add(1);
+        self.activity_counter = self.activity_counter.saturating_add(1);
+        let activity = self.activity_counter;
         self.clients.insert(
             client_id,
             AttachedClient {
                 session_id,
                 size,
+                activity,
                 prefix_pending: false,
                 key_buffer: Vec::new(),
                 input_buffer: Vec::new(),
@@ -3190,15 +3229,17 @@ impl ServerState {
             prompt.input.clear();
             prompt.insert(byte);
             let input = prompt.current_input();
-            let command = prompt.expanded_command();
+            let template = prompt.command.clone();
             let session_id = client.session_id;
             client.prompt = None;
             self.record_prompt_history(&prompt_type, &input);
-            for line in config::parse(&command) {
-                let mut commands = vec![line.tokens];
-                commands.extend(line.chained);
-                self.execute_prompt_commands(client_id, session_id, commands, shared);
-            }
+            self.execute_prompt_template(
+                client_id,
+                session_id,
+                &template,
+                std::slice::from_ref(&input),
+                shared,
+            );
             return Some(1);
         }
         if prompt.mode == AttachedPromptMode::Numeric
@@ -3207,15 +3248,17 @@ impl ServerState {
             && !byte.is_ascii_digit()
         {
             let input = prompt.current_input();
-            let command = prompt.expanded_command();
+            let template = prompt.command.clone();
             let session_id = client.session_id;
             client.prompt = None;
             self.record_prompt_history(&prompt_type, &input);
-            for line in config::parse(&command) {
-                let mut commands = vec![line.tokens];
-                commands.extend(line.chained);
-                self.execute_prompt_commands(client_id, session_id, commands, shared);
-            }
+            self.execute_prompt_template(
+                client_id,
+                session_id,
+                &template,
+                std::slice::from_ref(&input),
+                shared,
+            );
             return Some(1);
         }
         if prompt.backspace_exit && prompt.input.is_empty() && matches!(byte, 0x08 | 0x7f) {
@@ -3268,8 +3311,7 @@ impl ServerState {
                 if prompt.advance_prompt() {
                     return Some(1);
                 }
-                let input = prompt.current_input();
-                accepted = Some((client.session_id, prompt.expanded_command(), input));
+                accepted = Some((client.session_id, prompt.command.clone(), prompt.all_inputs()));
             }
             0x01 => prompt.move_start(),
             0x02 => prompt.move_left(),
@@ -3294,17 +3336,20 @@ impl ServerState {
         } else {
             None
         };
-        if let Some((session_id, command, input)) = accepted {
+        if let Some((session_id, template, inputs)) = accepted {
             client.prompt = None;
-            self.record_prompt_history(&prompt_type, &input);
-            let lines = config::parse(&command);
-            for line in lines {
-                let mut commands = vec![line.tokens];
-                commands.extend(line.chained);
-                self.execute_prompt_commands(client_id, session_id, commands, shared);
+            if let Some(input) = inputs.last() {
+                self.record_prompt_history(&prompt_type, input);
             }
+            self.execute_prompt_template(client_id, session_id, &template, &inputs, shared);
         } else if let Some((session_id, template, input)) = incremental_update {
-            self.execute_prompt_template(client_id, session_id, &template, &input, shared);
+            self.execute_prompt_template(
+                client_id,
+                session_id,
+                &template,
+                std::slice::from_ref(&input),
+                shared,
+            );
         }
         Some(1)
     }
@@ -3389,15 +3434,29 @@ impl ServerState {
         client_id: u64,
         session_id: u64,
         template: &str,
-        input: &str,
+        inputs: &[String],
         shared: &SharedState,
     ) {
-        let command = if template.is_empty() {
-            input.to_owned()
+        let lines = if template.is_empty() {
+            config::parse(inputs.last().map(String::as_str).unwrap_or(""))
         } else {
-            template.replace("%%", input)
+            config::parse(template)
         };
-        for line in config::parse(&command) {
+        for mut line in lines {
+            if !template.is_empty() {
+                for token in line
+                    .tokens
+                    .iter_mut()
+                    .chain(line.chained.iter_mut().flatten())
+                {
+                    for (index, input) in inputs.iter().enumerate() {
+                        *token = token.replace(&format!("%{}", index + 1), input);
+                    }
+                    if inputs.len() == 1 {
+                        *token = token.replace("%%", &inputs[0]);
+                    }
+                }
+            }
             let mut commands = vec![line.tokens];
             commands.extend(line.chained);
             self.execute_prompt_commands(client_id, session_id, commands, shared);
@@ -3507,7 +3566,7 @@ impl ServerState {
                 continue;
             }
             if command[0] == "__detach" {
-                self.clients.remove(&client_id);
+                self.remove_client_with_reflow(client_id);
                 return Ok(String::new());
             }
             if command[0] == "send-prefix" {
@@ -3560,7 +3619,7 @@ impl ServerState {
                         client_id,
                         session_id,
                         &callback_template,
-                        &input,
+                        std::slice::from_ref(&input),
                         shared,
                     );
                 }
@@ -5949,7 +6008,7 @@ impl ServerState {
             return Err("no matching client".to_owned());
         }
         for id in ids {
-            self.clients.remove(&id);
+            self.remove_client_with_reflow(id);
         }
         Ok(String::new())
     }
@@ -6491,7 +6550,7 @@ impl ServerState {
                 .windows
                 .iter()
                 .position(|window| window.index == session.active_window)
-                .ok_or_else(|| "window not found: active".to_owned())?;
+                .ok_or_else(|| "can't find window: active".to_owned())?;
             (target_session, index)
         };
         if source_session != target_session {
@@ -6656,7 +6715,7 @@ impl ServerState {
                         .iter()
                         .find(|window| window.name == part)
                         .map(|window| window.index)
-                        .ok_or_else(|| format!("window not found: {part}"))?
+                        .ok_or_else(|| format!("can't find window: {part}"))?
                 }
             } else {
                 (0..=self.sessions[destination_session].next_window_index)
@@ -7125,7 +7184,7 @@ impl ServerState {
         let (source_session, source_window, source_id) = self.resolve_pane_target(source)?;
         let (target_session, mut target_window, target_id) = self
             .resolve_pane_target(target)
-            .map_err(|error| match error.strip_prefix("window not found: ") {
+            .map_err(|error| match error.strip_prefix("can't find window: ") {
                 Some(rest) => format!("can't find window: {rest}"),
                 None => error,
             })?;
@@ -8062,7 +8121,7 @@ impl ServerState {
                 .sessions
                 .iter()
                 .position(|session| session.windows.iter().any(|window| window.id == id))
-                .ok_or_else(|| format!("window not found: @{id}"));
+                .ok_or_else(|| format!("can't find window: @{id}"));
         }
         let exact = session_name.strip_prefix('=').unwrap_or(session_name);
         if session_name.starts_with('=') {
@@ -8099,7 +8158,7 @@ impl ServerState {
                     return Ok((session_index, window_index));
                 }
             }
-            return Err(format!("window not found: @{id}"));
+            return Err(format!("can't find window: @{id}"));
         }
         let (session_target, window_part) = match target.split_once(':') {
             Some((session, window)) => (session, window),
@@ -8287,7 +8346,7 @@ impl ServerState {
                 .iter()
                 .position(|window| window.index == current_index)
                 .map(|index| (session_index, index))
-                .ok_or_else(|| "window not found: active".to_owned());
+                .ok_or_else(|| "can't find window: active".to_owned());
         }
         if target == "^" || target == "{start}" {
             return session
@@ -8310,13 +8369,13 @@ impl ServerState {
         if target == "!" || target == "{last}" {
             let index = session
                 .last_window
-                .ok_or_else(|| format!("window not found: {target}"))?;
+                .ok_or_else(|| "no last window".to_owned())?;
             return session
                 .windows
                 .iter()
                 .position(|window| window.index == index)
                 .map(|position| (session_index, position))
-                .ok_or_else(|| format!("window not found: {target}"));
+                .ok_or_else(|| format!("can't find window: {target}"));
         }
         if matches!(target, "+" | "-" | "{next}" | "{previous}")
             || target.starts_with('+')
@@ -8355,7 +8414,7 @@ impl ServerState {
                 .iter()
                 .position(|window| window.id == id)
                 .map(|index| (session_index, index))
-                .ok_or_else(|| format!("window not found: @{id}"));
+                .ok_or_else(|| format!("can't find window: @{id}"));
         }
         if let Ok(index) = target.parse::<u32>()
             && let Some(position) = session
@@ -8381,7 +8440,7 @@ impl ServerState {
             .collect::<Vec<_>>();
         match matches.as_slice() {
             [index] => Ok((session_index, *index)),
-            [] => Err(format!("window not found: {target}")),
+            [] => Err(format!("can't find window: {target}")),
             _ => Err(format!("window target is ambiguous: {target}")),
         }
     }
