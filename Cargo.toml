@@ -15,6 +15,9 @@ vt100 = "0.16.2"
 laputa-ptytest = "0.1"
 rustybench = "0.1"
 
+[features]
+parity = []
+
 [[bin]]
 name = "tm"
 path = "src/main.rs"
@@ -25,6 +28,11 @@ path = "src/main.rs"
 [[bin]]
 name = "tm-pty-fixture"
 path = "tests/support/pty_fixture.rs"
+
+[[test]]
+name = "tmux_parity"
+path = "tests/tmux_parity.rs"
+required-features = ["parity"]
 
 [[bench]]
 name = "tm_performance"

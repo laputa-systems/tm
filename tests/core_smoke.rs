@@ -1,6 +1,10 @@
 #![cfg(unix)]
 
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
 
 struct TmGuard(String);
 
@@ -8,6 +12,12 @@ impl Drop for TmGuard {
     fn drop(&mut self) {
         let _ = run(&self.0, &["kill-server"]);
     }
+}
+
+fn scratch_root() -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".work/tmp");
+    std::fs::create_dir_all(&root).expect("create scratch root");
+    root
 }
 
 fn run(socket: &str, arguments: &[&str]) -> Output {
@@ -18,13 +28,28 @@ fn run(socket: &str, arguments: &[&str]) -> Output {
         .expect("run tm")
 }
 
+fn capture_until(socket: &str, target: &str, marker: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let output = run(socket, &["capture-pane", "-t", target]);
+        let captured = String::from_utf8_lossy(&output.stdout).into_owned();
+        if captured.contains(marker) || Instant::now() >= deadline {
+            return captured;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn core_session_pane_and_pty_lifecycle_survives_the_daemon_boundary() {
-    let socket = format!(
-        "/tmp/tm-test-{}-{}.sock",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("core")
-    );
+    let socket = scratch_root()
+        .join(format!(
+            "tm-core-{}-{}.sock",
+            std::process::id(),
+            NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
+        ))
+        .to_string_lossy()
+        .into_owned();
     let _guard = TmGuard(socket.clone());
 
     let created = run(
@@ -56,7 +81,6 @@ fn core_session_pane_and_pty_lifecycle_survives_the_daemon_boundary() {
     }
     assert!(captured.status.success());
     assert!(String::from_utf8_lossy(&captured.stdout).contains("ready"));
-
     let split = run(
         &socket,
         &[
@@ -81,17 +105,30 @@ fn core_session_pane_and_pty_lifecycle_survives_the_daemon_boundary() {
     assert!(panes.contains("%0"));
     assert!(panes.contains("%1"));
 
-    let io_session = run(&socket, &["new-session", "-d", "-s", "io", "--", "sh"]);
+    let io_session = run(
+        &socket,
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            "io",
+            "--",
+            "sh",
+            "-c",
+            "read line; printf 'SMOKE_ACK_%s\\n' \"$line\"; sleep 30",
+        ],
+    );
     assert!(io_session.status.success());
-    let sent = run(&socket, &["send-keys", "-t", "io", "printf hello", "Enter"]);
+    let sent = run(&socket, &["send-keys", "-t", "io", "42", "Enter"]);
     assert!(
         sent.status.success(),
         "{}",
         String::from_utf8_lossy(&sent.stderr)
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let io_capture = run(&socket, &["capture-pane", "-t", "io"]);
-    assert!(String::from_utf8_lossy(&io_capture.stdout).contains("hello"));
+    assert!(
+        capture_until(&socket, "io", "SMOKE_ACK_42").contains("SMOKE_ACK_42"),
+        "the pane command did not prove its own output"
+    );
 
     let renamed = run(&socket, &["rename-session", "-t", "io", "renamed"]);
     assert!(renamed.status.success());

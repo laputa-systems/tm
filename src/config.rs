@@ -418,6 +418,60 @@ fn tokenize(command: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
+    mod reference_profile {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/reference/profile.rs"
+        ));
+    }
+
+    #[test]
+    fn reference_profile_config_matches_compiled_data() {
+        let options = COMPILED_OPTIONS
+            .iter()
+            .map(|&(key, value)| reference_profile::OptionSpec {
+                key,
+                value,
+                scope: reference_profile::option_scope(key)
+                    .unwrap_or_else(|| panic!("missing reference scope for {key}")),
+            })
+            .collect::<Vec<_>>();
+        let mut merged: Vec<&CompiledBinding> = Vec::new();
+        for binding in VANILLA_BINDINGS.iter().chain(COMPILED_BINDINGS.iter()) {
+            if let Some(existing) = merged
+                .iter_mut()
+                .find(|existing| existing.key == binding.key)
+            {
+                *existing = binding;
+            } else {
+                merged.push(binding);
+            }
+        }
+        assert_eq!(merged.len(), 27, "effective binding table drifted");
+        let bindings = merged
+            .into_iter()
+            .map(|binding| reference_profile::BindingSpec {
+                key: binding.key,
+                repeat: binding.repeat,
+                commands: binding.commands,
+            })
+            .collect::<Vec<_>>();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/reference/tmux-3.8.conf");
+        reference_profile::assert_config_matches(
+            path,
+            &reference_profile::render_reference_config(&options, &bindings),
+        );
+        let baseline = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/reference/tmux-3.8-baseline.conf"
+        );
+        reference_profile::assert_config_matches(
+            baseline,
+            &reference_profile::render_baseline_config(),
+        );
+    }
+
     #[test]
     fn config_parser_preserves_chained_and_quoted_commands() {
         let lines = parse(

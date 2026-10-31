@@ -9911,6 +9911,15 @@ fn execute_request(
             state.list_panes(target.as_deref(), format.as_deref())
         }
         Request::SelectWindow { target } => state.select_window(&target),
+        Request::SelectLayout { target, layout } => {
+            if !matches!(layout.as_str(), "even-horizontal" | "even-vertical") {
+                return Err(format!("unknown layout: {layout}"));
+            }
+            let index = state.resolve_session_index(target.as_deref())?;
+            let session_id = state.sessions[index].id;
+            state.select_layout(session_id, &layout);
+            Ok(String::new())
+        }
         Request::RotateWindow { target, up } => state.rotate_window(target.as_deref(), up),
         Request::SwapWindow {
             source,

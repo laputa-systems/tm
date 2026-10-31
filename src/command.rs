@@ -75,6 +75,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("list-windows" | "lsw") => parse_list_windows(&arguments[index + 1..])?,
         Some("list-panes" | "lsp") => parse_list_panes(&arguments[index + 1..])?,
         Some("select-window" | "selectw") => parse_select_window(&arguments[index + 1..])?,
+        Some("select-layout" | "selectl") => parse_select_layout(&arguments[index + 1..])?,
         Some("last-window" | "last") => InvocationSpec::plain(Request::SelectWindow {
             target: "!".to_owned(),
         }),
@@ -271,7 +272,7 @@ fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
 
 fn parse_attach(arguments: &[String]) -> Result<InvocationSpec, String> {
     let mut target = None;
-    let mut size = Size::new(80, 24);
+    let mut size = crate::terminal::size();
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -727,8 +728,34 @@ fn parse_select_window(arguments: &[String]) -> Result<InvocationSpec, String> {
     }))
 }
 
-fn parse_rotate_window(arguments: &[String]) -> Result<InvocationSpec, String> {
+fn parse_select_layout(arguments: &[String]) -> Result<InvocationSpec, String> {
     let mut target = None;
+    let mut layout = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "-t" => {
+                index += 1;
+                target = Some(argument(arguments, index, "-t")?.to_owned());
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown select-layout option: {value}"));
+            }
+            value => {
+                if layout.replace(value.to_owned()).is_some() {
+                    return Err("select-layout accepts one layout".to_owned());
+                }
+            }
+        }
+        index += 1;
+    }
+    Ok(InvocationSpec::plain(Request::SelectLayout {
+        target,
+        layout: layout.ok_or_else(|| "select-layout requires a layout".to_owned())?,
+    }))
+}
+
+fn parse_rotate_window(arguments: &[String]) -> Result<InvocationSpec, String> {    let mut target = None;
     let mut up = false;
     let mut index = 0;
     while index < arguments.len() {

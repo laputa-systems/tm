@@ -37,6 +37,10 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         return Ok(());
     }
 
+    if let crate::protocol::Request::Attach { size, .. } = request {
+        return attach_stream(stream, size);
+    }
+
     let target = match &request {
         crate::protocol::Request::NewSession { .. } => Some(body),
         crate::protocol::Request::NewWindow { target, .. } => target.clone(),
@@ -101,6 +105,10 @@ fn attach_loop(socket: &std::path::Path, target: Option<String>) -> Result<(), S
         return Err(body);
     }
 
+    attach_stream(stream, size)
+}
+
+fn attach_stream(mut stream: UnixStream, size: Size) -> Result<(), String> {
     let mut raw =
         RawTerminal::enter().map_err(|error| format!("enter raw terminal mode: {error}"))?;
     let alive = Arc::new(AtomicBool::new(true));

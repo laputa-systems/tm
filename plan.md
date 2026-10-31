@@ -5,9 +5,9 @@
 - **Goal:** make tm dependable as a daily multiplexer by matching pinned tmux 3.8 across tm's compiled normal profile, supported CLI, attached terminal, pane application, and lifecycle behavior.
 - **Base:** code `05f4737bdfa5c032bf511bb98a8775134ca4e9ad` (the reviewed snapshot), toolchain `nightly-2026-09-15`.
 - **Preflight:** 2026-10-30. Verdict: ready.
-- **Accepted:** G0 reference build, provenance, and matrix skeleton.
+- **Accepted:** G0 reference build, provenance, and matrix skeleton. G1 hermetic adapter, normal-profile fixtures, single Attach, marker smoke, and conflicting config proof.
 - **Baseline:** `make test` green (20 s), `make lint` green (4 s); no known red tests. Verified mismatches are in **Baseline** and become the first parity scenarios.
-- **Next:** G1.
+- **Next:** G2.
 - **Resume:** "Execute `plan.md` from G0. One writer, no push, private sockets only." First command: `make test`.
 - **Owner constraint:** this campaign runs inside the owner's tmux session. Every tmux invocation must use an explicit private `-S` path under `.work/tmp`, with `TMUX`, `TMUX_PANE`, and `TM_SOCKET` removed and `TMUX_TMPDIR` set to `.work/tmp`; never bare `tmux`, never `-L`, never a server-wide kill. A user server must never be touched.
 

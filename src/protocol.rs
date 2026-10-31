@@ -69,6 +69,10 @@ pub(crate) enum Request {
     SelectWindow {
         target: String,
     },
+    SelectLayout {
+        target: Option<String>,
+        layout: String,
+    },
     NextWindow {
         target: Option<String>,
     },
@@ -465,6 +469,11 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
         Request::SelectWindow { target } => {
             payload.push(10);
             put_string(&mut payload, target);
+        }
+        Request::SelectLayout { target, layout } => {
+            payload.push(57);
+            put_optional_string(&mut payload, target);
+            put_string(&mut payload, layout);
         }
         Request::NextWindow { target } => {
             payload.push(11);
@@ -1012,6 +1021,10 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         10 => Request::SelectWindow {
             target: decoder.string()?,
+        },
+        57 => Request::SelectLayout {
+            target: decoder.optional_string()?,
+            layout: decoder.string()?,
         },
         11 => Request::NextWindow {
             target: decoder.optional_string()?,

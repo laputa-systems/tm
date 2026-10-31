@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -7,31 +8,40 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 struct Tm {
     socket: String,
-    ignored_config_path: String,
+    root: PathBuf,
+    config: PathBuf,
+    home: PathBuf,
 }
 
 impl Tm {
     fn with_ignored_config() -> Self {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".work/tmp")
+            .join(format!("tm-config-{}-{id}", std::process::id()));
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).expect("create isolated home");
+        let config = root.join("tmux.conf");
+        let contents = "set -g prefix C-z\nset -g base-index 7\nset -g history-limit 3\nset -g status-left CONFLICT\n";
+        std::fs::write(&config, contents).expect("write TM_CONFIG");
+        std::fs::write(home.join(".tmux.conf"), contents).expect("write home tmux.conf");
         Self {
-            socket: root
-                .join(format!("tm-config-{}-{id}.sock", std::process::id()))
-                .to_string_lossy()
-                .into_owned(),
-            ignored_config_path: root
-                .join(format!(
-                    "tm-config-ignored-{}-{id}.conf",
-                    std::process::id()
-                ))
-                .to_string_lossy()
-                .into_owned(),
+            socket: root.join("server.sock").to_string_lossy().into_owned(),
+            root: root.clone(),
+            config,
+            home,
         }
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_tm"))
-            .env("TM_CONFIG", &self.ignored_config_path)
+            .env_remove("TM_SOCKET")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("TM_CONFIG", &self.config)
+            .env("HOME", &self.home)
+            .env("TMPDIR", &self.root)
+            .env("TMUX_TMPDIR", &self.root)
             .args(["-S", self.socket.as_str()])
             .args(arguments)
             .output()
@@ -53,12 +63,12 @@ impl Tm {
 impl Drop for Tm {
     fn drop(&mut self) {
         let _ = self.run(&["kill-server"]);
-        let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
 #[test]
-fn compiled_defaults_ignore_tm_config_before_the_first_session_exists() {
+fn compiled_defaults_ignore_tm_config_and_home_tmux_conf() {
     let tm = Tm::with_ignored_config();
     tm.ok(&["new-session", "-d", "-s", "configured", "--", "sleep", "30"]);
     assert_eq!(
@@ -75,6 +85,10 @@ fn compiled_defaults_ignore_tm_config_before_the_first_session_exists() {
     assert_eq!(
         tm.ok(&["show-options", "-g", "-v", "history-limit"]),
         "10000\n"
+    );
+    assert_ne!(
+        tm.ok(&["show-options", "-g", "-v", "status-left"]),
+        "CONFLICT\n"
     );
     assert_eq!(
         tm.ok(&[
