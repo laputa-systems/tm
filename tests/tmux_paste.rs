@@ -121,6 +121,21 @@ fn fragmented_markers_forward_the_exact_payload() {
 }
 
 #[test]
+fn fragmented_end_after_payload_finishes_the_paste() {
+    let scratch = Scratch::new("paste-payload-fragments");
+    let tm = Mux::tm(&scratch, "tm");
+    create_fixture_session(&tm, "S");
+    let (mut client, baseline) = attach(&tm, "S", "payload-fragments");
+    send(&mut client, b"app-paste\n");
+    wait_screen(&mut client, "PASTE_READY");
+    send(&mut client, b"\x1b[200~hello\x1b[20");
+    std::thread::sleep(Duration::from_millis(100));
+    send(&mut client, b"1~");
+    wait_screen(&mut client, "PASTE_ACK:17");
+    pty_harness::detach(&mut client, &baseline);
+}
+
+#[test]
 fn pane_without_a_paste_request_gets_payload_only() {
     let scratch = Scratch::new("paste-plain");
     let tm = Mux::tm(&scratch, "tm");

@@ -725,6 +725,7 @@ struct AttachedClient {
     key_buffer: Vec<u8>,
     key_events: Vec<DecodedKey>,
     focused_pane: Option<u64>,
+    terminal_focused: bool,
     input_buffer: Vec<u8>,
     root_key_buffer: Vec<u8>,
     copy_key_buffer: Vec<u8>,
@@ -1387,7 +1388,7 @@ impl ServerState {
         let size = size.bounded();
         let base_index = self.global_base_index();
         let pane_id = self.next_pane_id();
-        let pane = self.new_pane(
+        let mut pane = self.new_pane(
             shared,
             NewPaneOptions {
                 pane_id,
@@ -1398,6 +1399,7 @@ impl ServerState {
                 empty,
             },
         )?;
+        pane.focused = true;
         let window_id = self.next_window_id;
         self.next_window_id += 1;
         let mut window = Window::new(
@@ -1879,10 +1881,12 @@ impl ServerState {
         };
         if let Some(pane_id) = focused_pane
             && self
-                .find_pane(pane_id)
-                .is_some_and(|pane| pane.output_state.focus_events())
+                .pane_focus_state(pane_id)
+                .is_some_and(|(requests, focused)| requests && focused)
+            && !self.pane_has_focused_client(pane_id, None)
         {
             self.write_pane(pane_id, b"\x1b[O");
+            self.set_pane_focused(pane_id, false);
         }
         if let Some(latest) = self.latest_client(session_id)
             && let Some(size) = self.clients.get(&latest).map(|client| client.size)
@@ -1915,6 +1919,7 @@ impl ServerState {
                 term: term.to_owned(),
                 modes: terminal::TerminalModes::default(),
                 focused_pane: None,
+                terminal_focused: true,
                 detach_requested: false,
                 bell_pending: false,
                 clipboard: None,
@@ -2203,38 +2208,10 @@ impl ServerState {
     }
 
     fn forward_focus_event(&mut self, client_id: u64, focused: bool) {
-        let Some(client) = self.clients.get(&client_id) else {
-            return;
-        };
-        let session_id = client.session_id;
-        if focused {
-            let active = self
-                .sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .and_then(Session::active_window)
-                .and_then(Window::active)
-                .map(|pane| (pane.id, pane.output_state.focus_events()));
-            if let Some((pane_id, true)) = active {
-                let already = self.clients[&client_id].focused_pane == Some(pane_id);
-                if !already {
-                    self.write_pane(pane_id, b"\x1b[I");
-                    if let Some(client) = self.clients.get_mut(&client_id) {
-                        client.focused_pane = Some(pane_id);
-                    }
-                }
-            }
-        } else if let Some(pane_id) = self.clients[&client_id].focused_pane {
-            let focused = self
-                .find_pane(pane_id)
-                .is_some_and(|pane| pane.output_state.focus_events());
-            if focused {
-                self.write_pane(pane_id, b"\x1b[O");
-            }
-            if let Some(client) = self.clients.get_mut(&client_id) {
-                client.focused_pane = None;
-            }
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.terminal_focused = focused;
         }
+        self.sync_client_focus(client_id);
     }
 
     fn sync_client_focus(&mut self, client_id: u64) {
@@ -2243,6 +2220,7 @@ impl ServerState {
         };
         let session_id = client.session_id;
         let previous = client.focused_pane;
+        let terminal_focused = client.terminal_focused;
         let active = self
             .sessions
             .iter()
@@ -2253,31 +2231,79 @@ impl ServerState {
         let Some((active_id, active_requests)) = active else {
             return;
         };
-        if previous == Some(active_id) && active_requests {
-            return;
-        }
         if let Some(previous_id) = previous
             && previous_id != active_id
-            && self
-                .find_pane(previous_id)
-                .is_some_and(|pane| pane.output_state.focus_events())
         {
-            self.write_pane(previous_id, b"\x1b[O");
-        }
-        let focused = if active_requests {
-            if previous != Some(active_id) {
-                self.write_pane(active_id, b"\x1b[I");
+            if self
+                .pane_focus_state(previous_id)
+                .is_some_and(|(requests, focused)| requests && focused)
+                && !self.pane_has_focused_client(previous_id, Some(client_id))
+            {
+                self.write_pane(previous_id, b"\x1b[O");
+                self.set_pane_focused(previous_id, false);
             }
-            Some(active_id)
-        } else {
-            None
-        };
-        if let Some(client) = self.clients.get_mut(&client_id) {
-            client.focused_pane = focused;
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.focused_pane = None;
+            }
+        }
+        if !terminal_focused {
+            if let Some(previous_id) = previous
+                && previous_id == active_id
+                && active_requests
+                && self
+                    .pane_focus_state(active_id)
+                    .is_some_and(|(_, focused)| focused)
+                && !self.pane_has_focused_client(active_id, Some(client_id))
+            {
+                self.write_pane(active_id, b"\x1b[O");
+                self.set_pane_focused(active_id, false);
+            }
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.focused_pane = None;
+            }
+            return;
+        }
+        if active_requests
+            && !self
+                .pane_focus_state(active_id)
+                .is_some_and(|(_, focused)| focused)
+        {
+            self.write_pane(active_id, b"\x1b[I");
+            self.set_pane_focused(active_id, true);
+        }
+        if active_requests
+            && let Some(client) = self.clients.get_mut(&client_id)
+        {
+            client.focused_pane = Some(active_id);
         }
     }
 
-    fn take_expired_paste(&mut self, client_id: u64, token: u64) -> Option<Vec<u8>> {
+    fn pane_focus_state(&self, pane_id: u64) -> Option<(bool, bool)> {
+        self.find_pane(pane_id)
+            .map(|pane| (pane.output_state.focus_events(), pane.focused))
+    }
+
+    fn set_pane_focused(&mut self, pane_id: u64, focused: bool) {
+        if let Some(pane) = self.find_pane_mut(pane_id) {
+            pane.focused = focused;
+        }
+    }
+
+    fn pane_has_focused_client(&self, pane_id: u64, exclude: Option<u64>) -> bool {
+        self.clients.iter().any(|(id, client)| {
+            Some(*id) != exclude
+                && client.terminal_focused
+                && self
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == client.session_id)
+                    .and_then(Session::active_window)
+                    .and_then(Window::active)
+                    .is_some_and(|pane| pane.id == pane_id)
+        })
+    }
+
+    fn take_expired_paste(&mut self, client_id: u64, token: u64) -> Option<(Vec<u8>, bool)> {
         let client = self.clients.get(&client_id)?;
         let (deadline, stored) = client.paste_deadline?;
         if stored != token || Instant::now() < deadline {
@@ -2285,7 +2311,8 @@ impl ServerState {
         }
         let client = self.clients.get_mut(&client_id)?;
         client.paste_deadline = None;
-        Some(std::mem::take(&mut client.paste_pending))
+        let active = client.paste_active.is_some();
+        Some((std::mem::take(&mut client.paste_pending), active))
     }
 
     fn process_paste_input(
@@ -2297,6 +2324,7 @@ impl ServerState {
         const START: &[u8] = b"\x1b[200~";
         const END: &[u8] = b"\x1b[201~";
         const PASTE_RESET: Duration = Duration::from_secs(5);
+        const PASTE_END_TIMEOUT: Duration = Duration::from_millis(500);
         let interactive = self
             .clients
             .get(&client_id)
@@ -2364,24 +2392,37 @@ impl ServerState {
                     index += END.len();
                     continue;
                 }
-                if END.starts_with(&pending[index..]) {
-                    if let Some(client) = self.clients.get_mut(&client_id) {
-                        client.paste_pending = pending[index..].to_vec();
-                        client.paste_active = Some(Instant::now());
-                        client.paste_deadline = None;
-                    }
-                    return normal;
-                }
-                let end = pending[index..]
+                if let Some(end) = pending[index..]
                     .windows(END.len())
-                    .position(|window| window == END);
-                let length = end.unwrap_or(pending.len() - index);
+                    .position(|window| window == END)
+                {
+                    let payload = pending[index..index + end].to_vec();
+                    if !payload.is_empty() {
+                        self.write_active(session_id, &payload);
+                    }
+                    if let Some(client) = self.clients.get_mut(&client_id) {
+                        client.paste_active = Some(Instant::now());
+                    }
+                    index += end;
+                    continue;
+                }
+                let keep = marker_suffix_len(&pending[index..], END);
+                let length = pending.len() - index - keep;
                 let payload = pending[index..index + length].to_vec();
                 if !payload.is_empty() {
                     self.write_active(session_id, &payload);
                 }
+                let deadline = Instant::now() + PASTE_END_TIMEOUT;
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.paste_active = Some(Instant::now());
+                    if keep > 0 {
+                        client.paste_pending = pending[pending.len() - keep..].to_vec();
+                        client.paste_deadline = Some((deadline, timer_token));
+                    }
+                }
+                if keep > 0 {
+                    schedule_paste_flush(shared, client_id, timer_token, deadline);
+                    return normal;
                 }
                 index += length;
             } else if pending[index..].starts_with(START) {
@@ -11662,9 +11703,19 @@ fn schedule_paste_flush(shared: &SharedState, client_id: u64, token: u64, deadli
                 thread::sleep(deadline - now);
             }
             if let Ok(mut state) = shared.lock()
-                && let Some(bytes) = state.take_expired_paste(client_id, token)
+                && let Some((bytes, active)) = state.take_expired_paste(client_id, token)
             {
-                state.handle_client_input_bytes(client_id, &bytes, &shared);
+                if active {
+                    if let Some(session_id) = state
+                        .clients
+                        .get(&client_id)
+                        .map(|client| client.session_id)
+                    {
+                        state.write_active(session_id, &bytes);
+                    }
+                } else {
+                    state.handle_client_input_bytes(client_id, &bytes, &shared);
+                }
                 state.mark_render_dirty();
             }
         });

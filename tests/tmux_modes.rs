@@ -247,8 +247,8 @@ fn focus_events_reach_only_a_requesting_pane() {
     session(&tm, "focus");
     wait(&tm, "FOCUS_READY");
     let (mut client, baseline) = attach(&tm, "focus-client");
-    send(&mut client, b"\x1b[O\0");
-    ack(&mut client, "FOCUS_ACK", &hex_tokens(&["1b5b49", "1b5b4f"]));
+    send(&mut client, b"\x1b[O\x1b[I\0");
+    ack(&mut client, "FOCUS_ACK", &hex_tokens(&["1b5b4f", "1b5b49"]));
     pty_harness::detach(&mut client, &baseline);
 
     let scratch = Scratch::new("modes-focus-plain");
@@ -305,7 +305,7 @@ fn fragmented_focus_and_extended_input_stay_atomic() {
         send(&mut client, &[*byte]);
     }
     send(&mut client, b"\0");
-    ack(&mut client, "FOCUS_ACK", &hex_tokens(&["1b5b49", "1b5b4f"]));
+    ack(&mut client, "FOCUS_ACK", &hex_tokens(&["1b5b4f"]));
     pty_harness::detach(&mut client, &baseline);
 
     let scratch = Scratch::new("modes-extended-fragments");
