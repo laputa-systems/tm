@@ -8486,6 +8486,9 @@ impl ServerState {
         client_id: Option<u64>,
         clear_screen: bool,
     ) -> Option<Vec<u8>> {
+        if !self.sessions.iter().any(|session| session.id == session_id) {
+            return None;
+        }
         if let Some(client_id) = client_id {
             self.sync_client_focus(client_id);
         }
@@ -19615,6 +19618,44 @@ bind -r Right next-window
                 .expect("list swapped windows"),
             "0:second\n1:first"
         );
+    }
+
+    #[test]
+    fn client_restore_disables_application_cursor_and_keypad() {
+        let shared = Arc::new(Mutex::new(ServerState::new()));
+        let mut state = shared.lock().expect("server state lock");
+        state
+            .create_session(
+                &shared,
+                CreateSessionOptions {
+                    name: Some("restore-modes"),
+                    attach_existing: false,
+                    group_target: None,
+                    format: None,
+                    window_name: None,
+                    empty: true,
+                    command: &[],
+                    cwd: None,
+                    size: Size::new(20, 5),
+                },
+            )
+            .expect("create restore mode session");
+        let pane_id = state.sessions[0].windows[0].panes[0].id;
+        state
+            .find_pane_mut(pane_id)
+            .expect("restore mode pane")
+            .parser
+            .process(b"\x1b[?1h\x1b=");
+        let (session_id, client_id) = state
+            .register_client(Some("restore-modes"), Size::new(20, 5))
+            .expect("register restore client");
+        let _ = state.render_session(session_id, Some(client_id));
+        assert!(state.clients[&client_id].modes.application_cursor);
+        assert!(state.clients[&client_id].modes.application_keypad);
+        let restore = state.take_client_restore(client_id);
+        assert!(restore.windows(5).any(|window| window == b"\x1b[?1l"));
+        assert!(restore.contains(&0x1b));
+        assert!(restore.windows(2).any(|window| window == b"\x1b>"));
     }
 
     #[test]

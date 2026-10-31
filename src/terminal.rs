@@ -866,6 +866,13 @@ mod tests {
     }
 
     #[test]
+    fn restore_sequence_disables_application_modes() {
+        let restore = restore_sequence(&Capabilities::for_term("tmux-256color", ""));
+        assert!(restore.windows(5).any(|window| window == b"\x1b[?1l"));
+        assert!(restore.windows(2).any(|window| window == b"\x1b>"));
+    }
+
+    #[test]
     fn output_state_replies_to_pane_terminal_queries() {
         let mut parser = Parser::new(2, 20, 100);
         let mut state = OutputState::default();
