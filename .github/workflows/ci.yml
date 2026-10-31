@@ -39,7 +39,7 @@ jobs:
       - name: Install macOS reference dependencies
         if: runner.os == 'macOS'
         run: brew install libevent utf8proc pkg-config
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .work/ref
           key: tmux-ref-${{ runner.os }}-${{ hashFiles('tests/support/install-tmux-ref.sh') }}
@@ -49,7 +49,7 @@ jobs:
         run: make parity
       - name: Upload failure artifacts
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: parity-failures-${{ runner.os }}
           path: |
