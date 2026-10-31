@@ -36,6 +36,7 @@ type FormatLoopItem = (String, usize, usize, u64, Vec<(&'static str, String)>);
 // condition variable is process-wide because each daemon owns one state
 // mutex; spurious wakeups are harmless and avoid a timer-driven render loop.
 static RENDER_WAKE: Condvar = Condvar::new();
+const REPEAT_TIME_MS: u64 = 500;
 
 pub(crate) fn socket_path(explicit: Option<&Path>) -> PathBuf {
     if let Some(path) = explicit {
@@ -375,6 +376,7 @@ struct ServerState {
     mouse_context: Option<MouseContext>,
     exec_context: Option<ExecContext>,
     activity_counter: u64,
+    key_timer_counter: u64,
 }
 
 /// A deterministic in-process render fixture for performance benchmarks.
@@ -528,6 +530,9 @@ struct AttachedClient {
     copy_key_buffer: Vec<u8>,
     repeat_key: Option<Vec<u8>>,
     repeat_binding: Option<ConfigBinding>,
+    key_deadline: Option<(Instant, u64)>,
+    repeat_deadline: Option<(Instant, u64)>,
+    input_deadline: Option<(Instant, u64)>,
     mouse_buffer: Vec<u8>,
     mouse_drag_button: Option<u16>,
     mouse_slider_offset: Option<usize>,
@@ -1040,6 +1045,7 @@ impl ServerState {
             mouse_context: None,
             exec_context: None,
             activity_counter: 0,
+            key_timer_counter: 0,
         }
     }
 
@@ -1625,6 +1631,9 @@ impl ServerState {
                 copy_key_buffer: Vec::new(),
                 repeat_key: None,
                 repeat_binding: None,
+                key_deadline: None,
+                repeat_deadline: None,
+                input_deadline: None,
                 mouse_buffer: Vec::new(),
                 mouse_drag_button: None,
                 mouse_slider_offset: None,
@@ -1641,6 +1650,7 @@ impl ServerState {
     }
 
     fn handle_client_input(&mut self, client_id: u64, bytes: &[u8], shared: &SharedState) {
+        let escape_time = self.escape_time_ms();
         let extended_keys = self
             .global_options
             .get("extended-keys")
@@ -1656,8 +1666,21 @@ impl ServerState {
         } else {
             (input, Vec::new())
         };
+        let pending_length = pending.len();
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.input_buffer = pending;
+            if pending_length == 0 {
+                client.input_deadline = None;
+            }
+        }
+        if pending_length > 0 {
+            self.key_timer_counter = self.key_timer_counter.saturating_add(1);
+            let token = self.key_timer_counter;
+            let deadline = Instant::now() + Duration::from_millis(escape_time.max(1));
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.input_deadline = Some((deadline, token));
+            }
+            schedule_input_flush(shared, client_id, token, deadline);
         }
         if decoded.is_empty() {
             return;
@@ -1739,6 +1762,8 @@ impl ServerState {
                     continue;
                 }
             }
+            self.key_timer_counter = self.key_timer_counter.saturating_add(1);
+            let timer_token = self.key_timer_counter;
             let Some(client) = self.clients.get_mut(&client_id) else {
                 return;
             };
@@ -1761,30 +1786,133 @@ impl ServerState {
                 .keys()
                 .any(|binding| binding.starts_with(&candidate));
             if partial && exact.is_none() {
+                let deadline =
+                    Instant::now() + Duration::from_millis(escape_time.max(1));
+                client.key_deadline = Some((deadline, timer_token));
+                schedule_key_flush(shared, client_id, timer_token, deadline);
                 index += 1;
                 continue;
             }
             let session_id = client.session_id;
             client.prefix_pending = false;
             client.key_buffer.clear();
+            client.key_deadline = None;
             if let Some(binding) = exact {
                 if binding._repeat {
+                    let deadline =
+                        Instant::now() + Duration::from_millis(REPEAT_TIME_MS);
                     client.repeat_key = Some(candidate.clone());
                     client.repeat_binding = Some(binding.clone());
+                    client.repeat_deadline = Some((deadline, timer_token));
+                    schedule_repeat_expiry(shared, client_id, timer_token, deadline);
                 } else {
                     client.repeat_key = None;
                     client.repeat_binding = None;
+                    client.repeat_deadline = None;
                 }
                 self.execute_bound_commands_feedback(client_id, session_id, binding, shared);
             } else {
                 client.repeat_key = None;
                 client.repeat_binding = None;
-                let mut forwarded = self.prefix.clone();
-                forwarded.extend_from_slice(&candidate);
-                self.write_active(session_id, &forwarded);
+                client.repeat_deadline = None;
+                self.write_active(session_id, &candidate);
             }
             index += 1;
         }
+    }
+
+    fn escape_time_ms(&self) -> u64 {
+        self.global_options
+            .get("escape-time")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+    }
+
+    fn flush_expired_input(&mut self, client_id: u64, token: u64) -> bool {
+        let (session_id, bytes) = {
+            let Some(client) = self.clients.get(&client_id) else {
+                return false;
+            };
+            let Some((deadline, stored)) = client.input_deadline else {
+                return false;
+            };
+            if stored != token || Instant::now() < deadline {
+                return false;
+            }
+            (client.session_id, std::mem::take(&mut self.clients.get_mut(&client_id).unwrap().input_buffer))
+        };
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.input_deadline = None;
+            client.prefix_pending = false;
+            client.key_buffer.clear();
+            client.key_deadline = None;
+        }
+        if !bytes.is_empty() {
+            self.write_active(session_id, &bytes);
+        }
+        true
+    }
+
+    fn flush_expired_key(&mut self, client_id: u64, token: u64) -> bool {
+        let (session_id, candidate) = {
+            let Some(client) = self.clients.get(&client_id) else {
+                return false;
+            };
+            let Some((deadline, stored)) = client.key_deadline else {
+                return false;
+            };
+            if stored != token || Instant::now() < deadline || !client.prefix_pending {
+                return false;
+            }
+            (
+                client.session_id,
+                std::mem::take(&mut self.clients.get_mut(&client_id).unwrap().key_buffer),
+            )
+        };
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.key_deadline = None;
+            client.prefix_pending = false;
+        }
+        if !candidate.is_empty() {
+            self.write_active(session_id, &candidate);
+        }
+        true
+    }
+
+    fn flush_expired_repeat(&mut self, client_id: u64, token: u64) -> bool {
+        let Some(client) = self.clients.get(&client_id) else {
+            return false;
+        };
+        let Some((deadline, stored)) = client.repeat_deadline else {
+            return false;
+        };
+        if stored != token || Instant::now() < deadline {
+            return false;
+        }
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.repeat_key = None;
+            client.repeat_binding = None;
+            client.repeat_deadline = None;
+        }
+        true
+    }
+
+    fn arm_repeat(
+        &mut self,
+        client_id: u64,
+        key: Vec<u8>,
+        binding: ConfigBinding,
+        shared: &SharedState,
+    ) {
+        self.key_timer_counter = self.key_timer_counter.saturating_add(1);
+        let token = self.key_timer_counter;
+        let deadline = Instant::now() + Duration::from_millis(REPEAT_TIME_MS);
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.repeat_key = Some(key);
+            client.repeat_binding = Some(binding);
+            client.repeat_deadline = Some((deadline, token));
+        }
+        schedule_repeat_expiry(shared, client_id, token, deadline);
     }
 
     fn feed_repeat_binding(
@@ -1793,23 +1921,44 @@ impl ServerState {
         bytes: &[u8],
         shared: &SharedState,
     ) -> Option<usize> {
-        let (session_id, key, binding) = {
+        let (session_id, key, binding, expired) = {
             let client = self.clients.get(&client_id)?;
-            (
-                client.session_id,
-                client.repeat_key.clone()?,
-                client.repeat_binding.clone()?,
-            )
+            let key = client.repeat_key.clone()?;
+            let binding = client.repeat_binding.clone()?;
+            let expired = client
+                .repeat_deadline
+                .is_some_and(|(deadline, _)| Instant::now() >= deadline);
+            (client.session_id, key, binding, expired)
         };
-        if !bytes.starts_with(&key) {
+        if expired {
             if let Some(client) = self.clients.get_mut(&client_id) {
                 client.repeat_key = None;
                 client.repeat_binding = None;
+                client.repeat_deadline = None;
             }
             return None;
         }
-        let _ = self.execute_bound_commands(client_id, session_id, binding, shared);
-        Some(key.len())
+        if bytes.starts_with(&key) {
+            self.arm_repeat(client_id, key.clone(), binding.clone(), shared);
+            let _ = self.execute_bound_commands(client_id, session_id, binding, shared);
+            return Some(key.len());
+        }
+        let other = self
+            .bindings
+            .iter()
+            .find(|(candidate, binding)| binding._repeat && bytes.starts_with(candidate))
+            .map(|(candidate, binding)| (candidate.clone(), binding.clone()));
+        if let Some((candidate, binding)) = other {
+            self.arm_repeat(client_id, candidate.clone(), binding.clone(), shared);
+            let _ = self.execute_bound_commands(client_id, session_id, binding, shared);
+            return Some(candidate.len());
+        }
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.repeat_key = None;
+            client.repeat_binding = None;
+            client.repeat_deadline = None;
+        }
+        None
     }
 
     fn feed_copy_key_binding(
@@ -10600,6 +10749,57 @@ fn execute_request_inner(
         }
         Request::Attach { .. } => Err("attach request was handled separately".to_owned()),
     }
+}
+
+fn schedule_input_flush(shared: &SharedState, client_id: u64, token: u64, deadline: Instant) {
+    let shared = Arc::clone(shared);
+    let _ = thread::Builder::new()
+        .name("tm-input-deadline".to_owned())
+        .spawn(move || {
+            let now = Instant::now();
+            if deadline > now {
+                thread::sleep(deadline - now);
+            }
+            if let Ok(mut state) = shared.lock()
+                && state.flush_expired_input(client_id, token)
+            {
+                state.mark_render_dirty();
+            }
+        });
+}
+
+fn schedule_key_flush(shared: &SharedState, client_id: u64, token: u64, deadline: Instant) {
+    let shared = Arc::clone(shared);
+    let _ = thread::Builder::new()
+        .name("tm-key-deadline".to_owned())
+        .spawn(move || {
+            let now = Instant::now();
+            if deadline > now {
+                thread::sleep(deadline - now);
+            }
+            if let Ok(mut state) = shared.lock()
+                && state.flush_expired_key(client_id, token)
+            {
+                state.mark_render_dirty();
+            }
+        });
+}
+
+fn schedule_repeat_expiry(shared: &SharedState, client_id: u64, token: u64, deadline: Instant) {
+    let shared = Arc::clone(shared);
+    let _ = thread::Builder::new()
+        .name("tm-repeat-deadline".to_owned())
+        .spawn(move || {
+            let now = Instant::now();
+            if deadline > now {
+                thread::sleep(deadline - now);
+            }
+            if let Ok(mut state) = shared.lock()
+                && state.flush_expired_repeat(client_id, token)
+            {
+                state.mark_render_dirty();
+            }
+        });
 }
 
 fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader: std::fs::File) {
