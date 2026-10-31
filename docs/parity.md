@@ -9,100 +9,101 @@ proves both the selected behavior and the prohibited behavior when the option
 is off.
 
 Status values are `pass`, `fail`, and `blocked`. `fail` has a reproducing test;
-`blocked` names the missing environment or prerequisite.
+`blocked` names the missing environment or prerequisite. The test column names
+the proving slice and the test that must carry the evidence.
 
 ## Options
 
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
-| `default-terminal` | Pane `TERM=tmux-256color` | R2 | `src/server.rs` environment | pending | fail | none |
-| `terminal-features` | `tmux-256color:Sync:clipboard` capability matching | C1 | `src/terminal.rs` | pending | fail | none |
-| `set-clipboard` | `external`: tm copies use OSC 52, application OSC 52 ignored | R5 | `src/server.rs` | pending | fail | none |
-| `extended-keys` | `on`: pane-requested CSI-u input | I3 | `src/server.rs` | pending | fail | none |
-| `extended-keys-format` | `csi-u` encoding for extended panes | I3 | `src/server.rs` | pending | fail | none |
-| `monitor-bell` | `on`: record bell for status | R5 | `src/server.rs` | pending | fail | none |
-| `bell-action` | `any`: alert all clients of the session | R5 | `src/server.rs` | pending | fail | none |
-| `visual-bell` | `off`: audible BEL only | R5 | `src/server.rs` | pending | fail | none |
-| `escape-time` | `0`: no partial prefix or escape held | I1 | `src/server.rs` | pending | fail | none |
-| `focus-events` | `on`: forward focus to requesting panes | I3 | `src/server.rs` | pending | fail | none |
-| `prefix` | `C-a` | T1 | `src/config.rs` | pending | fail | none |
-| `mouse` | `on`: route pointer events | I3 | `src/server.rs` | pending | fail | none |
-| `history-limit` | `10000` retained lines | R1 | `src/terminal.rs` | pending | fail | none |
-| `mode-keys` | `emacs` copy-mode keys | R3 | `src/copy_mode.rs` | pending | fail | none |
-| `base-index` | `1` | W3 | `src/model.rs` | pending | fail | none |
-| `renumber-windows` | `on` | W3 | `src/server.rs` | pending | fail | none |
-| `automatic-rename` | `off` | W3 | `src/server.rs` | pending | fail | none |
-| `status-position` | `bottom` | R4 | `src/server.rs` | pending | fail | none |
-| `status-bg` | `black` | R4 | `src/server.rs` | pending | fail | none |
-| `status-fg` | `white` | R4 | `src/server.rs` | pending | fail | none |
-| `window-status-format` | `#[dim]#I:#W#{?window_zoomed_flag, (Z),}` | R4 | `src/server.rs` | pending | fail | none |
-| `window-status-current-format` | `#[fg=green]#I:#W#{?window_zoomed_flag, (Z),}` | R4 | `src/server.rs` | pending | fail | none |
-| `status-left` | `#{?client_prefix,#[fg=yellow],}(#S) ` | R4 | `src/server.rs` | pending | fail | none |
-| `status-left-length` | `32` | R4 | `src/server.rs` | pending | fail | none |
-| `status-right` | empty | R4 | `src/server.rs` | pending | fail | none |
-| `monitor-activity` | `off` | W3 | `src/server.rs` | pending | fail | none |
-| `set-titles` | `off` | R2 | `src/server.rs` | pending | fail | none |
+| `default-terminal` | Pane `TERM=tmux-256color` | R2 | `src/server.rs` pane spawn environment | R2 `tests/terminal_corpus.rs::pane_terminal_and_title_defaults` | fail | none |
+| `terminal-features` | `tmux-256color:Sync:clipboard` selects sync and clipboard | C1 | `src/terminal.rs` capability profile | C1 `tests/tmux_terminal_modes.rs::terminal_features_select_capabilities` | fail | none |
+| `set-clipboard` | `external`: tm copies use OSC 52, application OSC 52 ignored | R5 | `src/server.rs` clipboard path | R5 `tests/tmux_notifications.rs::external_clipboard_rejects_application_osc52` | fail | none |
+| `extended-keys` | `on`: pane-requested CSI-u input | I3 | `src/server.rs` input decoder | I3 `tests/tmux_modes.rs::pane_extended_key_encoding` | fail | none |
+| `extended-keys-format` | `csi-u` selected for extended panes | I3 | `src/server.rs` pane encoder | I3 `tests/tmux_modes.rs::pane_extended_key_encoding` | fail | none |
+| `monitor-bell` | `on`: record a bell for the window list | R5 | `src/server.rs` bell state | R5 `tests/tmux_notifications.rs::audible_bell_and_monitor_state` | fail | none |
+| `bell-action` | `any`: alert every attached client of the session | R5 | `src/server.rs` alert routing | R5 `tests/tmux_notifications.rs::audible_bell_and_monitor_state` | fail | none |
+| `visual-bell` | `off`: audible BEL only | R5 | `src/server.rs` alert rendering | R5 `tests/tmux_notifications.rs::visual_bell_suppresses_audible_bell` | fail | none |
+| `escape-time` | `0`: no partial prefix or escape held | I1 | `src/server.rs` key state machine | I1 `tests/tmux_input.rs::escape_time_zero_forwards_lone_escape` | fail | none |
+| `focus-events` | `on`: forward focus only to a requesting pane | I3 | `src/server.rs` pane modes | I3 `tests/tmux_modes.rs::focus_forwarding_follows_pane_request` | fail | none |
+| `prefix` | `C-a` | T1 | `src/config.rs` default prefix | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `mouse` | `on`: route pointer events with pane coordinates | I3 | `src/server.rs` mouse routing | I3 `tests/tmux_modes.rs::mouse_routing_and_wheel_copy_mode` | fail | none |
+| `history-limit` | `10000` retained lines | R1 | `src/terminal.rs` retained output | R1 `tests/tmux_history.rs::checkpoint_respects_history_limit` | fail | none |
+| `mode-keys` | `emacs` copy-mode keys | R3 | `src/copy_mode.rs` key map | R3 `tests/tmux_copy_cells.rs::emacs_copy_actions` | fail | none |
+| `base-index` | `1` for session window numbering | W3 | `src/model.rs` session options | W3 `tests/tmux_windows.rs::base_index_and_renumbering` | fail | none |
+| `renumber-windows` | `on` closes index gaps | W3 | `src/server.rs` window removal | W3 `tests/tmux_windows.rs::base_index_and_renumbering` | fail | none |
+| `automatic-rename` | `off` preserves the selected name | W3 | `src/server.rs` window naming | W3 `tests/tmux_windows.rs::automatic_rename_off_keeps_name` | fail | none |
+| `status-position` | `bottom` status row | R4 | `src/server.rs` status layout | R4 `tests/tmux_status.rs::status_position_and_width` | fail | none |
+| `status-bg` | `black` background with reset between spans | R4 | `src/server.rs` status spans | R4 `tests/tmux_status.rs::status_colors_and_reset` | fail | none |
+| `status-fg` | `white` foreground with reset between spans | R4 | `src/server.rs` status spans | R4 `tests/tmux_status.rs::status_colors_and_reset` | fail | none |
+| `window-status-format` | inactive `#I:#W` with zoom marker | R4 | `src/server.rs` window list | R4 `tests/tmux_status.rs::window_list_truncation_keeps_active` | fail | none |
+| `window-status-current-format` | active `#I:#W` in green with zoom marker | R4 | `src/server.rs` window list | R4 `tests/tmux_status.rs::window_list_truncation_keeps_active` | fail | none |
+| `status-left` | session name with prefix highlight | R4 | `src/server.rs` status left | R4 `tests/tmux_status.rs::status_left_prefix_highlight` | fail | none |
+| `status-left-length` | `32` display columns | R4 | `src/server.rs` status truncation | R4 `tests/tmux_status.rs::status_left_prefix_highlight` | fail | none |
+| `status-right` | empty | R4 | `src/server.rs` status right | R4 `tests/tmux_status.rs::status_right_and_prompt_bounds` | fail | none |
+| `monitor-activity` | `off` keeps activity out of the window list | W3 | `src/server.rs` window flags | W3 `tests/tmux_windows.rs::activity_monitor_off` | fail | none |
+| `set-titles` | `off` emits no outer title escape | R2 | `src/server.rs` client output | R2 `tests/terminal_corpus.rs::pane_terminal_and_title_defaults` | fail | none |
 
 ## Bindings
 
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
-| `n` | prompt for name, new window | T1 | `src/config.rs` | pending | fail | none |
-| `p` | display panes | T1 | `src/config.rs` | pending | fail | none |
-| `Enter` | display compiled-profile message | T1 | `src/config.rs` | pending | fail | none |
-| `C-s` | send two literal prefix bytes | T1 | `src/config.rs` | pending | fail | none |
-| `/` | command prompt | T1 | `src/config.rs` | pending | fail | none |
-| `r` | prompt rename window | T1 | `src/config.rs` | pending | fail | none |
-| `C-Left` | previous window, repeating | T1 | `src/config.rs` | pending | fail | none |
-| `C-Right` | next window, repeating | T1 | `src/config.rs` | pending | fail | none |
-| `Left` | swap and select previous window, repeating | T1 | `src/config.rs` | pending | fail | none |
-| `Right` | swap and select next window, repeating | T1 | `src/config.rs` | pending | fail | none |
-| `\` | split horizontal in current path, even-horizontal | W1 | `src/config.rs` | pending | fail | none |
-| `-` | split vertical in current path, even-vertical | W1 | `src/config.rs` | pending | fail | none |
-| `z` | toggle pane zoom | W1 | `src/config.rs` | pending | fail | none |
-| `k` | kill pane, then display | T2 | `src/config.rs` | pending | fail | none |
-| `m` | prompt join target | T1 | `src/config.rs` | pending | fail | none |
-| `C-n` | break pane to next index | T1 | `src/config.rs` | pending | fail | none |
-| `%` | split horizontal | W1 | `src/config.rs` | pending | fail | none |
-| `"` | split vertical | W1 | `src/config.rs` | pending | fail | none |
-| `h` | select pane left | W1 | `src/config.rs` | pending | fail | none |
-| `j` | select pane down | W1 | `src/config.rs` | pending | fail | none |
-| `l` | select pane right | W1 | `src/config.rs` | pending | fail | none |
-| `x` | kill pane | T2 | `src/config.rs` | pending | fail | none |
-| `&` | kill window | T2 | `src/config.rs` | pending | fail | none |
-| `c` | new window | W3 | `src/config.rs` | pending | fail | none |
-| `b` | send prefix | I1 | `src/config.rs` | pending | fail | none |
-| `[` | copy mode | R2 | `src/config.rs` | pending | fail | none |
-| `d` | detach | L2 | `src/config.rs` | pending | fail | none |
+| `n` | prompt for a name, then new window | T1, W3 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context`; W3 `tests/tmux_windows.rs::prompt_values_and_rename` | fail | none |
+| `p` | display pane numbers | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `Enter` | display the compiled-profile message | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `C-s` | send two literal prefix bytes | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `/` | open a command prompt | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::prompt_targets_and_errors` | fail | none |
+| `r` | prompt to rename the window | T1, W3 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context`; W3 `tests/tmux_windows.rs::prompt_values_and_rename` | fail | none |
+| `C-Left` | previous window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `C-Right` | next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `Left` | swap and select the previous window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `Right` | swap and select the next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `\` | split horizontal in the current path, even-horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
+| `-` | split vertical in the current path, even-vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
+| `z` | toggle pane zoom | W1 | `src/server.rs` zoom state | W1 `tests/tmux_layouts.rs::zoom_and_last_pane` | fail | none |
+| `k` | kill the current pane, then display a message | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_atomicity.rs::kill_and_break_preflight` | fail | none |
+| `m` | prompt for a join target | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::prompt_targets_and_errors` | fail | none |
+| `C-n` | break pane to the next free index | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `%` | split horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
+| `"` | split vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
+| `h` | select pane left | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
+| `j` | select pane down | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
+| `l` | select pane right | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
+| `x` | kill pane | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_atomicity.rs::kill_and_break_preflight` | fail | none |
+| `&` | kill window | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_atomicity.rs::kill_and_break_preflight` | fail | none |
+| `c` | new window | W3 | `src/config.rs` compiled binding | W3 `tests/tmux_windows.rs::base_index_and_renumbering` | fail | none |
+| `b` | send the prefix to the pane | I1 | `src/config.rs` compiled binding | I1 `tests/tmux_input.rs::prefix_and_repeat_state` | fail | none |
+| `[` | enter copy mode | R2, R3 | `src/config.rs` compiled binding | R3 `tests/tmux_copy_cells.rs::copy_mode_entry_and_selection` | fail | none |
+| `d` | detach the client | L2 | `src/config.rs` compiled binding | L2 `tests/tmux_lifecycle.rs::idle_disconnect_and_single_attach` | fail | none |
 
 ## Interactive modes
 
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
-| command prompt | tokenized template, `%%` replaced with raw input | T1 | `src/server.rs` | pending | fail | none |
-| display-panes | pane number overlay for `display-panes-time` | T1 | `src/server.rs` | pending | fail | none |
-| choose-tree | choose a session/window from an attached client | T1 | `src/server.rs` | pending | fail | none |
-| choose-window | choose a window from an attached client | T1 | `src/server.rs` | pending | fail | none |
-| choose-client | choose an attached client | T1 | `src/server.rs` | pending | fail | none |
-| choose-buffer | choose a paste buffer | T1 | `src/server.rs` | pending | fail | none |
-| copy mode | vi/emacs navigation, selection, copy actions | R3 | `src/copy_mode.rs` | pending | fail | none |
+| command prompt | tokenized template, `%%` replaced with raw input | T1 | `src/server.rs` prompt state | T1 `tests/tmux_targeting.rs::prompt_targets_and_errors` | fail | none |
+| display-panes | pane number overlay for the configured interval | T1 | `src/server.rs` overlay | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
+| choose-tree | choose a session or window from an attached client | T1 | `src/server.rs` tree mode | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
+| choose-window | choose a window from an attached client | T1 | `src/server.rs` tree mode | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
+| choose-client | choose an attached client | T1 | `src/server.rs` client mode | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
+| choose-buffer | choose a paste buffer | T1 | `src/server.rs` buffer mode | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
+| copy mode | emacs navigation, selection, and copy actions | R3 | `src/copy_mode.rs` | R3 `tests/tmux_copy_cells.rs::emacs_copy_actions` | fail | none |
 
 ## CLI and lifecycle
 
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
-| formats | tmux format expansion for supported names | T1 | `src/command.rs` | pending | fail | none |
-| targeting | omitted and relative targets resolve in client context | T1 | `src/server.rs` | pending | fail | none |
-| buffers | set/show/paste/delete buffers | R5 | `src/server.rs` | pending | fail | none |
-| capture | capture-pane visible and history ranges | R1 | `src/server.rs` | pending | fail | none |
-| copy mode | selection, copy, search, cursor | R3 | `src/copy_mode.rs` | pending | fail | none |
-| session lifecycle | create, rename, kill, attach, detach | L2 | `src/server.rs` | pending | fail | none |
-| window lifecycle | create, rename, select, swap, kill | W3 | `src/server.rs` | pending | fail | none |
-| pane lifecycle | split, break, join, move, swap, kill | T2 | `src/server.rs` | pending | fail | none |
-| attached terminal | alternate screen, modes, restoration | C1 | `src/client.rs` | pending | fail | none |
-| input | prefix, repeat, escape, paste, extended keys | I1 | `src/server.rs` | pending | fail | none |
-| daemon lifecycle | startup lock, private socket, diagnostics | L2 | `src/server.rs` | pending | fail | none |
-| signals | restore termios and screen on handled signals | L3 | `src/client.rs` | pending | fail | none |
+| formats | supported format names expand in client context | T1 | `src/command.rs` format expansion | T1 `tests/tmux_targeting.rs::formats_use_client_context` | fail | none |
+| targeting | omitted and relative targets resolve in client context | T1 | `src/server.rs` target resolution | T1 `tests/tmux_targeting.rs::omitted_and_relative_targets` | fail | none |
+| buffers | set/show/paste/delete with the compiled buffer limit | R5 | `src/server.rs` buffers | R5 `tests/tmux_notifications.rs::buffer_and_clipboard_side_effects` | fail | none |
+| capture | capture visible and history ranges | R1 | `src/server.rs` capture | R1 `tests/tmux_history.rs::capture_history_and_visible` | fail | none |
+| copy mode | selection, copy, search, and cursor movement | R3 | `src/copy_mode.rs` | R3 `tests/tmux_copy_cells.rs::selection_copy_and_search` | fail | none |
+| session lifecycle | create, rename, kill, attach, and detach | L2 | `src/server.rs` sessions | L2 `tests/tmux_lifecycle.rs::session_lifecycle_and_detach` | fail | none |
+| window lifecycle | create, rename, select, swap, and kill | W3 | `src/server.rs` windows | W3 `tests/tmux_windows.rs::window_lifecycle` | fail | none |
+| pane lifecycle | split, break, join, move, swap, and kill | T2 | `src/server.rs` panes | T2 `tests/tmux_atomicity.rs::break_join_and_move_atomicity` | fail | none |
+| attached terminal | alternate screen, mode ownership, and restoration | C1 | `src/client.rs` terminal | C1 `tests/tmux_terminal_modes.rs::mode_ownership_and_restoration` | fail | none |
+| input | prefix, repeat, escape, paste, and extended keys | I1 | `src/server.rs` input state machine | I1 `tests/tmux_input.rs::input_state_machine` | fail | none |
+| daemon lifecycle | startup lock, private socket, and diagnostics | L2 | `src/server.rs` daemon startup | L2 `tests/tmux_lifecycle.rs::startup_lock_and_diagnostics` | fail | none |
+| signals | restore termios and screen on handled signals | L3 | `src/client.rs` signal handling | L3 `tests/tmux_signals.rs::signal_restoration` | fail | none |
 
 ## Baseline
 

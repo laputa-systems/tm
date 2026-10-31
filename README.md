@@ -25,9 +25,9 @@ socket. A daemon first started with `TM_SOCKET` uses the baseline settings and
 bindings, including the `C-b` prefix.
 
 The normal prefix is `C-a`. `C-a %` and `C-a "` split panes, `C-a h`, `C-a j`,
-`C-a k`, and `C-a l` move between panes, `C-a d` detaches, and `C-a [` enters
-copy mode. Settings and bindings are compiled in. `tm` does not read tmux
-configuration files or `TM_CONFIG`.
+and `C-a l` move between panes, `C-a k` kills the current pane, `C-a d`
+detaches, and `C-a [` enters copy mode. Settings and bindings are compiled in.
+`tm` does not read tmux configuration files or `TM_CONFIG`.
 
 Run `tm help` for the command summary. Report problems in the
 [issue tracker](https://github.com/laputa-systems/tm/issues). The project is
