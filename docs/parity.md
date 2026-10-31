@@ -74,7 +74,7 @@ the proving slice and the test that must carry the evidence.
 | `c` | new window | W3 | `src/config.rs` compiled binding | W3 `tests/tmux_windows.rs::base_index_renumbering_and_window_lifecycle_match_reference`; T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `b` | send the prefix to the pane | I1 | `src/config.rs` compiled binding | I1 `tests/tmux_input.rs::literal_prefix_bindings_match_reference_bytes` | pass | none |
 | `[` | enter copy mode | R2, R3 | `src/config.rs` compiled binding | R3 `tests/tmux_copy_cells.rs::copy_mode_entry_and_selection` | fail | none |
-| `d` | detach the client | L2 | `src/config.rs` compiled binding | L2 `tests/tmux_lifecycle.rs::idle_disconnect_and_single_attach` | fail | none |
+| `d` | detach the client | L2 | `src/config.rs` compiled binding | L2 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone`; L2 `tests/tmux_lifecycle.rs::idle_disconnect_releases_the_client_registration` | pass | none |
 
 ## Interactive modes
 
@@ -97,12 +97,12 @@ the proving slice and the test that must carry the evidence.
 | buffers | set/show/paste/delete with the compiled buffer limit | R5 | `src/server.rs` buffers | R5 `tests/tmux_notifications.rs::buffer_and_clipboard_side_effects` | fail | none |
 | capture | capture visible and history ranges | R1 | `src/server.rs` capture | R1 `tests/tmux_history.rs::capture_history_and_visible` | fail | none |
 | copy mode | selection, copy, search, and cursor movement | R3 | `src/copy_mode.rs` | R3 `tests/tmux_copy_cells.rs::selection_copy_and_search` | fail | none |
-| session lifecycle | create, rename, kill, attach, and detach | L2 | `src/server.rs` sessions | L2 `tests/tmux_lifecycle.rs::session_lifecycle_and_detach` | fail | none |
+| session lifecycle | create, rename, kill, attach, and detach | L2 | `src/server.rs` sessions | L2 `tests/tmux_lifecycle.rs::idle_disconnect_releases_the_client_registration` | pass | none |
 | window lifecycle | create, rename, select, swap, and kill | W3 | `src/server.rs` windows | W3 `tests/tmux_windows.rs::base_index_renumbering_and_window_lifecycle_match_reference` | pass | none |
 | pane lifecycle | split, break, join, move, swap, and kill | T2 | `src/server.rs` panes | T2 `tests/tmux_atomicity.rs::invalid_join_and_swap_targets_error_without_mutation` | pass | none |
 | attached terminal | alternate screen, mode ownership, and restoration | C1 | `src/client.rs` terminal | C1 `tests/tmux_terminal_modes.rs::attach_owns_modes_once_and_restores_them_on_detach` | pass | none |
 | input | prefix, repeat, escape, paste, and extended keys | I1 | `src/server.rs` input state machine | I1 `tests/tmux_input.rs::repeat_deadline_and_switching_follow_the_500ms_contract` | pass | none |
-| daemon lifecycle | startup lock, private socket, and diagnostics | L2 | `src/server.rs` daemon startup | L2 `tests/tmux_lifecycle.rs::startup_lock_and_diagnostics` | fail | none |
+| daemon lifecycle | startup lock, private socket, and diagnostics | L2 | `src/server.rs` daemon startup | L2 `tests/tmux_lifecycle.rs::concurrent_startup_converges_and_replaces_a_stale_socket` | pass | none |
 | signals | restore termios and screen on handled signals | L3 | `src/client.rs` signal handling | L3 `tests/tmux_signals.rs::signal_restoration` | fail | none |
 
 ## Baseline

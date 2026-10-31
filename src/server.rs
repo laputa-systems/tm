@@ -83,13 +83,85 @@ fn ensure_socket_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn socket_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_owned();
+    value.push(format!(".{suffix}"));
+    PathBuf::from(value)
+}
+
+struct DaemonLog {
+    path: PathBuf,
+    file: fs::File,
+    size: u64,
+}
+
+impl DaemonLog {
+    fn create(path: &Path) -> io::Result<Self> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(Self {
+            path: path.to_owned(),
+            file,
+            size: 0,
+        })
+    }
+
+    fn write(&mut self, message: &str) {
+        const LIMIT: u64 = 1024 * 1024;
+        let line = format!("{message}\n");
+        if self.size + line.len() as u64 > LIMIT
+            && let Ok(file) = fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&self.path)
+        {
+            self.file = file;
+            self.size = 0;
+        }
+        if self.file.write_all(line.as_bytes()).is_ok() {
+            self.size = self.size.saturating_add(line.len() as u64);
+        }
+    }
+}
+
 pub(crate) fn run_daemon(path: &Path) -> io::Result<()> {
     ensure_socket_parent(path)?;
+    let log_path = socket_sidecar_path(path, "log");
+    let mut log = DaemonLog::create(&log_path)?;
+    let result = run_daemon_inner(path, &mut log);
+    if let Err(error) = &result {
+        log.write(&format!("daemon: {error}"));
+    }
+    result
+}
+
+fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
+    let lock_path = socket_sidecar_path(path, "lock");
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))?;
+    // SAFETY: the descriptor is owned by this process and valid for flock.
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if UnixStream::connect(path).is_ok() {
+        return Ok(());
+    }
     if path.exists() {
         let _ = fs::remove_file(path);
     }
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    log.write(&format!("listening on {}", path.display()));
+    drop(lock);
     listener.set_nonblocking(true)?;
     let mut initial_state = ServerState::new();
     // A private `TM_SOCKET` remains an isolated vanilla server for tests and
@@ -276,6 +348,9 @@ fn attach_client(
                         Ok(state) => state,
                         Err(_) => break None,
                     };
+                    if !alive.load(std::sync::atomic::Ordering::Acquire) {
+                        break None;
+                    }
                     continue;
                 }
                 let render_wait =
@@ -285,6 +360,9 @@ fn attach_client(
                         Ok((state, _)) => state,
                         Err(_) => break None,
                     };
+                    if !alive.load(std::sync::atomic::Ordering::Acquire) {
+                        break None;
+                    }
                     continue;
                 }
                 let clear_screen = last_size != Some(render_size);

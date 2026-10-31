@@ -86,7 +86,20 @@ fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream,
         }
         thread::sleep(Duration::from_millis(10));
     }
-    Err(format!("tm daemon did not start at {}", socket.display()))
+    let mut message = format!("tm daemon did not start at {}", socket.display());
+    let log_path = {
+        let mut value = socket.as_os_str().to_owned();
+        value.push(".log");
+        std::path::PathBuf::from(value)
+    };
+    if let Ok(log) = std::fs::read_to_string(&log_path) {
+        let tail = log.lines().rev().take(8).collect::<Vec<_>>();
+        if !tail.is_empty() {
+            message.push('\n');
+            message.push_str(&tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
+        }
+    }
+    Err(message)
 }
 
 fn attach_loop(socket: &std::path::Path, target: Option<String>) -> Result<(), String> {
