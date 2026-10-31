@@ -26,7 +26,7 @@ the proving slice and the test that must carry the evidence.
 | `visual-bell` | `off`: audible BEL only | R5 | `src/server.rs` alert rendering | R5 `tests/tmux_notifications.rs::visual_bell_suppresses_audible_bell` | fail | none |
 | `escape-time` | `0`: no partial prefix or escape held | I1 | `src/server.rs` key state machine | I1 `tests/tmux_input.rs::escape_time_zero_forwards_lone_escape` | fail | none |
 | `focus-events` | `on`: forward focus only to a requesting pane | I3 | `src/server.rs` pane modes | I3 `tests/tmux_modes.rs::focus_forwarding_follows_pane_request` | fail | none |
-| `prefix` | `C-a` | T1 | `src/config.rs` default prefix | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `prefix` | `C-a` | T1 | `src/config.rs` default prefix | T1 `tests/tmux_targeting.rs::every_effective_binding_from_a_second_session_leaves_the_first_session_alone` | pass | none |
 | `mouse` | `on`: route pointer events with pane coordinates | I3 | `src/server.rs` mouse routing | I3 `tests/tmux_modes.rs::mouse_routing_and_wheel_copy_mode` | fail | none |
 | `history-limit` | `10000` retained lines | R1 | `src/terminal.rs` retained output | R1 `tests/tmux_history.rs::checkpoint_respects_history_limit` | fail | none |
 | `mode-keys` | `emacs` copy-mode keys | R3 | `src/copy_mode.rs` key map | R3 `tests/tmux_copy_cells.rs::emacs_copy_actions` | fail | none |
@@ -52,18 +52,18 @@ the proving slice and the test that must carry the evidence.
 | `p` | display pane numbers | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
 | `Enter` | display the compiled-profile message | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
 | `C-s` | send two literal prefix bytes | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
-| `/` | open a command prompt | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::prompt_targets_and_errors` | fail | none |
+| `/` | open a command prompt | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::slash_prompt_resolves_omitted_relative_and_stable_targets` | pass | none |
 | `r` | prompt to rename the window | T1, W3 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context`; W3 `tests/tmux_windows.rs::prompt_values_and_rename` | fail | none |
-| `C-Left` | previous window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
-| `C-Right` | next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
-| `Left` | swap and select the previous window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
-| `Right` | swap and select the next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `C-Left` | previous window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::two_clients_keep_binding_context_independent` | pass | none |
+| `C-Right` | next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::two_clients_keep_binding_context_independent` | pass | none |
+| `Left` | swap and select the previous window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::client_bindings_use_the_attached_session_and_window` | pass | none |
+| `Right` | swap and select the next window, repeating | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::client_bindings_use_the_attached_session_and_window` | pass | none |
 | `\` | split horizontal in the current path, even-horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
 | `-` | split vertical in the current path, even-vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
 | `z` | toggle pane zoom | W1 | `src/server.rs` zoom state | W1 `tests/tmux_layouts.rs::zoom_and_last_pane` | fail | none |
 | `k` | kill the current pane, then display a message | T2 | `src/config.rs` compiled binding | T2 `tests/tmux_atomicity.rs::kill_and_break_preflight` | fail | none |
-| `m` | prompt for a join target | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::prompt_targets_and_errors` | fail | none |
-| `C-n` | break pane to the next free index | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::every_effective_binding_runs_in_client_context` | fail | none |
+| `m` | prompt for a join target | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::break_and_join_bindings_use_client_context` | pass | none |
+| `C-n` | break pane to the next free index | T1 | `src/config.rs` compiled binding | T1 `tests/tmux_targeting.rs::break_and_join_bindings_use_client_context` | pass | none |
 | `%` | split horizontal | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
 | `"` | split vertical | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::binding_split_and_even_layout` | fail | none |
 | `h` | select pane left | W1 | `src/config.rs` compiled binding | W1 `tests/tmux_layouts.rs::navigation_and_pane_numbers` | fail | none |
@@ -80,7 +80,7 @@ the proving slice and the test that must carry the evidence.
 
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
-| command prompt | tokenized template, `%%` replaced with raw input | T1 | `src/server.rs` prompt state | T1 `tests/tmux_targeting.rs::prompt_targets_and_errors` | fail | none |
+| command prompt | tokenized template, `%%` replaced with raw input | T1 | `src/server.rs` prompt state | T1 `tests/tmux_targeting.rs::slash_prompt_resolves_omitted_relative_and_stable_targets` | pass | none |
 | display-panes | pane number overlay for the configured interval | T1 | `src/server.rs` overlay | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
 | choose-tree | choose a session or window from an attached client | T1 | `src/server.rs` tree mode | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
 | choose-window | choose a window from an attached client | T1 | `src/server.rs` tree mode | T1 `tests/tmux_targeting.rs::display_panes_and_choosers` | fail | none |
@@ -93,7 +93,7 @@ the proving slice and the test that must carry the evidence.
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
 | formats | supported format names expand in client context | T1 | `src/command.rs` format expansion | T1 `tests/tmux_targeting.rs::formats_use_client_context` | fail | none |
-| targeting | omitted and relative targets resolve in client context | T1 | `src/server.rs` target resolution | T1 `tests/tmux_targeting.rs::omitted_and_relative_targets` | fail | none |
+| targeting | omitted and relative targets resolve in client context | T1 | `src/server.rs` target resolution | T1 `tests/tmux_targeting.rs::client_bindings_use_the_attached_session_and_window` | pass | none |
 | buffers | set/show/paste/delete with the compiled buffer limit | R5 | `src/server.rs` buffers | R5 `tests/tmux_notifications.rs::buffer_and_clipboard_side_effects` | fail | none |
 | capture | capture visible and history ranges | R1 | `src/server.rs` capture | R1 `tests/tmux_history.rs::capture_history_and_visible` | fail | none |
 | copy mode | selection, copy, search, and cursor movement | R3 | `src/copy_mode.rs` | R3 `tests/tmux_copy_cells.rs::selection_copy_and_search` | fail | none |

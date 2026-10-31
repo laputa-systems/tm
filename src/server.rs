@@ -139,7 +139,7 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
 
     let result = match shared.lock() {
         Ok(mut state) => {
-            let result = execute_request(&mut state, &shared, request);
+            let result = execute_request(&mut state, &shared, request, None);
             state.mark_render_dirty();
             result
         }
@@ -343,6 +343,13 @@ fn attach_client(mut stream: UnixStream, shared: SharedState, target: Option<Str
     let _ = write_server_message(&mut stream, &ServerMessage::Closed);
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ExecContext {
+    session_id: Option<u64>,
+    window_id: Option<u64>,
+    pane_id: Option<u64>,
+}
+
 struct ServerState {
     // Monotonic generation for screen-affecting state. Attach clients wait
     // for this to change instead of rebuilding an unchanged frame on a timer.
@@ -374,6 +381,7 @@ struct ServerState {
     table_bindings: HashMap<(String, Vec<u8>), ConfigBinding>,
     mouse_bindings: HashMap<(String, String), ConfigBinding>,
     mouse_context: Option<MouseContext>,
+    exec_context: Option<ExecContext>,
 }
 
 /// A deterministic in-process render fixture for performance benchmarks.
@@ -1051,6 +1059,7 @@ impl ServerState {
             table_bindings: HashMap::new(),
             mouse_bindings: HashMap::new(),
             mouse_context: None,
+            exec_context: None,
         }
     }
 
@@ -3188,15 +3197,7 @@ impl ServerState {
             for line in config::parse(&command) {
                 let mut commands = vec![line.tokens];
                 commands.extend(line.chained);
-                let _ = self.execute_bound_commands(
-                    client_id,
-                    session_id,
-                    ConfigBinding {
-                        _repeat: false,
-                        commands,
-                    },
-                    shared,
-                );
+                self.execute_prompt_commands(client_id, session_id, commands, shared);
             }
             return Some(1);
         }
@@ -3213,15 +3214,7 @@ impl ServerState {
             for line in config::parse(&command) {
                 let mut commands = vec![line.tokens];
                 commands.extend(line.chained);
-                let _ = self.execute_bound_commands(
-                    client_id,
-                    session_id,
-                    ConfigBinding {
-                        _repeat: false,
-                        commands,
-                    },
-                    shared,
-                );
+                self.execute_prompt_commands(client_id, session_id, commands, shared);
             }
             return Some(1);
         }
@@ -3308,15 +3301,7 @@ impl ServerState {
             for line in lines {
                 let mut commands = vec![line.tokens];
                 commands.extend(line.chained);
-                let _ = self.execute_bound_commands(
-                    client_id,
-                    session_id,
-                    ConfigBinding {
-                        _repeat: false,
-                        commands,
-                    },
-                    shared,
-                );
+                self.execute_prompt_commands(client_id, session_id, commands, shared);
             }
         } else if let Some((session_id, template, input)) = incremental_update {
             self.execute_prompt_template(client_id, session_id, &template, &input, shared);
@@ -3415,15 +3400,41 @@ impl ServerState {
         for line in config::parse(&command) {
             let mut commands = vec![line.tokens];
             commands.extend(line.chained);
-            let _ = self.execute_bound_commands(
-                client_id,
-                session_id,
-                ConfigBinding {
-                    _repeat: false,
-                    commands,
-                },
-                shared,
-            );
+            self.execute_prompt_commands(client_id, session_id, commands, shared);
+        }
+    }
+
+    fn execute_prompt_commands(
+        &mut self,
+        client_id: u64,
+        session_id: u64,
+        commands: Vec<Vec<String>>,
+        shared: &SharedState,
+    ) {
+        let result = self.execute_bound_commands(
+            client_id,
+            session_id,
+            ConfigBinding {
+                _repeat: false,
+                commands,
+            },
+            shared,
+        );
+        if let Err(error) = result {
+            self.last_message = Some(error);
+        }
+    }
+
+    fn exec_context_for_client(&self, session_id: u64) -> ExecContext {
+        let window = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(Session::active_window);
+        ExecContext {
+            session_id: Some(session_id),
+            window_id: window.map(|window| window.id),
+            pane_id: window.and_then(|window| window.active().map(|pane| pane.id)),
         }
     }
 
@@ -3586,42 +3597,9 @@ impl ServerState {
                     }
                 }
             }
-            if !command.iter().any(|value| value == "-t")
-                && let Some(target) = self
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == session_id)
-                    .map(|session| format!("{}:", session.name))
-                && matches!(
-                    command[0].as_str(),
-                    "break-pane"
-                        | "capture-pane"
-                        | "clear-history"
-                        | "copy-mode"
-                        | "copy-mode-and-page"
-                        | "kill-pane"
-                        | "kill-window"
-                        | "join-pane"
-                        | "new-window"
-                        | "next-window"
-                        | "previous-window"
-                        | "rename-window"
-                        | "resize-pane"
-                        | "respawn-pane"
-                        | "respawn-window"
-                        | "rotate-window"
-                        | "select-pane"
-                        | "send"
-                        | "send-keys"
-                        | "split-window"
-                        | "swap-pane"
-                        | "swap-window"
-                )
-            {
-                command.extend(["-t".to_owned(), target]);
-            }
             let invocation = crate::command::parse(&command)?;
-            execute_request(self, shared, invocation.request)?;
+            let context = self.exec_context_for_client(session_id);
+            execute_request(self, shared, invocation.request, Some(context))?;
         }
         Ok(String::new())
     }
@@ -7932,6 +7910,17 @@ impl ServerState {
         }
         let target = target.unwrap_or("");
         let session_name = target.split(':').next().unwrap_or(target);
+        let context_session = self.exec_context.and_then(|context| context.session_id);
+        if session_name.is_empty() {
+            if let Some(id) = context_session {
+                return self
+                    .sessions
+                    .iter()
+                    .position(|session| session.id == id)
+                    .ok_or_else(|| format!("session not found: ${id}"));
+            }
+            return Ok(0);
+        }
         if let Some(id) = session_name
             .strip_prefix('$')
             .and_then(|value| value.parse::<u64>().ok())
@@ -7952,10 +7941,6 @@ impl ServerState {
                 .position(|session| session.windows.iter().any(|window| window.id == id))
                 .ok_or_else(|| format!("window not found: @{id}"));
         }
-        if session_name.is_empty() || (!target.contains(':') && self.find_session(target).is_none())
-        {
-            return Ok(0);
-        }
         let exact = session_name.strip_prefix('=').unwrap_or(session_name);
         if session_name.starts_with('=') {
             return self
@@ -7963,6 +7948,16 @@ impl ServerState {
                 .iter()
                 .position(|session| session.name == exact)
                 .ok_or_else(|| format!("session not found: {exact}"));
+        }
+        if !target.contains(':') && self.find_session(target).is_none() {
+            if let Some(id) = context_session {
+                return self
+                    .sessions
+                    .iter()
+                    .position(|session| session.id == id)
+                    .ok_or_else(|| format!("session not found: ${id}"));
+            }
+            return Ok(0);
         }
         self.find_session(exact)
             .ok_or_else(|| format!("session not found: {exact}"))
@@ -7983,19 +7978,30 @@ impl ServerState {
             }
             return Err(format!("window not found: @{id}"));
         }
-        let session_index = self.resolve_session_index(Some(target))?;
-        let window_part = if let Some((_, rest)) = target.split_once(':') {
-            rest
-        } else if target.is_empty() || self.find_session(target).is_some() {
-            ""
-        } else {
-            target
+        let (session_target, window_part) = match target.split_once(':') {
+            Some((session, window)) => (session, window),
+            None if target.is_empty() => ("", ""),
+            None if target.starts_with('$') || self.find_session(target).is_some() => (target, ""),
+            None => ("", target),
         };
-        self.window_index(session_index, window_part)
+        let session_index = self.resolve_session_index(Some(session_target))?;
+        let context_window = if session_target.is_empty() {
+            self.exec_context.and_then(|context| context.window_id)
+        } else {
+            None
+        };
+        self.window_index(session_index, window_part, context_window)
     }
 
     fn resolve_pane_target(&self, target: Option<&str>) -> Result<(usize, usize, u64), String> {
         let target = target.unwrap_or("");
+        if (target.is_empty() || target == ".")
+            && let Some(id) = self.exec_context.and_then(|context| context.pane_id)
+        {
+            return self
+                .find_pane_location(id)
+                .ok_or_else(|| format!("pane not found: %{id}"));
+        }
         if let Some(id) = target
             .strip_prefix('%')
             .and_then(|id| id.parse::<u64>().ok())
@@ -8135,14 +8141,28 @@ impl ServerState {
         Ok((session_index, window_index, pane_id))
     }
 
-    fn window_index(&self, session_index: usize, target: &str) -> Result<(usize, usize), String> {
+    fn window_index(
+        &self,
+        session_index: usize,
+        target: &str,
+        context_window: Option<u64>,
+    ) -> Result<(usize, usize), String> {
         let session = &self.sessions[session_index];
         let target = target.trim();
+        let current_index = context_window
+            .and_then(|id| {
+                session
+                    .windows
+                    .iter()
+                    .find(|window| window.id == id)
+                    .map(|window| window.index)
+            })
+            .unwrap_or(session.active_window);
         if target.is_empty() || target == "{active}" || target == "@" {
             return session
                 .windows
                 .iter()
-                .position(|window| window.index == session.active_window)
+                .position(|window| window.index == current_index)
                 .map(|index| (session_index, index))
                 .ok_or_else(|| "window not found: active".to_owned());
         }
@@ -8190,7 +8210,7 @@ impl ServerState {
             let current = session
                 .windows
                 .iter()
-                .position(|window| window.index == session.active_window)
+                .position(|window| window.index == current_index)
                 .unwrap_or(0);
             let length = session.windows.len();
             if length == 0 {
@@ -9474,7 +9494,7 @@ fn render_status_line(
         _ => b"\x1b[37m",
     });
     if let Some(message) = message.or(prompt) {
-        output.extend_from_slice(message.as_bytes());
+        output.extend_from_slice(message.lines().next().unwrap_or("").as_bytes());
         output.extend_from_slice(b"\x1b[0m");
         return;
     }
@@ -9801,6 +9821,18 @@ fn raw_hyperlink_row(raw_output: &[u8], target_row: usize) -> Option<Vec<u8>> {
 }
 
 fn execute_request(
+    state: &mut ServerState,
+    shared: &SharedState,
+    request: Request,
+    context: Option<ExecContext>,
+) -> CommandResult {
+    let previous = std::mem::replace(&mut state.exec_context, context);
+    let result = execute_request_inner(state, shared, request);
+    state.exec_context = previous;
+    result
+}
+
+fn execute_request_inner(
     state: &mut ServerState,
     shared: &SharedState,
     request: Request,
@@ -17501,6 +17533,7 @@ bind -r Right next-window
                 mouse_start: true,
                 scroll_to_mouse: false,
             },
+            None,
         )
         .expect("start copy mode at mouse");
         assert!(
@@ -17529,6 +17562,7 @@ bind -r Right next-window
                 mouse_start: false,
                 scroll_to_mouse: true,
             },
+            None,
         )
         .expect("scroll copy mode at mouse");
         assert!(
@@ -18272,6 +18306,7 @@ bind -r Right next-window
             Request::ClearHistory {
                 target: Some("clear-history:0.0".to_owned()),
             },
+            None,
         )
         .expect("clear history");
 

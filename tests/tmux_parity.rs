@@ -74,6 +74,42 @@ fn even_horizontal_geometry_documents_the_reference_gap() {
 }
 
 #[test]
+fn relative_window_targets_match_reference() {
+    let scratch = Scratch::new("relative-targets");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        mux.ok(&[
+            "new-session",
+            "-d",
+            "-s",
+            "B",
+            "-n",
+            "b1",
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ]);
+        mux.ok(&["new-window", "-d", "-t", "B", "-n", "b2"]);
+        mux.ok(&["new-window", "-d", "-t", "B", "-n", "b3"]);
+    }
+    parity::compare_commands(
+        &tm,
+        &reference,
+        &[
+            &["select-window", "-t", "B:+1"],
+            &["display-message", "-p", "-t", "B", "#{window_index}:#{window_name}"],
+            &["select-window", "-t", "B:-1"],
+            &["display-message", "-p", "-t", "B", "#{window_index}:#{window_name}"],
+            &["swap-window", "-t", "B:+1"],
+            &["select-window", "-t", "B:+1"],
+            &["list-windows", "-t", "B", "-F", "#{window_index}:#{window_name}"],
+        ],
+    );
+}
+
+#[test]
 fn attached_client_renders_normal_profile_fixture() {
     let scratch = Scratch::new("attached-screen");
     let tm = Mux::tm(&scratch, "tm");
