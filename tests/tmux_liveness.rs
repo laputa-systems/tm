@@ -50,6 +50,17 @@ fn wait_for_path(path: &Path, deadline: Duration) -> bool {
     path.exists()
 }
 
+fn wait_for_file_contents(path: &Path, expected: &str, deadline: Duration) -> bool {
+    let deadline = Instant::now() + deadline;
+    while Instant::now() < deadline {
+        if std::fs::read_to_string(path).ok().as_deref() == Some(expected) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::fs::read_to_string(path).ok().as_deref() == Some(expected)
+}
+
 #[test]
 fn foreground_run_shell_releases_the_state_lock() {
     let scratch = Scratch::new("liveness-run-shell");
@@ -117,10 +128,10 @@ fn copy_pipe_child_does_not_block_commands() {
         &command,
     ]);
     assert_responsive(&tm, "copy-pipe child");
-    assert!(wait_for_path(&marker, Duration::from_secs(5)));
-    assert_eq!(
-        std::fs::read_to_string(&marker).expect("copy-pipe output"),
-        "first line"
+    assert!(
+        wait_for_file_contents(&marker, "first line", Duration::from_secs(5)),
+        "copy-pipe output: {:?}",
+        std::fs::read_to_string(&marker)
     );
 }
 

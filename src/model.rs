@@ -555,6 +555,7 @@ pub(crate) struct Pane {
     pub raw_output: Vec<u8>,
     pub output_state: OutputState,
     pub history_floor: usize,
+    pub focused: bool,
     pub options: HashMap<String, String>,
     /// A full split keeps its split-axis size but spans the window on the
     /// perpendicular axis. This is the non-floating geometry used by
@@ -606,6 +607,7 @@ impl Pane {
             raw_output: Vec::new(),
             output_state: OutputState::default(),
             history_floor: 0,
+            focused: false,
             options: HashMap::new(),
             full_axis: None,
         }
@@ -681,6 +683,7 @@ impl Pane {
             raw_output: self.raw_output.clone(),
             output_state: OutputState::default(),
             history_floor: self.history_floor,
+            focused: self.focused,
             options: self.options.clone(),
             full_axis: self.full_axis,
         }
