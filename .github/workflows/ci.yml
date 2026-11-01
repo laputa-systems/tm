@@ -43,6 +43,8 @@ jobs:
         with:
           path: .work/ref
           key: tmux-ref-${{ runner.os }}-${{ hashFiles('tests/support/install-tmux-ref.sh') }}
+      - name: Install tmux reference
+        run: tests/support/install-tmux-ref.sh
       - name: Test
         run: make test
       - name: Parity
