@@ -545,7 +545,8 @@ fn attach_client(
     let mut previous_screen = None;
     let mut last_size = None;
     let mut observed_revision = None;
-    let mut observed_chrome_revision = None;
+    let mut observed_forced_sync_revision = None;
+    let mut observed_chrome = None;
     let mut last_render_at = Instant::now()
         .checked_sub(Duration::from_millis(16))
         .unwrap_or_else(Instant::now);
@@ -589,11 +590,17 @@ fn attach_client(
                 else {
                     break None;
                 };
-                break Some((full_render, render_size, revision, state.chrome_revision));
+                let chrome = state
+                    .clients
+                    .get(&client_id)
+                    .map(|client| client.chrome_observation.clone())
+                    .unwrap_or_default();
+                break Some((full_render, render_size, revision, state.forced_sync_revision, chrome));
             },
             Err(_) => None,
         };
-        let Some((full_render, render_size, render_revision, chrome_revision)) = next_render
+        let Some((full_render, render_size, render_revision, forced_sync_revision, chrome)) =
+            next_render
         else {
             break;
         };
@@ -602,8 +609,10 @@ fn attach_client(
         // mutations intentionally make the next loop produce a follow-up
         // frame.
         observed_revision = Some(render_revision);
-        let chrome_redrawn = observed_chrome_revision != Some(chrome_revision);
-        observed_chrome_revision = Some(chrome_revision);
+        let chrome_redrawn = observed_forced_sync_revision != Some(forced_sync_revision)
+            || observed_chrome.as_ref() != Some(&chrome);
+        observed_forced_sync_revision = Some(forced_sync_revision);
+        observed_chrome = Some(chrome);
         last_render_at = Instant::now();
         if last_size != Some(render_size) {
             terminal = vt100::Parser::new(render_size.rows.max(1), render_size.cols.max(1), 10_000);
@@ -678,7 +687,7 @@ struct ServerState {
     // Monotonic generation for screen-affecting state. Attach clients wait
     // for this to change instead of rebuilding an unchanged frame on a timer.
     render_revision: u64,
-    chrome_revision: u64,
+    forced_sync_revision: u64,
     sessions: Vec<Session>,
     next_session_id: u64,
     next_window_id: u64,
@@ -865,6 +874,7 @@ struct AttachedClient {
     modes: terminal::TerminalModes,
     detach_requested: bool,
     bell_pending: bool,
+    chrome_observation: Vec<u8>,
     clipboard: Option<(Vec<u8>, terminal::ClipboardTerminator)>,
     prefix_pending: bool,
     key_buffer: Vec<u8>,
@@ -1369,7 +1379,7 @@ impl ServerState {
     fn new() -> Self {
         Self {
             render_revision: 0,
-            chrome_revision: 0,
+            forced_sync_revision: 0,
             sessions: Vec::new(),
             next_session_id: 0,
             next_window_id: 0,
@@ -1405,7 +1415,11 @@ impl ServerState {
     }
 
     fn mark_render_dirty(&mut self) {
-        self.chrome_revision = self.render_revision.wrapping_add(1);
+        self.mark_pane_output_dirty();
+    }
+
+    fn mark_forced_sync_dirty(&mut self) {
+        self.forced_sync_revision = self.forced_sync_revision.wrapping_add(1);
         self.mark_pane_output_dirty();
     }
 
@@ -2073,6 +2087,7 @@ impl ServerState {
                 terminal_focused: true,
                 detach_requested: false,
                 bell_pending: false,
+                chrome_observation: Vec::new(),
                 clipboard: None,
                 prefix_pending: false,
                 key_buffer: Vec::new(),
@@ -9042,7 +9057,17 @@ impl ServerState {
                 history_limit,
             );
         }
+        let mut chrome_observation = status_output.clone();
+        for pane in &window.panes {
+            chrome_observation.extend_from_slice(&pane.id.to_le_bytes());
+            for value in [pane.rect.x, pane.rect.y, pane.rect.cols, pane.rect.rows] {
+                chrome_observation.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        chrome_observation.push(u8::from(window.zoomed));
+        let separators_start = output.len();
         render_layout_separators(&mut output, window);
+        chrome_observation.extend_from_slice(&output[separators_start..]);
         if let Some(message) = pane_prompt_message
             && let Some(active) = window
                 .panes
@@ -9123,6 +9148,7 @@ impl ServerState {
                 );
             }
         }
+        let overlay_start = output.len();
         if let Some(tree_mode) = tree_mode.as_ref() {
             render_tree_mode_overlay(&mut output, tree_mode, session.size);
         } else if let Some(buffer_mode) = buffer_mode.as_ref() {
@@ -9131,6 +9157,10 @@ impl ServerState {
             render_client_mode_overlay(&mut output, client_mode, session.size);
         } else if let Some(panes_mode) = panes_mode.as_ref() {
             render_panes_mode_overlay(&mut output, panes_mode, session.size);
+        }
+        chrome_observation.extend_from_slice(&output[overlay_start..]);
+        if let Some(client) = client_id.and_then(|client_id| self.clients.get_mut(&client_id)) {
+            client.chrome_observation = chrome_observation;
         }
         if let Some(end) = sync_end {
             output.extend_from_slice(end);
@@ -12031,7 +12061,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                             }
                             if updated {
                                 if audible_bell || redraws_chrome {
-                                    state.mark_render_dirty();
+                                    state.mark_forced_sync_dirty();
                                 } else {
                                     state.mark_pane_output_dirty();
                                 }

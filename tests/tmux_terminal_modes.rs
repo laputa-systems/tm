@@ -423,6 +423,34 @@ fn redraw_frames_are_bracketed_when_sync_is_present_like_the_reference() {
     }
 }
 
+fn pane_output_bracketed_after_non_chrome_requests(mux: &Mux) -> bool {
+    mux.ok(&[
+        "new-session", "-d", "-s", "S", "-x", "40", "-y", "6", "--", "sh", "-c", UPDATE_PANE,
+    ]);
+    let mut client = RawClient::spawn(mux, "burst", &["attach-session", "-t", "S"], 6, 40);
+    client.wait_for_text("READY", TIMEOUT);
+    client.wait_for_text("(S)", TIMEOUT);
+    client.wait_for_bytes(raw_pty::Mark::default(), SYNC_END, TIMEOUT);
+    let mark = client.mark();
+    mux.ok(&["send-keys", "-t", "S", "go", "Enter"]);
+    for _ in 0..4 {
+        mux.ok(&["display-message", "-p", "-t", "S", "x"]);
+    }
+    client.wait_for_text("UPDATE_ONE", TIMEOUT);
+    let stream = client.bytes_since(mark);
+    assert_eq!(client.detach(), Some(0));
+    frame_brackets(&stream, &[b"UPDATE_ONE"]).updates_inside[0]
+}
+
+#[test]
+fn pane_output_coalesced_with_non_chrome_requests_is_not_bracketed_like_the_reference() {
+    let scratch = Scratch::new("modes-burst");
+    let tm = Mux::tm(&scratch, "tm").with_term("tmux-256color");
+    let reference = Mux::reference(&scratch, "reference").with_term("tmux-256color");
+    assert!(!pane_output_bracketed_after_non_chrome_requests(&reference));
+    assert!(!pane_output_bracketed_after_non_chrome_requests(&tm));
+}
+
 #[test]
 fn terminal_features_lists_as_an_indexed_array_like_the_reference() {
     let scratch = Scratch::new("modes-array-option");
