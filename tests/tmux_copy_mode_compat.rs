@@ -64,7 +64,7 @@ impl Tm {
     fn capture_until(&self, target: &str, expected: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let captured = self.body(&["capture-pane", "-t", target]);
+            let captured = self.body(&["capture-pane", "-p", "-t", target]);
             if captured.contains(expected) || Instant::now() >= deadline {
                 return captured;
             }
@@ -152,7 +152,7 @@ fn copy_mode_source_pane_drives_selection_in_a_different_target_pane_headlessly(
     tm.ok(&["send-keys", "-X", "copy-selection", "-t", "source:0.1"]);
     assert_eq!(tm.body(&["show-buffer"]), "SOURCE LINE");
     assert!(
-        tm.body(&["capture-pane", "-t", "source:0.1"])
+        tm.body(&["capture-pane", "-p", "-t", "source:0.1"])
             .contains("TARGET LINE")
     );
 }

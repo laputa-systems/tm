@@ -57,11 +57,9 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("break-pane" | "breakp") => parse_break_pane(&arguments[index + 1..])?,
         Some("join-pane" | "joinp") => parse_join_pane("join-pane", &arguments[index + 1..])?,
         Some("move-pane" | "movep") => parse_join_pane("move-pane", &arguments[index + 1..])?,
-        Some("respawn-pane" | "respawnp") => parse_respawn(&arguments[index + 1..], false)?,
+        Some("respawn-pane" | "respawnp") => parse_respawn(&arguments[index + 1..])?,
         Some("respawn-window" | "respawnw") => parse_respawn_window(&arguments[index + 1..])?,
-        Some("clear-history" | "clearhist") => InvocationSpec::plain(Request::ClearHistory {
-            target: optional_target(&arguments[index + 1..])?,
-        }),
+        Some("clear-history" | "clearhist") => parse_clear_history(&arguments[index + 1..])?,
         Some("rotate-window" | "rotatew") => parse_rotate_window(&arguments[index + 1..])?,
         Some("swap-window" | "swapw") => parse_swap_window(&arguments[index + 1..])?,
         Some("move-window" | "movew") => parse_move_window(&arguments[index + 1..])?,
@@ -631,80 +629,42 @@ fn parse_kill_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
     }))
 }
 
-fn parse_resize_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut direction = PaneDirection::Right;
-    let mut amount = 1;
-    let mut absolute = None;
-    let mut absolute_percent = false;
-    let mut zoom = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-L" => direction = PaneDirection::Left,
-            "-R" => direction = PaneDirection::Right,
-            "-U" => direction = PaneDirection::Up,
-            "-D" => direction = PaneDirection::Down,
-            "-Z" => zoom = true,
-            "-x" => {
-                index += 1;
-                direction = PaneDirection::Right;
-                let (value, percent) = parse_resize_value(argument(arguments, index, "-x")?)?;
-                absolute = Some(value);
-                absolute_percent = percent;
-            }
-            "-y" => {
-                index += 1;
-                direction = PaneDirection::Down;
-                let (value, percent) = parse_resize_value(argument(arguments, index, "-y")?)?;
-                absolute = Some(value);
-                absolute_percent = percent;
-            }
-            value if value.starts_with("-x") && value.len() > 2 => {
-                direction = PaneDirection::Right;
-                let (value, percent) = parse_resize_value(&value[2..])?;
-                absolute = Some(value);
-                absolute_percent = percent;
-            }
-            value if value.starts_with("-y") && value.len() > 2 => {
-                direction = PaneDirection::Down;
-                let (value, percent) = parse_resize_value(&value[2..])?;
-                absolute = Some(value);
-                absolute_percent = percent;
-            }
-            value if !value.starts_with('-') => {
-                amount = value
-                    .parse::<i32>()
-                    .map_err(|_| "resize-pane count requires an integer".to_owned())?;
-            }
-            value => return Err(format!("unknown resize-pane option: {value}")),
-        }
-        index += 1;
+fn parse_clear_history(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("clear-history", arguments, "Ht:", 0)?;
+    if flags.has('H') {
+        return Err(unsupported_flag("-H", "clear-history"));
     }
-    Ok(InvocationSpec::plain(Request::ResizePane {
-        target,
-        direction,
-        amount,
-        absolute,
-        absolute_percent,
-        zoom,
+    Ok(InvocationSpec::plain(Request::ClearHistory {
+        target: flags.value('t').map(str::to_owned),
     }))
 }
 
-fn parse_resize_value(value: &str) -> Result<(u16, bool), String> {
-    let percent = value.ends_with('%');
-    Ok((
-        value
-            .strip_suffix('%')
-            .unwrap_or(value)
-            .parse::<u16>()
-            .map_err(|_| "resize-pane size requires an integer".to_owned())?,
-        percent,
-    ))
+fn parse_resize_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("resize-pane", arguments, "D::L::MR::Tt:U::x:y:Z", 1)?;
+    for (flag, name) in [('M', "-M"), ('T', "-T")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "resize-pane"));
+        }
+    }
+    let adjustment = |flag: char| {
+        flags.has(flag).then(|| {
+            flags
+                .value(flag)
+                .or_else(|| flags.positional.first().map(String::as_str))
+                .unwrap_or("1")
+                .to_owned()
+        })
+    };
+    Ok(InvocationSpec::plain(Request::ResizePane {
+        target: flags.value('t').map(str::to_owned),
+        width: flags.value('x').map(str::to_owned),
+        height: flags.value('y').map(str::to_owned),
+        up: adjustment('U'),
+        down: adjustment('D'),
+        left: adjustment('L'),
+        right: adjustment('R'),
+        zoom: flags.has('Z'),
+    }))
 }
 
 fn parse_swap_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -770,43 +730,20 @@ fn parse_join_pane(command: &str, arguments: &[String]) -> Result<InvocationSpec
     }))
 }
 
-fn parse_respawn(arguments: &[String], window: bool) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut cwd = None;
-    let mut kill = false;
-    let mut empty = false;
-    let (command, _) = parse_common_tail(arguments, |flag, value| match flag {
-        "-t" => {
-            target = Some(value.to_owned());
-            Ok(())
+fn parse_respawn(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("respawn-pane", arguments, "c:e:Ekt:", usize::MAX)?;
+    for (flag, name) in [('e', "-e"), ('E', "-E")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "respawn-pane"));
         }
-        "-c" => {
-            cwd = Some(value.to_owned());
-            Ok(())
-        }
-        "-k" => {
-            kill = true;
-            Ok(())
-        }
-        "-d" => Ok(()),
-        "-E" => {
-            empty = true;
-            Ok(())
-        }
-        other => Err(format!("unknown respawn option: {other}")),
-    })?;
-    let (command, empty) = if command.len() == 1 && command[0].is_empty() {
-        (Vec::new(), true)
-    } else {
-        (command, empty)
-    };
+    }
     Ok(InvocationSpec::plain(Request::RespawnPane {
-        target,
-        command,
-        cwd,
-        kill,
-        empty,
-        window,
+        target: flags.value('t').map(str::to_owned),
+        command: flags.positional.to_vec(),
+        cwd: flags.value('c').map(str::to_owned),
+        kill: flags.has('k'),
+        empty: false,
+        window: false,
     }))
 }
 
@@ -983,70 +920,23 @@ fn parse_copy_mode(arguments: &[String], mut page: bool) -> Result<InvocationSpe
 }
 
 fn parse_display_panes(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut source = None;
-    let mut no_zoom = false;
-    let mut no_mode = false;
-    let mut kill_on_exit = false;
-    let mut command = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            "-Z" => no_zoom = true,
-            "-k" => kill_on_exit = true,
-            "-N" => no_mode = true,
-            "-Nd" => {
-                no_mode = true;
-                if arguments
-                    .get(index + 1)
-                    .is_some_and(|value| !value.starts_with('-'))
-                {
-                    index += 1;
-                }
-            }
-            "-Zd" => {
-                no_zoom = true;
-                if arguments
-                    .get(index + 1)
-                    .is_some_and(|value| !value.starts_with('-'))
-                {
-                    index += 1;
-                }
-            }
-            "-d" => {
-                if arguments
-                    .get(index + 1)
-                    .is_some_and(|value| !value.starts_with('-'))
-                {
-                    index += 1;
-                }
-            }
-            value if value.starts_with("-d") && value.len() > 2 => {}
-            value if value.starts_with('-') => {
-                return Err(format!("unknown display-panes option: {value}"));
-            }
-            _ => {
-                command.extend_from_slice(&arguments[index..]);
-                break;
-            }
+    let flags = scan_flags("display-panes", arguments, "d:kNs:t:Z", 1)?;
+    for (flag, name) in [('d', "-d"), ('k', "-k"), ('N', "-N"), ('s', "-s"), ('Z', "-Z")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "display-panes"));
         }
-        index += 1;
     }
     Ok(InvocationSpec::plain(Request::DisplayPanes {
-        target,
-        source,
-        no_zoom,
-        no_mode,
-        command,
-        kill_on_exit,
+        target: flags.value('t').map(str::to_owned),
+        source: None,
+        no_zoom: false,
+        no_mode: false,
+        command: flags
+            .positional
+            .first()
+            .map(|template| crate::config::tokenize(template))
+            .unwrap_or_default(),
+        kill_on_exit: false,
     }))
 }
 
@@ -1198,71 +1088,48 @@ fn parse_choose_list_options(
 }
 
 fn parse_capture_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut start = None;
-    let mut end = None;
-    let mut escape = false;
-    let mut join = false;
-    let mut preserve_trailing = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-p" => {}
-            "-e" => escape = true,
-            "-J" => join = true,
-            "-N" => preserve_trailing = true,
-            "-H" => {}
-            "-S" => {
-                index += 1;
-                start = Some(parse_capture_offset(argument(arguments, index, "-S")?)?);
-            }
-            "-E" => {
-                index += 1;
-                end = Some(parse_capture_offset(argument(arguments, index, "-E")?)?);
-            }
-            value if value.starts_with("-S") && value.len() > 2 => {
-                start = Some(parse_capture_offset(&value[2..])?);
-            }
-            value if value.starts_with("-E") && value.len() > 2 => {
-                end = Some(parse_capture_offset(&value[2..])?);
-            }
-            value if value.starts_with("-p") && value.len() > 2 => {
-                for flag in value[2..].chars() {
-                    match flag {
-                        'e' => escape = true,
-                        'J' => join = true,
-                        'N' => preserve_trailing = true,
-                        'H' => {}
-                        'p' => {}
-                        other => return Err(format!("unknown capture-pane option: -{other}")),
-                    }
-                }
-            }
-            value => return Err(format!("unknown capture-pane option: {value}")),
+    let flags = scan_flags("capture-pane", arguments, "ab:CeE:FHIJLMNpPqRS:Tt:", 0)?;
+    for (flag, name) in [
+        ('a', "-a"),
+        ('C', "-C"),
+        ('F', "-F"),
+        ('H', "-H"),
+        ('I', "-I"),
+        ('L', "-L"),
+        ('M', "-M"),
+        ('P', "-P"),
+        ('q', "-q"),
+        ('R', "-R"),
+        ('T', "-T"),
+    ] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "capture-pane"));
         }
-        index += 1;
     }
+    let print = flags.has('p');
     Ok(InvocationSpec::plain(Request::CapturePane {
-        target,
-        start,
-        end,
-        escape,
-        join,
-        preserve_trailing,
+        target: flags.value('t').map(str::to_owned),
+        start: flags.value('S').and_then(parse_capture_offset),
+        end: flags.value('E').and_then(parse_capture_offset),
+        escape: flags.has('e'),
+        join: flags.has('J'),
+        preserve_trailing: flags.has('N'),
+        print,
+        buffer: flags
+            .value('b')
+            .filter(|_| !print)
+            .map(str::to_owned),
     }))
 }
 
-fn parse_capture_offset(value: &str) -> Result<i32, String> {
+fn parse_capture_offset(value: &str) -> Option<i32> {
     if value == "-" {
-        return Ok(i32::MIN);
+        return Some(i32::MIN);
     }
     value
         .parse::<i32>()
-        .map_err(|_| "capture-pane offset requires an integer".to_owned())
+        .ok()
+        .filter(|offset| *offset <= i32::from(i16::MAX))
 }
 
 fn parse_display_message(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -1727,65 +1594,15 @@ fn parse_show_environment(arguments: &[String]) -> Result<InvocationSpec, String
 }
 
 fn parse_pipe_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut toggle = false;
-    let mut command = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-o" => toggle = true,
-            "-I" | "-O" => {}
-            "--" => {
-                command = arguments.get(index + 1).cloned();
-                break;
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown pipe-pane option: {value}"));
-            }
-            value => command = Some(value.to_owned()),
-        }
-        index += 1;
+    let flags = scan_flags("pipe-pane", arguments, "IOot:", 1)?;
+    if flags.has('I') {
+        return Err(unsupported_flag("-I", "pipe-pane"));
     }
     Ok(InvocationSpec::plain(Request::PipePane {
-        target,
-        command,
-        toggle,
+        target: flags.value('t').map(str::to_owned),
+        command: flags.positional.first().cloned(),
+        toggle: flags.has('o'),
     }))
-}
-
-fn parse_common_tail<F>(arguments: &[String], mut option: F) -> Result<(Vec<String>, bool), String>
-where
-    F: FnMut(&str, &str) -> Result<(), String>,
-{
-    let mut command = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        let value = &arguments[index];
-        if value == "--" {
-            command.extend_from_slice(&arguments[index + 1..]);
-            return Ok((command, true));
-        }
-        if matches!(
-            value.as_str(),
-            "-d" | "-h" | "-v" | "-b" | "-f" | "-k" | "-E" | "-P" | "-a" | "-S"
-        ) {
-            option(value, "")?;
-        } else if matches!(value.as_str(), "-t" | "-n" | "-c" | "-l" | "-F" | "-I") {
-            index += 1;
-            option(value, argument(arguments, index, value)?)?;
-        } else if value.starts_with('-') {
-            return Err(format!("unknown option: {value}"));
-        } else {
-            command.extend_from_slice(&arguments[index..]);
-            return Ok((command, false));
-        }
-        index += 1;
-    }
-    Ok((command, false))
 }
 
 fn target_and_name(command: &str, arguments: &[String]) -> Result<(Option<String>, String), String> {
@@ -1811,26 +1628,6 @@ fn parse_send_prefix(arguments: &[String]) -> Result<InvocationSpec, String> {
         index += 1;
     }
     Ok(InvocationSpec::plain(Request::SendPrefix { target }))
-}
-
-fn optional_target(arguments: &[String]) -> Result<Option<String>, String> {
-    let mut target = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "--" => break,
-            value if value.starts_with('-') => {
-                return Err(format!("unknown target option: {value}"));
-            }
-            value => target = Some(value.to_owned()),
-        }
-        index += 1;
-    }
-    Ok(target)
 }
 
 pub(crate) fn unsupported_flag(flag: &str, command: &str) -> String {
@@ -1884,8 +1681,23 @@ fn scan_flags<'a>(
                 found.push((flag, None));
                 continue;
             }
+            let optional = accepted
+                .find(flag)
+                .is_some_and(|at| accepted[at + flag.len_utf8()..].starts_with("::"));
             let attached = &letters[offset + flag.len_utf8()..];
             let value = if attached.is_empty() {
+                if optional
+                    && arguments.get(index).is_none_or(|next| {
+                        let mut bytes = next.bytes();
+                        bytes.next() == Some(b'-')
+                            && bytes.next().is_some_and(|second| {
+                                second == b'-' || second.is_ascii_alphabetic()
+                            })
+                    })
+                {
+                    found.push((flag, None));
+                    break;
+                }
                 let value = arguments
                     .get(index)
                     .ok_or_else(|| format!("command {command}: -{flag} expects an argument"))?;
@@ -2148,33 +1960,21 @@ mod tests {
     }
 
     #[test]
-    fn display_panes_parses_target_source_zoom_and_selection_command() {
+    fn display_panes_takes_a_target_and_one_template_string() {
         let invocation = parse(&[
             "display-panes".to_owned(),
-            "-k".to_owned(),
-            "-Z".to_owned(),
             "-t".to_owned(),
             "%3".to_owned(),
-            "-s".to_owned(),
-            "work:1".to_owned(),
-            "set-option".to_owned(),
-            "-g".to_owned(),
-            "@picked".to_owned(),
-            "%%".to_owned(),
+            "set-option -g @picked %%".to_owned(),
         ])
         .expect("display-panes");
         assert!(matches!(
             invocation.request,
             Request::DisplayPanes {
                 target: Some(target),
-                source: Some(source),
-                no_zoom: true,
-                no_mode: false,
                 command,
-                kill_on_exit: true,
-            } if target == "%3"
-                && source == "work:1"
-                && command == ["set-option", "-g", "@picked", "%%"]
+                ..
+            } if target == "%3" && command == ["set-option", "-g", "@picked", "%%"]
         ));
     }
 
@@ -2221,29 +2021,6 @@ mod tests {
                 scroll_to_mouse: true,
                 ..
             }
-        ));
-    }
-
-    #[test]
-    fn display_panes_accepts_tmux_combined_delay_flags() {
-        let invocation = parse(&[
-            "display-panes".to_owned(),
-            "-Nd".to_owned(),
-            "500".to_owned(),
-            "set-option".to_owned(),
-            "-g".to_owned(),
-            "@after".to_owned(),
-            "fast".to_owned(),
-        ])
-        .expect("combined display-panes flags");
-        assert!(matches!(
-            invocation.request,
-            Request::DisplayPanes {
-                no_zoom: false,
-                no_mode: true,
-                command,
-                ..
-            } if command == ["set-option", "-g", "@after", "fast"]
         ));
     }
 }

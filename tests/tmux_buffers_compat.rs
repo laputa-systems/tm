@@ -48,7 +48,7 @@ impl Tm {
     fn capture_until(&self, target: &str, expected: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let captured = self.body(&["capture-pane", "-t", target]);
+            let captured = self.body(&["capture-pane", "-p", "-t", target]);
             if captured.contains(expected) || Instant::now() >= deadline {
                 return captured;
             }

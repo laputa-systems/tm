@@ -31,7 +31,7 @@ fn run(socket: &str, arguments: &[&str]) -> Output {
 fn capture_until(socket: &str, target: &str, marker: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let output = run(socket, &["capture-pane", "-t", target]);
+        let output = run(socket, &["capture-pane", "-p", "-t", target]);
         let captured = String::from_utf8_lossy(&output.stdout).into_owned();
         if captured.contains(marker) || Instant::now() >= deadline {
             return captured;
@@ -71,13 +71,13 @@ fn core_session_pane_and_pty_lifecycle_survives_the_daemon_boundary() {
         String::from_utf8_lossy(&created.stderr)
     );
 
-    let mut captured = run(&socket, &["capture-pane", "-t", "smoke"]);
+    let mut captured = run(&socket, &["capture-pane", "-p", "-t", "smoke"]);
     for _ in 0..50 {
         if String::from_utf8_lossy(&captured.stdout).contains("ready") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
-        captured = run(&socket, &["capture-pane", "-t", "smoke"]);
+        captured = run(&socket, &["capture-pane", "-p", "-t", "smoke"]);
     }
     assert!(captured.status.success());
     assert!(String::from_utf8_lossy(&captured.stdout).contains("ready"));

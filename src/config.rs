@@ -374,7 +374,7 @@ fn split_commands(line: &str) -> Vec<String> {
     output
 }
 
-fn tokenize(command: &str) -> Vec<String> {
+pub(crate) fn tokenize(command: &str) -> Vec<String> {
     let mut output = Vec::new();
     let mut current = String::new();
     let mut quote = None;

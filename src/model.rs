@@ -50,6 +50,12 @@ pub(crate) struct LayoutSeparator {
     pub coordinate: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EdgeMove {
+    By(i32),
+    To(u16),
+}
+
 /// A small layout tree. A split owns the separator cell, which keeps panes
 /// from painting over one another and makes geometry changes deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,14 +103,7 @@ impl Layout {
         }
     }
 
-    pub(crate) fn resize(
-        &mut self,
-        rect: Rect,
-        target: u64,
-        axis: Axis,
-        delta: i32,
-        absolute: Option<u16>,
-    ) -> bool {
+    pub(crate) fn resize(&mut self, rect: Rect, target: u64, axis: Axis, change: EdgeMove) -> bool {
         let Self::Split {
             axis: split_axis,
             first,
@@ -118,57 +117,75 @@ impl Layout {
             Axis::Horizontal => rect.cols.saturating_sub(1),
             Axis::Vertical => rect.rows.saturating_sub(1),
         };
-        let default_first = available.saturating_add(1) / 2;
-        let current_first = first_size.unwrap_or(default_first).min(available);
-        let first_rect = match split_axis {
-            Axis::Horizontal => Rect {
-                cols: current_first,
-                ..rect
-            },
-            Axis::Vertical => Rect {
-                rows: current_first,
-                ..rect
-            },
+        let current_first = first_size.unwrap_or(available.saturating_add(1) / 2).min(available);
+        let target_in_first = first.contains(target);
+        if !target_in_first && !second.contains(target) {
+            return false;
+        }
+        let (first_rect, second_rect) = match split_axis {
+            Axis::Horizontal => (
+                Rect {
+                    cols: current_first,
+                    ..rect
+                },
+                Rect {
+                    x: rect.x.saturating_add(current_first).saturating_add(1),
+                    cols: available.saturating_sub(current_first),
+                    ..rect
+                },
+            ),
+            Axis::Vertical => (
+                Rect {
+                    rows: current_first,
+                    ..rect
+                },
+                Rect {
+                    y: rect.y.saturating_add(current_first).saturating_add(1),
+                    rows: available.saturating_sub(current_first),
+                    ..rect
+                },
+            ),
         };
-        let second_rect = match split_axis {
-            Axis::Horizontal => Rect {
-                x: rect.x.saturating_add(current_first).saturating_add(1),
-                cols: available.saturating_sub(current_first),
-                ..rect
-            },
-            Axis::Vertical => Rect {
-                y: rect.y.saturating_add(current_first).saturating_add(1),
-                rows: available.saturating_sub(current_first),
-                ..rect
-            },
-        };
-        if first.contains(target) {
-            if *split_axis == axis {
-                let desired = absolute.unwrap_or_else(|| {
-                    current_first
-                        .saturating_add_signed(delta as i16)
-                        .min(available)
-                });
-                *first_size = Some(desired.min(available));
-                true
-            } else {
-                first.resize(first_rect, target, axis, delta, absolute)
-            }
-        } else if second.contains(target) {
-            if *split_axis == axis {
-                let second_current = available.saturating_sub(current_first);
-                let desired_second = absolute.unwrap_or_else(|| {
-                    second_current
-                        .saturating_add_signed(delta as i16)
-                        .min(available)
-                });
-                *first_size = Some(available.saturating_sub(desired_second.min(available)));
-                true
-            } else {
-                second.resize(second_rect, target, axis, delta, absolute)
-            }
+        let nested = if target_in_first {
+            first.resize(first_rect, target, axis, change)
         } else {
-            false
+            second.resize(second_rect, target, axis, change)
+        };
+        if nested {
+            return true;
+        }
+        if *split_axis != axis {
+            return false;
+        }
+        let wanted = match change {
+            EdgeMove::By(amount) => i64::from(current_first) + i64::from(amount),
+            EdgeMove::To(size) if target_in_first => i64::from(size),
+            EdgeMove::To(size) => i64::from(available) - i64::from(size),
+        };
+        let floor = i64::from(first.minimum_extent(axis));
+        let ceiling = i64::from(available) - i64::from(second.minimum_extent(axis));
+        if floor <= ceiling {
+            let bounded = wanted.clamp(floor, ceiling).clamp(0, i64::from(u16::MAX));
+            *first_size = Some(bounded as u16);
+        }
+        true
+    }
+
+    fn minimum_extent(&self, axis: Axis) -> u16 {
+        match self {
+            Self::Leaf(_) => 1,
+            Self::Split {
+                axis: split_axis,
+                first,
+                second,
+                ..
+            } if *split_axis == axis => first
+                .minimum_extent(axis)
+                .saturating_add(second.minimum_extent(axis))
+                .saturating_add(1),
+            Self::Split { first, second, .. } => {
+                first.minimum_extent(axis).max(second.minimum_extent(axis))
+            }
         }
     }
 

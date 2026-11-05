@@ -100,7 +100,7 @@ fn nonreading_pipe_pane_does_not_block_commands() {
     let scratch = Scratch::new("liveness-pipe");
     let tm = Mux::tm(&scratch, "tm");
     create_session(&tm, "S", "read line; yes X | head -c 3000000; sleep 30");
-    tm.ok(&["pipe-pane", "-t", "S", "--", "sh", "-c", "sleep 30"]);
+    tm.ok(&["pipe-pane", "-t", "S", "--", "sleep 30"]);
     tm.ok(&["send-keys", "-t", "S", "go", "Enter"]);
     std::thread::sleep(Duration::from_millis(300));
     assert_responsive(&tm, "nonreading pipe-pane");

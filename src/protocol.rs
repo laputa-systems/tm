@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0005;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0006;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -123,6 +123,8 @@ pub(crate) enum Request {
         escape: bool,
         join: bool,
         preserve_trailing: bool,
+        print: bool,
+        buffer: Option<String>,
     },
     KillServer,
     CopyMode {
@@ -219,10 +221,12 @@ pub(crate) enum Request {
     },
     ResizePane {
         target: Option<String>,
-        direction: PaneDirection,
-        amount: i32,
-        absolute: Option<u16>,
-        absolute_percent: bool,
+        width: Option<String>,
+        height: Option<String>,
+        up: Option<String>,
+        down: Option<String>,
+        left: Option<String>,
+        right: Option<String>,
         zoom: bool,
     },
     SwapPane {
@@ -605,6 +609,8 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             escape,
             join,
             preserve_trailing,
+            print,
+            buffer,
         } => {
             payload.push(19);
             put_optional_string(&mut payload, target);
@@ -613,6 +619,8 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_bool(&mut payload, *escape);
             put_bool(&mut payload, *join);
             put_bool(&mut payload, *preserve_trailing);
+            put_bool(&mut payload, *print);
+            put_optional_string(&mut payload, buffer);
         }
         Request::KillServer => payload.push(20),
         Request::CopyMode {
@@ -734,18 +742,22 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
         }
         Request::ResizePane {
             target,
-            direction,
-            amount,
-            absolute,
-            absolute_percent,
+            width,
+            height,
+            up,
+            down,
+            left,
+            right,
             zoom,
         } => {
             payload.push(33);
             put_optional_string(&mut payload, target);
-            payload.push(direction_code(*direction));
-            payload.extend_from_slice(&amount.to_le_bytes());
-            put_optional_u16(&mut payload, *absolute);
-            put_bool(&mut payload, *absolute_percent);
+            put_optional_string(&mut payload, width);
+            put_optional_string(&mut payload, height);
+            put_optional_string(&mut payload, up);
+            put_optional_string(&mut payload, down);
+            put_optional_string(&mut payload, left);
+            put_optional_string(&mut payload, right);
             put_bool(&mut payload, *zoom);
         }
         Request::SwapPane {
@@ -1137,6 +1149,8 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
             escape: decoder.bool()?,
             join: decoder.bool()?,
             preserve_trailing: decoder.bool()?,
+            print: decoder.bool()?,
+            buffer: decoder.optional_string()?,
         },
         20 => Request::KillServer,
         21 => Request::CopyMode {
@@ -1210,15 +1224,12 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         33 => Request::ResizePane {
             target: decoder.optional_string()?,
-            direction: decode_direction(decoder.byte()?)?,
-            amount: i32::from_le_bytes([
-                decoder.byte()?,
-                decoder.byte()?,
-                decoder.byte()?,
-                decoder.byte()?,
-            ]),
-            absolute: decoder.optional_u16()?,
-            absolute_percent: decoder.bool()?,
+            width: decoder.optional_string()?,
+            height: decoder.optional_string()?,
+            up: decoder.optional_string()?,
+            down: decoder.optional_string()?,
+            left: decoder.optional_string()?,
+            right: decoder.optional_string()?,
             zoom: decoder.bool()?,
         },
         34 => Request::SwapPane {
@@ -1513,16 +1524,6 @@ fn put_optional_i32(output: &mut Vec<u8>, value: Option<i32>) {
     }
 }
 
-fn put_optional_u16(output: &mut Vec<u8>, value: Option<u16>) {
-    match value {
-        Some(value) => {
-            put_bool(output, true);
-            output.extend_from_slice(&value.to_le_bytes());
-        }
-        None => put_bool(output, false),
-    }
-}
-
 fn put_size(output: &mut Vec<u8>, size: Size) {
     output.extend_from_slice(&size.cols.to_le_bytes());
     output.extend_from_slice(&size.rows.to_le_bytes());
@@ -1681,13 +1682,6 @@ impl<'a> Decoder<'a> {
             self.byte()?,
             self.byte()?,
         ])))
-    }
-
-    fn optional_u16(&mut self) -> io::Result<Option<u16>> {
-        if !self.bool()? {
-            return Ok(None);
-        }
-        Ok(Some(self.u16()?))
     }
 
     fn finish(&self) -> io::Result<()> {
@@ -1935,7 +1929,6 @@ mod tests {
         fn number(&mut self) -> u32;
         fn signed(&mut self) -> i32;
         fn opt_signed(&mut self) -> Option<i32>;
-        fn opt_small(&mut self) -> Option<u16>;
         fn size(&mut self) -> Size;
         fn direction(&mut self) -> PaneDirection;
         fn opt_direction(&mut self) -> Option<PaneDirection>;
@@ -2022,10 +2015,6 @@ mod tests {
         fn opt_signed(&mut self) -> Option<i32> {
             self.toggle().then(|| self.signed())
         }
-        fn opt_small(&mut self) -> Option<u16> {
-            self.calls += 1;
-            self.toggle().then_some(0x0102 + self.calls as u16)
-        }
         fn size(&mut self) -> Size {
             Size::new(80, 24)
         }
@@ -2095,9 +2084,6 @@ mod tests {
         }
         fn opt_signed(&mut self) -> Option<i32> {
             self.flag().then(|| self.signed())
-        }
-        fn opt_small(&mut self) -> Option<u16> {
-            self.flag().then(|| self.next() as u16)
         }
         fn size(&mut self) -> Size {
             Size::new(self.next() as u16, self.next() as u16)
@@ -2236,6 +2222,8 @@ mod tests {
                 escape: source.flag(),
                 join: source.flag(),
                 preserve_trailing: source.flag(),
+                print: source.flag(),
+                buffer: source.opt_text(),
         },
         21 => Request::KillServer,
         22 => Request::CopyMode {
@@ -2332,10 +2320,12 @@ mod tests {
         },
         37 => Request::ResizePane {
                 target: source.opt_text(),
-                direction: source.direction(),
-                amount: source.signed(),
-                absolute: source.opt_small(),
-                absolute_percent: source.flag(),
+                width: source.opt_text(),
+                height: source.opt_text(),
+                up: source.opt_text(),
+                down: source.opt_text(),
+                left: source.opt_text(),
+                right: source.opt_text(),
                 zoom: source.flag(),
         },
         38 => Request::SwapPane {
@@ -2549,7 +2539,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0005;
+    const GOLDEN_VERSION: u32 = 0x544d_0006;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2572,7 +2562,7 @@ mod tests {
         "1000000011010200000074320001020000007435",
         "100000001201020000007432030000000003ff01",
         "080000002a01020000007432",
-        "1100000013010200000074320001fbffffff000101",
+        "1a00000013010200000074320001fbffffff000101000103000000743131",
         "0100000014",
         "110000001501020000007432000101000101000101",
         "12000000160102000000743202000000743304000001",
@@ -2589,7 +2579,7 @@ mod tests {
         "0f0000001e01020000007432030000000003ff",
         "0a0000001f010200000074320001",
         "170000002001020000007432010102000000743502000000743601",
-        "10000000210102000000743204fcffffff000101",
+        "2200000021010200000074320001020000007435000102000000743800010300000074313100",
         "0c000000220102000000743200010600",
         "18000000230102000000743200010200000074350001020000007438",
         "140000002401020000007432000101000102000000743800",

@@ -56,7 +56,7 @@ impl Tm {
     }
 
     fn capture(&self, target: &str) -> String {
-        self.ok(&["capture-pane", "-t", target])
+        self.ok(&["capture-pane", "-p", "-t", target])
     }
 
     fn capture_until_contains(&self, target: &str, expected: &str) -> String {
@@ -1632,18 +1632,6 @@ fn empty_panes_never_spawn_or_accept_pty_input_headlessly() {
         .trim()
         .to_owned();
     assert!(split_empty.is_empty());
-
-    tm.ok(&["respawn-pane", "-k", "-E", "-t", "empty:blank.1"]);
-    assert_eq!(
-        tm.ok(&[
-            "display-message",
-            "-p",
-            "-t",
-            "empty:blank.1",
-            "#{pane_dead}:#{pane_pid}",
-        ]),
-        "0:\n"
-    );
 }
 
 #[test]

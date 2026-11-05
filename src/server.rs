@@ -23,7 +23,7 @@ use crate::copy_mode::{
     scrollbar_geometry_for, scrollbar_hit_for,
 };
 use crate::cells::display_column_to_char_index;
-use crate::model::{Axis, CopySource, Pane, Rect, Session, Size, Window};
+use crate::model::{Axis, CopySource, EdgeMove, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
     ClientMessage, OptionScope, PROTOCOL_VERSION, PaneDirection, PaneListScope, Request,
     ServerMessage, WindowStep,
@@ -6969,18 +6969,24 @@ impl ServerState {
         command: Option<&str>,
         toggle: bool,
     ) -> CommandResult {
-        let (_, _, pane_id) = self.resolve_pane_target(target)?;
-        if toggle || command.is_none() {
-            self.pane_pipes.remove(&pane_id);
-            if toggle || command.is_none() {
-                return Ok(String::new());
-            }
+        let (session_index, window_index, pane_id) = self.resolve_pane_target(target)?;
+        if self.find_pane_mut(pane_id).is_some_and(|pane| pane.dead) {
+            return Err("target pane has exited".to_owned());
         }
-        let command = command.ok_or_else(|| "pipe-pane requires a shell command".to_owned())?;
-        self.pane_pipes.remove(&pane_id);
+        let had_pipe = self
+            .pane_pipes
+            .remove(&pane_id)
+            .is_some_and(|pipe| pipe.open.load(std::sync::atomic::Ordering::Acquire));
+        let Some(command) = command.filter(|command| !command.is_empty()) else {
+            return Ok(String::new());
+        };
+        if toggle && had_pipe {
+            return Ok(String::new());
+        }
+        let command = self.render_pane(session_index, window_index, pane_id, command)?;
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg(command)
+            .arg(&command)
             .envs(self.environment.iter())
             .stdin(Stdio::piped())
             .spawn()
@@ -8157,59 +8163,79 @@ impl ServerState {
         Ok(String::new())
     }
 
-    fn resize_pane(
-        &mut self,
-        target: Option<&str>,
-        direction: PaneDirection,
-        amount: i32,
-        absolute: Option<u16>,
-        absolute_percent: bool,
-        zoom: bool,
-    ) -> CommandResult {
+    fn resize_pane(&mut self, target: Option<&str>, resize: PaneResize) -> CommandResult {
         let (session_index, window_index, pane_id) = self.resolve_pane_target(target)?;
         let session_id = self.sessions[session_index].id;
-        if zoom {
+        if resize.zoom {
             let window = &mut self.sessions[session_index].windows[window_index];
-            window.zoomed = !window.zoomed;
+            if window.zoomed {
+                window.zoomed = false;
+            } else {
+                if window.active_pane != pane_id {
+                    window.last_pane = Some(window.active_pane);
+                    window.activate_pane(pane_id);
+                }
+                window.zoomed = true;
+            }
             self.reflow_session(session_id);
             self.sync_group_windows(session_index);
             return Ok(String::new());
         }
-        let window_size = self.sessions[session_index].windows[window_index].size;
-        let absolute = absolute.map(|value| {
-            if !absolute_percent {
-                return value;
-            }
-            let extent = match direction {
-                PaneDirection::Left | PaneDirection::Right => window_size.cols,
-                PaneDirection::Up | PaneDirection::Down => window_size.rows,
-                _ => 0,
-            };
-            (u32::from(extent).saturating_mul(u32::from(value)) / 100) as u16
-        });
-        let axis = match direction {
-            PaneDirection::Left | PaneDirection::Right => Axis::Horizontal,
-            PaneDirection::Up | PaneDirection::Down => Axis::Vertical,
-            _ => return Err("resize-pane requires a directional option".to_owned()),
-        };
-        let signed_amount = match direction {
-            PaneDirection::Left | PaneDirection::Up => -amount.abs(),
-            PaneDirection::Right | PaneDirection::Down => amount.abs(),
-            _ => amount,
-        };
         let window = &mut self.sessions[session_index].windows[window_index];
-        if !window.layout.resize(
-            window.layout_rect(),
-            pane_id,
-            axis,
-            signed_amount,
-            absolute,
-        ) {
-            return Err("unable to resize pane".to_owned());
+        if window.zoomed {
+            window.zoomed = false;
+            self.reflow_session(session_id);
+        }
+        let window = &mut self.sessions[session_index].windows[window_index];
+        let extent = window.layout_rect();
+        let mut result = Ok(String::new());
+        'resize: {
+            for (axis, label, value, window_extent) in [
+                (Axis::Horizontal, "width", &resize.width, extent.cols),
+                (Axis::Vertical, "height", &resize.height, extent.rows),
+            ] {
+                let Some(value) = value else { continue };
+                match parse_percentage(value, 0, 10_000, i64::from(window_extent)) {
+                    Ok(size) => {
+                        window.layout.resize(
+                            window.layout_rect(),
+                            pane_id,
+                            axis,
+                            EdgeMove::To(size as u16),
+                        );
+                    }
+                    Err(cause) => {
+                        result = Err(format!("{label} {cause}"));
+                        break 'resize;
+                    }
+                }
+            }
+            for (axis, sign, value) in [
+                (Axis::Vertical, -1, &resize.up),
+                (Axis::Vertical, 1, &resize.down),
+                (Axis::Horizontal, -1, &resize.left),
+                (Axis::Horizontal, 1, &resize.right),
+            ] {
+                let Some(value) = value else { continue };
+                match parse_number(value, i64::from(i32::MIN), i64::from(i32::MAX)) {
+                    Ok(adjust) => {
+                        window.layout.resize(
+                            window.layout_rect(),
+                            pane_id,
+                            axis,
+                            EdgeMove::By((adjust * sign) as i32),
+                        );
+                    }
+                    Err(cause) => {
+                        result = Err(format!("adjustment {cause}"));
+                        break 'resize;
+                    }
+                }
+            }
         }
         self.reflow_session(session_id);
         self.sync_group_windows(session_index);
-        Ok(String::new())
+        result
     }
 
     fn resize_mouse_separator(&mut self, session_id: u64, resize: MouseResize, first_size: u16) {
@@ -8914,8 +8940,9 @@ impl ServerState {
                 }
             },
         );
-        let first = first.min(base.saturating_add(live_rows));
-        let last = last.min(base.saturating_add(live_rows).saturating_sub(1));
+        let final_row = base.saturating_add(live_rows).saturating_sub(1);
+        let (first, last) = (first.min(final_row), last.min(final_row));
+        let (first, last) = (first.min(last), first.max(last));
         let count = last.saturating_sub(first).saturating_add(1);
         let mut output = Vec::new();
         if escape || join || preserve_trailing {
@@ -11482,6 +11509,49 @@ fn parse_copy_line_number_mode(value: &str) -> CopyLineNumberMode {
     }
 }
 
+struct PaneResize {
+    width: Option<String>,
+    height: Option<String>,
+    up: Option<String>,
+    down: Option<String>,
+    left: Option<String>,
+    right: Option<String>,
+    zoom: bool,
+}
+
+fn parse_number(value: &str, minimum: i64, maximum: i64) -> Result<i64, &'static str> {
+    let number = value.parse::<i64>().map_err(|_| "invalid")?;
+    if number < minimum {
+        Err("too small")
+    } else if number > maximum {
+        Err("too large")
+    } else {
+        Ok(number)
+    }
+}
+
+fn parse_percentage(
+    value: &str,
+    minimum: i64,
+    maximum: i64,
+    current: i64,
+) -> Result<i64, &'static str> {
+    if value.is_empty() {
+        return Err("empty");
+    }
+    let Some(percent) = value.strip_suffix('%') else {
+        return parse_number(value, minimum, maximum);
+    };
+    let scaled = current * parse_number(percent, 0, 1000)? / 100;
+    if scaled < minimum {
+        Err("too small")
+    } else if scaled > maximum {
+        Err("too large")
+    } else {
+        Ok(scaled)
+    }
+}
+
 fn capture_absolute_offset(offset: i32, history_rows: usize) -> usize {
     if offset < 0 {
         history_rows.saturating_sub(offset.unsigned_abs() as usize)
@@ -11805,18 +11875,24 @@ fn execute_request_inner(
         } => state.kill_pane(target.as_deref(), all, filter.as_deref()),
         Request::ResizePane {
             target,
-            direction,
-            amount,
-            absolute,
-            absolute_percent,
+            width,
+            height,
+            up,
+            down,
+            left,
+            right,
             zoom,
         } => state.resize_pane(
             target.as_deref(),
-            direction,
-            amount,
-            absolute,
-            absolute_percent,
-            zoom,
+            PaneResize {
+                width,
+                height,
+                up,
+                down,
+                left,
+                right,
+                zoom,
+            },
         ),
         Request::SwapPane {
             source,
@@ -11874,6 +11950,7 @@ fn execute_request_inner(
         ),
         Request::ClearHistory { target } => {
             let (_, _, pane_id) = state.resolve_pane_target(target.as_deref())?;
+            let history_limit = state.history_limit;
             let pane = state
                 .find_pane_mut(pane_id)
                 .ok_or_else(|| "target pane no longer exists".to_owned())?;
@@ -11886,6 +11963,10 @@ fn execute_request_inner(
             // later copy/format paths must reconstruct the same visible state
             // (including cursor and terminal modes) as the live parser.
             checkpoint_raw_output(pane);
+            let (rows, cols) = pane.parser.screen().size();
+            let mut parser = Parser::new(rows, cols, history_limit);
+            terminal::replay(&mut parser, &pane.raw_output);
+            pane.parser = parser;
             pane.copy_mode = None;
             pane.copy_source = None;
             Ok(String::new())
@@ -11920,14 +12001,26 @@ fn execute_request_inner(
             escape,
             join,
             preserve_trailing,
-        } => state.capture_pane(
-            target.as_deref(),
-            start,
-            end,
-            escape,
-            join,
-            preserve_trailing,
-        ),
+            print,
+            buffer,
+        } => {
+            let text = state.capture_pane(
+                target.as_deref(),
+                start,
+                end,
+                escape,
+                join,
+                preserve_trailing,
+            )?;
+            if print {
+                Ok(text)
+            } else if buffer.as_deref() == Some("") {
+                Err("empty buffer name".to_owned())
+            } else {
+                state.store_buffer(buffer, format!("{text}\n").into_bytes(), false);
+                Ok(String::new())
+            }
+        }
         Request::CopyMode {
             target,
             source,

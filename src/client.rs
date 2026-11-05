@@ -51,8 +51,8 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     }
     let prints_body = match &request {
         crate::protocol::Request::NewSession { format, .. } => format.is_some(),
-        crate::protocol::Request::DisplayMessage { .. }
-        | crate::protocol::Request::CapturePane { .. } => true,
+        crate::protocol::Request::DisplayMessage { .. } => true,
+        crate::protocol::Request::CapturePane { print, .. } => *print,
         _ => !body.is_empty(),
     };
     if !attach && prints_body {

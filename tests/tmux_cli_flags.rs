@@ -876,9 +876,13 @@ mod windows {
     }
 
     fn probes(test: &str, cases: &[&[&[&str]]]) {
+        let mut failed = Vec::new();
         for steps in cases {
-            probe(test, &format!("{steps:?}"), steps);
+            if std::panic::catch_unwind(|| probe(test, &format!("{steps:?}"), steps)).is_err() {
+                failed.push(format!("{steps:?}"));
+            }
         }
+        assert!(failed.is_empty(), "FAILED CASES:\n{}", failed.join("\n"));
     }
 
     fn assert_window_rejected(command: &str, flag: &str, arguments: &[&str]) {
@@ -1345,9 +1349,13 @@ mod panes {
     }
 
     fn probes(test: &str, cases: &[&[&[&str]]]) {
+        let mut failed = Vec::new();
         for steps in cases {
-            probe(test, &format!("{steps:?}"), steps);
+            if std::panic::catch_unwind(|| probe(test, &format!("{steps:?}"), steps)).is_err() {
+                failed.push(format!("{steps:?}"));
+            }
         }
+        assert!(failed.is_empty(), "FAILED CASES:\n{}", failed.join("\n"));
     }
 
     fn assert_pane_rejected(command: &str, flag: &str, arguments: &[&str]) {
@@ -1843,5 +1851,441 @@ mod panes {
     #[test]
     fn panes_swap_pane_rejects_flags_it_does_not_implement() {
         assert_pane_rejected("swap-pane", "-Z", &["swap-pane", "-Z", "-s", "S:1.1", "-t", "S:1.2"]);
+    }
+
+    #[test]
+    fn panes_resize_pane_flags_match_the_reference() {
+        probes(
+            "panes_resize_pane_flags_match_the_reference",
+            &[
+                &[&["resize-pane", "-t", "S:1.0", "-R", "5"]],
+                &[&["resize-pane", "-t", "S:1.0", "-L", "5"]],
+                &[&["resize-pane", "-t", "S:1.1", "-L", "5"]],
+                &[&["resize-pane", "-t", "S:1.1", "-U", "3"]],
+                &[&["resize-pane", "-t", "S:1.2", "-U", "3"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D", "3"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D"]],
+                &[&["resize-pane", "-t", "S:1.1", "-R"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D5"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D", "-1"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D", "x"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D", "5", "6"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D", "-R", "2"]],
+                &[&["resize-pane", "-t", "S:1.1", "-D", "-L", "2"]],
+                &[&["resize-pane", "-t", "S:1.1", "-U", "-D", "2"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x", "30"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x", "30%"]],
+                &[&["resize-pane", "-t", "S:1.1", "-y", "5"]],
+                &[&["resize-pane", "-t", "S:1.1", "-y", "50%"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x", "30", "-D", "2"]],
+                &[&["resize-pane", "-t", "S:1.1", "-x", "30", "-y", "4"]],
+                &[&["resize-pane", "-t", "S:1.1", "-y", "4", "-D", "2"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x", "x"]],
+                &[&["resize-pane", "-t", "S:1.0", "-y", "0"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x", "0"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x", "999"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x", "101%"]],
+                &[&["resize-pane", "-t", "S:1.0", "-x30"]],
+                &[&["resize-pane", "-t", "S:1.0", "-Z"]],
+                &[&["resize-pane", "-t", "S:1.0", "-Z"], &["resize-pane", "-t", "S:1.0", "-Z"]],
+                &[&["resize-pane", "-t", "S:1.0", "-Z"], &["resize-pane", "-t", "S:1.1", "-R", "2"]],
+                &[&["resize-pane", "-t", "S:1.0", "-Z", "-R", "2"]],
+                &[&["resize-pane", "-t", "S:1.0", "-Z", "-x", "10"]],
+                &[&["resize-pane", "-t", "S:2", "-R", "2"]],
+                &[&["resize-pane", "-t", "S:2", "-x", "10"]],
+                &[&["resize-pane", "-t", "S:2", "-Z"]],
+                &[&["resize-pane", "-t", "nosuch", "-R"]],
+                &[&["resize-pane", "-R", "3"]],
+                &[&["resize-pane"]],
+                &[&["resize-pane", "5"]],
+                &[&["resize-pane", "-t", "S:1.0", "5"]],
+                &[&["resizep", "-t", "S:1.0", "-R", "5"]],
+                &[&["resize-pane", "-t", "S:1.0", "-R", "100"]],
+                &[&["resize-pane", "-t", "S:1.0", "-R", "0"]],
+                &[&["resize-pane", "-t", "S:1.0", "-L", "-3"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_resize_pane_edges_and_zoom_match_the_reference() {
+        probes(
+            "panes_resize_pane_edges_and_zoom_match_the_reference",
+            &[
+                &[&["resize-pane", "-t", "S:1.1", "-Z"]],
+                &[&["resize-pane", "-t", "S:1.1", "-Z"], &["resize-pane", "-t", "S:1.1", "-R", "2"]],
+                &[&["resize-pane", "-t", "S:1.1", "-Z"], &["resize-pane", "-t", "S:1.1", "-Z"]],
+                &[&["split-window", "-d", "-v", "-t", "S:2", "--", "sleep", "300"], &["resize-pane", "-t", "S:2.1", "-y", "5"]],
+                &[&["split-window", "-d", "-v", "-t", "S:2", "--", "sleep", "300"], &["resize-pane", "-t", "S:2.0", "-U", "4"]],
+                &[&["resize-pane", "-t", "S:1.1", "-x", "20", "-R", "3", "-U", "1"]],
+                &[&["resize-pane", "-t", "S:1.2", "-y", "30%"]],
+                &[&["resize-pane", "-t", "S:1.0", "-L", "1", "-R", "1"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_resize_pane_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-M", &["resize-pane", "-M", "-t", "S:1.1"][..]),
+            ("-T", &["resize-pane", "-T", "-t", "S:1.1"][..]),
+        ] {
+            assert_pane_rejected("resize-pane", flag, arguments);
+        }
+    }
+
+    fn content_pair(label: &str) -> Pair {
+        let pair = Pair::new(label);
+        for mux in pair.both() {
+            mux.ok(&[
+                "new-session", "-d", "-s", "S", "-x", "30", "-y", "6", "--", "sh", "-c",
+                "printf 'one\\ntwo  \\n\\033[31mred\\033[0m\\nlong long long long long long long long long\\nready\\n'; sleep 300",
+            ]);
+            assert!(mux.capture_until("S", "ready", TIMEOUT).contains("ready"));
+        }
+        pair
+    }
+
+    fn buffer_observation(mux: &Mux) -> Vec<String> {
+        let listing = mux.body(&["list-buffers", "-F", "#{buffer_name} #{buffer_size}"]);
+        let mut observed = vec![listing.clone()];
+        for name in listing.lines().filter_map(|line| line.split(' ').next()) {
+            let path = mux.root().join(format!("saved-{name}"));
+            mux.ok(&["save-buffer", "-b", name, &path.to_string_lossy()]);
+            observed.push(format!(
+                "{name}: {:?}",
+                String::from_utf8_lossy(&std::fs::read(&path).expect("saved buffer"))
+            ));
+        }
+        observed
+    }
+
+    #[test]
+    fn panes_capture_pane_flags_match_the_reference() {
+        let test = "panes_capture_pane_flags_match_the_reference";
+        for arguments in [
+            &["capture-pane", "-p", "-t", "S"][..],
+            &["capture-pane", "-t", "S"],
+            &["capture-pane", "-b", "named", "-t", "S"],
+            &["capture-pane", "-b", "named", "-p", "-t", "S"],
+            &["capture-pane", "-e", "-t", "S"],
+            &["capture-pane", "-J", "-t", "S"],
+            &["capture-pane", "-N", "-t", "S"],
+            &["capture-pane", "-pJN", "-t", "S"],
+            &["capture-pane", "-S", "2", "-t", "S"],
+            &["capture-pane", "-S", "1", "-E", "3", "-t", "S"],
+            &["capture-pane", "-S", "-", "-E", "-", "-t", "S"],
+            &["capture-pane", "-S", "-5", "-t", "S"],
+            &["capture-pane", "-S", "x", "-t", "S"],
+            &["capture-pane", "-E", "x", "-p", "-t", "S"],
+            &["capture-pane", "-S", "9", "-E", "0", "-t", "S"],
+            &["capture-pane", "-b", "", "-t", "S"],
+            &["capture-pane", "-t", "nosuch"],
+            &["capture-pane", "-t", "S", "extra"],
+        ] {
+            let pair = content_pair("cap");
+            let before = pair.tm.body(&["list-buffers"]);
+            assert_eq!(before, pair.reference.body(&["list-buffers"]));
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+            assert_eq!(
+                observation_difference(
+                    &format!("{test}: buffers after {arguments:?}"),
+                    &buffer_observation(&pair.tm),
+                    &buffer_observation(&pair.reference)
+                ),
+                None
+            );
+        }
+        let pair = content_pair("capsame");
+        for arguments in [
+            &["capture-pane", "-b", "named", "-t", "S"][..],
+            &["capture-pane", "-b", "named", "-t", "S"],
+            &["capture-pane", "-t", "S"],
+            &["capture-pane", "-t", "S"],
+        ] {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+            assert_eq!(
+                observation_difference(
+                    &format!("{test}: buffers after {arguments:?}"),
+                    &buffer_observation(&pair.tm),
+                    &buffer_observation(&pair.reference)
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn panes_capture_pane_rejects_flags_it_does_not_implement() {
+        let pair = content_pair("caprej");
+        for flag in ["-a", "-C", "-F", "-H", "-I", "-L", "-M", "-P", "-q", "-R", "-T"] {
+            let output = pair.tm.run(&["capture-pane", "-p", flag, "-t", "S"]);
+            assert!(!output.status.success(), "{flag}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for capture-pane\n")
+            );
+            assert!(output.stdout.is_empty(), "{flag}");
+            assert_eq!(pair.tm.body(&["list-buffers"]), "", "{flag}");
+        }
+    }
+
+    #[test]
+    fn panes_clear_history_flags_match_the_reference() {
+        let test = "panes_clear_history_flags_match_the_reference";
+        let pair = Pair::new("clrhist");
+        for mux in pair.both() {
+            mux.ok(&[
+                "new-session", "-d", "-s", "S", "-x", "20", "-y", "4", "--", "sh", "-c",
+                "for i in 1 2 3 4 5 6 7 8; do echo line$i; done; echo ready; sleep 300",
+            ]);
+            assert!(mux.capture_until("S", "ready", TIMEOUT).contains("ready"));
+        }
+        let history = ["capture-pane", "-p", "-S", "-", "-t", "S"];
+        compare_commands(test, &pair.tm, &pair.reference, &[&history]);
+        compare_commands(test, &pair.tm, &pair.reference, &[&["clear-history", "-t", "S"], &history]);
+        compare_commands(test, &pair.tm, &pair.reference, &[&["clearhist"], &history]);
+        compare_commands(test, &pair.tm, &pair.reference, &[&["clear-history", "-t", "nosuch"]]);
+        compare_commands(test, &pair.tm, &pair.reference, &[&["clear-history", "extra"]]);
+        compare_commands(test, &pair.tm, &pair.reference, &[&["clear-history", "-t"]]);
+    }
+
+    #[test]
+    fn panes_clear_history_rejects_flags_it_does_not_implement() {
+        assert_pane_rejected("clear-history", "-H", &["clear-history", "-H", "-t", "S:1.1"]);
+    }
+
+    #[test]
+    fn panes_respawn_pane_flags_match_the_reference() {
+        let test = "panes_respawn_pane_flags_match_the_reference";
+        let starts = ["list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_start_command} #{pane_dead} #{pane_start_path}"];
+        for steps in [
+            &[&["respawn-pane", "-t", "S:1.1"][..]][..],
+            &[&["respawn-pane", "-k", "-t", "S:1.1"]],
+            &[&["respawn-pane", "-k", "-t", "S:1.1", "--", "sleep", "301"]],
+            &[&["respawn-pane", "-k", "-t", "S:1.1", "sleep 302"]],
+            &[&["respawn-pane", "-k", "-t", "S:1.1", "sh", "-c", "sleep 303"]],
+            &[&["respawn-pane", "-kc", "/tmp", "-t", "S:1.1"]],
+            &[&["respawn-pane", "-k", "-c", "/nonexistent", "-t", "S:1.1"]],
+            &[&["respawn-pane", "-k", "-t", "S:1.1", ""]],
+            &[&["respawnp", "-k", "-t", "S:2"]],
+            &[&["respawn-pane", "-k", "-t", "nosuch"]],
+            &[&["respawn-pane", "-k"]],
+            &[&["respawn-pane", "-k", "-t", "S:1.0", "--", "sleep", "304"], &["respawn-pane", "-k", "-t", "S:1.0"]],
+        ] {
+            let pair = fixture("resp");
+            for arguments in steps {
+                compare_commands(test, &pair.tm, &pair.reference, &[arguments, &starts]);
+                assert_eq!(
+                    observation_difference(
+                        &format!("{test}: topology after {arguments:?}"),
+                        &pane_topology(&pair.tm),
+                        &pane_topology(&pair.reference)
+                    ),
+                    None
+                );
+            }
+        }
+        let pair = fixture("respdead");
+        for mux in pair.both() {
+            mux.ok(&["set-option", "-g", "remain-on-exit", "on"]);
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "dead", "--", "true"]);
+            let deadline = Instant::now() + TIMEOUT;
+            while mux.body(&["display-message", "-p", "-t", "S:dead", "#{pane_dead}"]) != "1" {
+                assert!(Instant::now() < deadline, "pane never died");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        for arguments in [
+            &["respawn-pane", "-t", "S:dead"][..],
+            &["respawn-pane", "-t", "S:dead", "--", "sleep", "305"],
+        ] {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments, &starts]);
+        }
+    }
+
+    #[test]
+    fn panes_respawn_pane_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-d", &["respawn-pane", "-d", "-k", "-t", "S:1.1"][..]),
+            ("-e", &["respawn-pane", "-e", "A=1", "-k", "-t", "S:1.1"][..]),
+            ("-E", &["respawn-pane", "-E", "-k", "-t", "S:1.1"][..]),
+        ] {
+            assert_pane_rejected("respawn-pane", flag, arguments);
+        }
+    }
+
+    #[test]
+    fn panes_display_panes_needs_an_attached_client_in_tm() {
+        let pair = fixture("dpclient");
+        let before = pane_topology(&pair.tm);
+        for (arguments, message) in [
+            (&["display-panes"][..], "tm: chooser requires an attached client\n"),
+            (&["display-panes", "select-pane -t %%"], "tm: chooser requires an attached client\n"),
+            (&["display-panes", "-t", "S:1.1"], "tm: chooser target has no attached client\n"),
+        ] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(String::from_utf8_lossy(&output.stderr), message, "{arguments:?}");
+            assert_eq!(pane_topology(&pair.tm), before, "{arguments:?}");
+        }
+        assert!(pair.reference.run(&["display-panes", "-t", "S:1.1"]).status.success());
+    }
+
+    #[test]
+    fn panes_display_panes_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-d", &["display-panes", "-d", "100"][..]),
+            ("-k", &["display-panes", "-k"][..]),
+            ("-N", &["display-panes", "-N"][..]),
+            ("-s", &["display-panes", "-s", "S:1"][..]),
+            ("-Z", &["display-panes", "-Z"][..]),
+        ] {
+            assert_pane_rejected("display-panes", flag, arguments);
+        }
+    }
+
+    fn pipe_file(mux: &Mux, name: &str) -> std::path::PathBuf {
+        mux.root().join(name)
+    }
+
+    fn wait_file(path: &std::path::Path, expected: &str) -> String {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            if text.contains(expected) || Instant::now() >= deadline {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_pipe_flag(mux: &Mux, expected: &str) {
+        let deadline = Instant::now() + TIMEOUT;
+        while mux.body(&["display-message", "-p", "-t", "S", "#{pane_pipe}"]) != expected {
+            assert!(Instant::now() < deadline, "{:?} pane_pipe", mux.implementation());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn typed_through_pipe(mux: &Mux, name: &str, marker: &str, expect_pipe: bool) -> String {
+        mux.ok(&["send-keys", "-t", "S", "-l", marker]);
+        mux.ok(&["send-keys", "-t", "S", "Enter"]);
+        assert!(mux.capture_until("S", marker, TIMEOUT).contains(marker));
+        let path = pipe_file(mux, name);
+        if expect_pipe {
+            wait_file(&path, marker)
+        } else {
+            std::fs::read_to_string(&path).unwrap_or_default()
+        }
+    }
+
+    struct PipeStep {
+        arguments: Vec<String>,
+        pipe_after: &'static str,
+        marker: &'static str,
+    }
+
+    fn pipe_step(arguments: &[&str], pipe_after: &'static str, marker: &'static str) -> PipeStep {
+        PipeStep {
+            arguments: arguments.iter().map(|argument| (*argument).to_owned()).collect(),
+            pipe_after,
+            marker,
+        }
+    }
+
+    fn run_pipe_cases(test: &str, cases: &[Vec<PipeStep>]) {
+        for case in cases {
+            let pair = Pair::new("pipe");
+            for mux in pair.both() {
+                mux.ok(&["new-session", "-d", "-s", "S", "-x", "40", "-y", "6", "--", "cat"]);
+            }
+            for step in case {
+                let mut observed = Vec::new();
+                for mux in pair.both() {
+                    let out = mux.root().join("OUT").to_string_lossy().into_owned();
+                    let arguments: Vec<String> = step
+                        .arguments
+                        .iter()
+                        .map(|argument| argument.replace("OUT", &out))
+                        .collect();
+                    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+                    let outcome = mux.outcome(&arguments);
+                    wait_pipe_flag(mux, step.pipe_after);
+                    let expect_pipe = step.pipe_after == "1";
+                    let name = if step.arguments.iter().any(|argument| argument.contains("OUT2")) {
+                        "OUT2"
+                    } else {
+                        "OUT"
+                    };
+                    let text = typed_through_pipe(mux, name, step.marker, expect_pipe);
+                    observed.push((
+                        parity::normalize(&outcome.stderr, mux),
+                        text,
+                        outcome.status,
+                    ));
+                }
+                assert_eq!(observed[0], observed[1], "{test}: {:?}", step.arguments);
+            }
+        }
+    }
+
+    #[test]
+    fn panes_pipe_pane_flags_match_the_reference() {
+        run_pipe_cases(
+            "panes_pipe_pane_flags_match_the_reference",
+            &[
+                vec![pipe_step(&["pipe-pane", "-O", "-t", "S", "cat >> OUT"], "1", "m1")],
+                vec![pipe_step(&["pipe-pane", "-t", "S", "--", "cat >> OUT"], "1", "m1")],
+                vec![
+                    pipe_step(&["pipe-pane", "-t", "S", "cat >> OUT"], "1", "m1"),
+                    pipe_step(&["pipe-pane", "-t", "S", "cat >> OUT2"], "1", "m2"),
+                ],
+                vec![
+                    pipe_step(&["pipe-pane", "-t", "S", "cat >> OUT"], "1", "m1"),
+                    pipe_step(&["pipe-pane", "-t", "S"], "0", "m2"),
+                ],
+                vec![
+                    pipe_step(&["pipe-pane", "-t", "S", "cat >> OUT"], "1", "m1"),
+                    pipe_step(&["pipe-pane", "-t", "S", ""], "0", "m2"),
+                ],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_pipe_pane_toggle_matches_the_reference() {
+        run_pipe_cases(
+            "panes_pipe_pane_toggle_matches_the_reference",
+            &[
+                vec![
+                    pipe_step(&["pipe-pane", "-o", "-t", "S", "cat >> OUT"], "1", "m1"),
+                    pipe_step(&["pipe-pane", "-o", "-t", "S", "cat >> OUT"], "0", "m2"),
+                    pipe_step(&["pipe-pane", "-o", "-t", "S", "cat >> OUT"], "1", "m3"),
+                ],
+                vec![
+                    pipe_step(&["pipe-pane", "-t", "S", "cat >> OUT"], "1", "m1"),
+                    pipe_step(&["pipe-pane", "-o", "-t", "S"], "0", "m2"),
+                ],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_pipe_pane_expands_formats_in_the_command() {
+        let pair = Pair::new("pipeexp");
+        for mux in pair.both() {
+            mux.ok(&["new-session", "-d", "-s", "S", "-x", "40", "-y", "6", "--", "cat"]);
+            let path = mux.root().join("EXPANDED");
+            mux.ok(&["pipe-pane", "-t", "S", &format!("cat > {}_#{{pane_id}}", path.display())]);
+            let text = typed_through_pipe(mux, "EXPANDED_%0", "mx", true);
+            assert!(text.contains("mx"), "{:?}", mux.implementation());
+        }
+    }
+
+    #[test]
+    fn panes_pipe_pane_rejects_flags_it_does_not_implement() {
+        assert_pane_rejected("pipe-pane", "-I", &["pipe-pane", "-I", "-t", "S:1.1", "cat"]);
+        assert_pane_rejected("pipe-pane", "-I", &["pipe-pane", "-IO", "-t", "S:1.1", "cat"]);
     }
 }
