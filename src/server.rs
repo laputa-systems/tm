@@ -208,7 +208,7 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
             {
                 let _ = writeln!(file, "signal {signal}");
             }
-            signal_gate.begin_close();
+            signal_gate.begin_close(SocketAfterClose::Remove);
             if let Ok(mut state) = signal_state.lock() {
                 state.mark_render_dirty();
             }
@@ -224,9 +224,16 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
 
 const IN_FLIGHT_EXIT_GRACE: Duration = Duration::from_secs(1);
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SocketAfterClose {
+    Remove,
+    Leave,
+}
+
 struct ShutdownGate {
     path: PathBuf,
     closing: AtomicBool,
+    removes_socket: AtomicBool,
     closed: Mutex<bool>,
     closed_signal: Condvar,
     in_flight: Mutex<usize>,
@@ -248,6 +255,7 @@ impl ShutdownGate {
         Self {
             path: path.to_owned(),
             closing: AtomicBool::new(false),
+            removes_socket: AtomicBool::new(false),
             closed: Mutex::new(false),
             closed_signal: Condvar::new(),
             in_flight: Mutex::new(0),
@@ -259,8 +267,20 @@ impl ShutdownGate {
         self.closing.load(Ordering::SeqCst)
     }
 
-    fn begin_close(&self) {
-        self.closing.store(true, Ordering::SeqCst);
+    fn socket_after_close(&self) -> SocketAfterClose {
+        if self.removes_socket.load(Ordering::SeqCst) {
+            SocketAfterClose::Remove
+        } else {
+            SocketAfterClose::Leave
+        }
+    }
+
+    fn begin_close(&self, socket: SocketAfterClose) {
+        self.removes_socket
+            .store(socket == SocketAfterClose::Remove, Ordering::SeqCst);
+        if self.closing.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let _ = UnixStream::connect(&self.path);
     }
 
@@ -335,7 +355,9 @@ fn serve(
             Err(error) => break Err(error),
         }
     };
-    let _ = fs::remove_file(path);
+    if gate.socket_after_close() == SocketAfterClose::Remove {
+        let _ = fs::remove_file(path);
+    }
     listener.set_nonblocking(true)?;
     loop {
         match listener.accept() {
@@ -390,8 +412,6 @@ fn handle_connection(
         attach_client(stream, shared, target, size, term);
         return;
     }
-    let kills_server = matches!(request, Request::KillServer);
-
     let request = match request {
         Request::RunShell {
             command,
@@ -420,7 +440,7 @@ fn handle_connection(
         Ok(body) => (true, body),
         Err(error) => (false, error),
     };
-    if kills_server && ok {
+    if gate.is_closing() {
         gate.wait_closed();
     }
     let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
@@ -1462,6 +1482,11 @@ impl ServerState {
     }
 
     fn mark_render_dirty(&mut self) {
+        if self.sessions.is_empty()
+            && let Some(gate) = &self.shutdown
+        {
+            gate.begin_close(SocketAfterClose::Leave);
+        }
         self.mark_pane_output_dirty();
     }
 
@@ -11955,7 +11980,7 @@ fn execute_request_inner(
         } => state.pipe_pane(target.as_deref(), command.as_deref(), toggle),
         Request::KillServer => {
             if let Some(gate) = &state.shutdown {
-                gate.begin_close();
+                gate.begin_close(SocketAfterClose::Leave);
             }
             state.clients.clear();
             for session in &state.sessions {

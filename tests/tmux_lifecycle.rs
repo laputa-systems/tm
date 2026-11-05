@@ -316,6 +316,72 @@ fn exited_pipe_helper_is_reaped_and_pane_pipe_follows_the_reference() {
     }
 }
 
+fn daemon_running(mux: &Mux) -> bool {
+    let socket = mux.socket().to_string_lossy().into_owned();
+    let output = std::process::Command::new("ps")
+        .args(["-A", "-o", "args="])
+        .output()
+        .expect("run ps");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.contains("--daemon") && line.contains(&socket))
+}
+
+fn wait_server_gone(mux: &Mux, route: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while mux.run(&["has-session"]).status.success() {
+        assert!(Instant::now() < deadline, "{route}: server still answers after the last session went away");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn removing_the_last_session_ends_the_server_like_the_reference() {
+    let test = "removing_the_last_session_ends_the_server_like_the_reference";
+    let routes: [(&str, &[&str]); 4] = [
+        ("kill-session", &["kill-session", "-t", "S"]),
+        ("kill-window", &["kill-window", "-t", "S"]),
+        ("kill-pane", &["kill-pane", "-t", "S"]),
+        ("pane exit", &["send-keys", "-t", "S", "Enter"]),
+    ];
+    for (route, arguments) in routes {
+        let scratch = Scratch::new("lc-empty");
+        let tm = Mux::tm(&scratch, "tm");
+        let reference = Mux::reference(&scratch, "reference");
+        for mux in [&tm, &reference] {
+            mux.ok(&["new-session", "-d", "-s", "S", "--", "sh", "-c", "read line"]);
+            assert!(mux.run(&["has-session", "-t", "S"]).status.success(), "{route}");
+        }
+        for mux in [&tm, &reference] {
+            let outcome = mux.outcome(arguments);
+            assert_eq!(outcome.status, parity::ExitStatus::Code(0), "{route}: {outcome:?}");
+        }
+        for mux in [&tm, &reference] {
+            wait_server_gone(mux, route);
+        }
+        parity::compare_commands(
+            test,
+            &tm,
+            &reference,
+            &[&["has-session"], &["list-sessions"], &["kill-server"]],
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while daemon_running(&tm) {
+            assert!(Instant::now() < deadline, "{route}: tm daemon still running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        parity::compare_commands(
+            test,
+            &tm,
+            &reference,
+            &[
+                &["new-session", "-d", "-s", "again", "--", "sleep", "300"],
+                &["list-sessions", "-F", "#{session_name} #{session_windows}"],
+            ],
+        );
+    }
+}
+
 #[test]
 fn commands_without_a_server_fail_like_the_reference() {
     let test = "commands_without_a_server_fail_like_the_reference";
