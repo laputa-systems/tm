@@ -28,6 +28,15 @@ pub struct ObservedModes {
     pub mouse_encoding: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Termios {
+    pub input: u32,
+    pub output: u32,
+    pub control: u32,
+    pub local: u32,
+    pub characters: Vec<u8>,
+}
+
 pub struct RawClient {
     master: File,
     child: Child,
@@ -185,6 +194,43 @@ impl RawClient {
             bracketed_paste: screen.bracketed_paste(),
             mouse_mode: format!("{:?}", screen.mouse_protocol_mode()),
             mouse_encoding: format!("{:?}", screen.mouse_protocol_encoding()),
+        }
+    }
+
+    pub fn screen_rows(&self) -> Vec<String> {
+        let shared = lock(&self.monitor);
+        let screen = shared.parser.screen();
+        let (_, columns) = screen.size();
+        screen.rows(0, columns).collect()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        lock(&self.monitor).closed
+    }
+
+    pub fn resize(&self, rows: u16, columns: u16) {
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: columns,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        lock(&self.monitor).parser.screen_mut().set_size(rows, columns);
+        let result = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &size) };
+        assert_eq!(result, 0, "set window size: {}", std::io::Error::last_os_error());
+        self.signal(libc::SIGWINCH);
+    }
+
+    pub fn termios(&self) -> Termios {
+        let mut attributes: libc::termios = unsafe { std::mem::zeroed() };
+        let result = unsafe { libc::tcgetattr(self.master.as_raw_fd(), &mut attributes) };
+        assert_eq!(result, 0, "tcgetattr: {}", std::io::Error::last_os_error());
+        Termios {
+            input: attributes.c_iflag as u32,
+            output: attributes.c_oflag as u32,
+            control: attributes.c_cflag as u32,
+            local: attributes.c_lflag as u32,
+            characters: attributes.c_cc.to_vec(),
         }
     }
 

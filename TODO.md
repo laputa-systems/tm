@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 33
+Next: 38
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -151,7 +151,7 @@ suites do not cover.
 - **Area:** Rendering
 - **Where:** `src/server.rs` client attach resize and status rendering
 - **Problem:** A session created at 40x8 and attached by a 60x10 client shows 7 of the last output rows in tm and 8 in tmux, and `set-option -g status-left MARK` renders `MARK 1:sh` in tm and `MARK1:sh` in tmux (tm pads the left status).
-- **Recommendation:** Reproduce with a raw-PTY differential on the screen after attach, then fix resize reflow and the left-status padding separately.
+- **Recommendation:** The left-status padding is fixed (H2). Fix the resize row loss: when a window with output history grows, tmux pulls more rows from history. `ResizeOfScrolledWindow` in `tests/tmux_histories.rs` stops generating the shape.
 - **Fix with:** reference-parity
 - **Effort:** M
 
@@ -199,3 +199,47 @@ suites do not cover.
 - **Recommendation:** Treat an offset target that names no window like an absent index in `relink_window`, with a differential probe for `-a` and `-b` with `+N` and `-N`. `tests/tmux_histories.rs` `Exclusion::RelativeWindowPlacement` stops generating the shape; the relative targets also leave other window state (such as the last-window flag) different afterwards.
 - **Fix with:** reference-parity
 - **Effort:** S
+
+### TMUX-33 · P3 · A SIGKILLed client leaves its terminal in raw mode and the alternate screen
+
+- **Area:** Clients
+- **Where:** `src/client.rs` terminal setup and restore
+- **Problem:** tmux's server owns the client's tty, so after `kill -9` of an attached client the server resets the alternate screen, bracketed paste, mouse modes and termios. tm's client restores its own terminal and cannot when killed.
+- **Recommendation:** Pass the tty descriptor to the server, or have the server write the restore sequence and termios to the client's tty on connection loss; cover it with the raw-PTY `KillClientRendering` history.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-34 · P3 · Windows that no client displays are resized
+
+- **Area:** Layout
+- **Where:** `src/server.rs` `resize_session`
+- **Problem:** tm resizes every window of a session to its client; tmux 3.8 resizes only the displayed window of an attached session and leaves other windows at their size until they are selected.
+- **Recommendation:** Resize the active window on attach and resize, and the newly selected window on selection, then drop the `UnattachedWindowSize` exclusion in `tests/tmux_histories.rs`.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-35 · P3 · Two clients of different sizes on one session are drawn differently
+
+- **Area:** Rendering
+- **Where:** `src/server.rs` attach rendering
+- **Problem:** With `window-size latest`, tmux draws a client larger than the window with a filler area and a client smaller than the window cropped; tm draws neither.
+- **Recommendation:** Render the window at its size inside the client, with tmux's filler and crop rules, and drop the `SharedSessionClientSizes` exclusion.
+- **Fix with:** reference-parity
+- **Effort:** L
+
+### TMUX-36 · P4 · Last window is a single slot, not tmux's stack
+
+- **Area:** Windows
+- **Where:** `src/model.rs` `last_window`
+- **Problem:** When the current window of a session with two or more windows is removed (for example a window created, selected, and then exited), tmux returns to the window before it and keeps the older window as the last window; tm clears the last window.
+- **Recommendation:** Replace the slot with a recency list, like TMUX-14, and drop the `WindowRemovalFromHistoryStack` exclusion.
+- **Fix with:** reference-parity
+
+### TMUX-37 · P3 · Resizing a window with several panes divides the space differently
+
+- **Area:** Layout
+- **Where:** `src/model.rs` layout resize
+- **Problem:** When a client attach or resize changes the size of a window with two or more panes, tm and tmux round the pane rows or columns differently (a 3-pane column at 9 rows is 2/1/4 in tm and 2/2/3 in tmux).
+- **Recommendation:** Redistribute the change over siblings as tmux's `layout_resize` does (see TMUX-15), and drop the `ResizeOfSplitWindow` exclusion.
+- **Fix with:** reference-parity
+- **Effort:** M

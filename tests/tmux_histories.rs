@@ -6,13 +6,17 @@ mod history;
 #[path = "support/parity.rs"]
 #[allow(dead_code)]
 mod parity;
+#[path = "support/raw_pty.rs"]
+#[allow(dead_code)]
+mod raw_pty;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use history::{Pair, Rng};
-use parity::{ExitStatus, Outcome};
+use parity::{ExitStatus, KNOWN_DIFFERENCES, Outcome, check_command};
+use raw_pty::RawClient;
 
 const DEFAULT_SEEDS: u64 = 64;
 const WORKERS: usize = 4;
@@ -1007,6 +1011,837 @@ fn regression_moving_the_current_window_keeps_the_last_window() {
             &["split-window", "-d", "-h", "-t", "c:1.0", "--", "sleep", "300"],
             &["break-pane", "-s", "c:1.1"],
             &["break-pane", "-t", "c:6", "-s", "c:2"],
+        ],
+    );
+}
+
+const ATTACHED_SEEDS: u64 = 48;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttachedExclusion {
+    SharedSessionClientSizes,
+    UnattachedWindowSize,
+    KilledClientTerminalRestore,
+    ResizeOfScrolledWindow,
+    ResizeOfSplitWindow,
+    WindowRemovalFromHistoryStack,
+}
+
+impl AttachedExclusion {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::SharedSessionClientSizes => {
+                "TMUX-35: tm draws a client whose size differs from a shared session's window differently"
+            }
+            Self::UnattachedWindowSize => {
+                "TMUX-34: tm resizes every window of a session to its client; tmux resizes only a displayed window"
+            }
+            Self::ResizeOfScrolledWindow => {
+                "TMUX-27: tm keeps fewer scrollback rows than tmux when a window with output history is resized"
+            }
+            Self::ResizeOfSplitWindow => {
+                "TMUX-37: tm and tmux divide the rows or columns of a resized window with two or more panes differently"
+            }
+            Self::WindowRemovalFromHistoryStack => {
+                "TMUX-36: tm keeps one last window; tmux keeps a stack, so removing the current window of a session with two windows leaves a different last window"
+            }
+            Self::KilledClientTerminalRestore => {
+                "TMUX-33: tmux's server restores the terminal of a SIGKILLed client; tm's client restores its own"
+            }
+        }
+    }
+}
+
+const ATTACHED_OBSERVATIONS: [&[&str]; 3] = [
+    OBSERVATIONS[0],
+    &[
+        "list-windows",
+        "-a",
+        "-F",
+        "#{session_name}:#{window_index} #{window_id} #{window_name} #{window_width}x#{window_height} #{window_panes} #{window_active} #{window_last_flag} #{session_attached}",
+    ],
+    &[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name} #{session_id} #{window_index} #{window_id} #{window_name} #{pane_index} #{pane_id} #{pane_width}x#{pane_height} #{pane_left},#{pane_top} #{pane_active} #{window_active} #{session_attached}",
+    ],
+];
+
+fn mask_unattached_window_sizes(command: &[&str], stdout: &[u8]) -> String {
+    let size_columns: &[usize] = match command[1] {
+        "-a" if command[0] == "list-windows" => &[3],
+        "-a" if command[0] == "list-panes" => &[7, 8],
+        _ => return String::from_utf8_lossy(stdout).into_owned(),
+    };
+    let (active_column, attached_column) = if command[0] == "list-windows" { (5, 7) } else { (10, 11) };
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(|line| {
+            let mut fields: Vec<&str> = line.split(' ').collect();
+            let shown = fields.get(active_column) == Some(&"1")
+                && fields.get(attached_column).is_some_and(|attached| *attached != "0");
+            if !shown {
+                for column in size_columns {
+                    if let Some(field) = fields.get_mut(*column) {
+                        *field = "-";
+                    }
+                }
+            }
+            fields.join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+const CONVERGE_TIMEOUT: Duration = Duration::from_secs(6);
+const SPAWN_TIMEOUT: Duration = Duration::from_secs(5);
+const SLOT_SIZES: [[(u16, u16); 3]; 2] = [[(10, 40), (12, 44), (10, 48)], [(8, 30), (9, 34), (8, 28)]];
+const LIST_CLIENTS: [&str; 3] = [
+    "list-clients",
+    "-F",
+    "#{session_name} #{client_width}x#{client_height} #{client_termname}",
+];
+const CLIENT_NAMES: [&str; 3] = ["list-clients", "-F", "#{client_name} #{client_width}"];
+const FLOOD: [&str; 4] = ["--", "sh", "-c", "seq 1 1500; sleep 300"];
+const PROMPT_COMMANDS: [&str; 5] = ["new-window", "rename-window", "split-window", "next-window", "rename-session"];
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum AttachedKind {
+    Attach,
+    DetachKey,
+    DetachCommand,
+    SwitchClient,
+    ClientCommand,
+    OutsideCommand,
+    ResizeClient,
+    NewSession,
+    ChildExit,
+    WindowFlood,
+    KillClientRendering,
+    DetachDuringRedraw,
+}
+
+const ATTACHED_WEIGHTS: [(AttachedKind, u64); 12] = [
+    (AttachedKind::Attach, 7),
+    (AttachedKind::DetachKey, 3),
+    (AttachedKind::DetachCommand, 2),
+    (AttachedKind::SwitchClient, 4),
+    (AttachedKind::ClientCommand, 6),
+    (AttachedKind::OutsideCommand, 3),
+    (AttachedKind::ResizeClient, 4),
+    (AttachedKind::NewSession, 3),
+    (AttachedKind::ChildExit, 3),
+    (AttachedKind::WindowFlood, 3),
+    (AttachedKind::KillClientRendering, 2),
+    (AttachedKind::DetachDuringRedraw, 2),
+];
+
+#[derive(Clone, Debug)]
+struct AttachedOp {
+    kind: AttachedKind,
+    slot: usize,
+    text: String,
+    size: (u16, u16),
+}
+
+struct Seat {
+    tm: RawClient,
+    reference: RawClient,
+}
+
+struct World {
+    seats: [Option<Seat>; 2],
+    pair: Pair,
+    sessions: Vec<String>,
+    client_sessions: [Option<String>; 2],
+    client_sizes: [Option<(u16, u16)>; 2],
+    window_counts: std::collections::HashMap<String, usize>,
+    active_window_sizes: std::collections::HashMap<String, (u16, u16)>,
+    scrolled_sessions: BTreeSet<String>,
+    split_sessions: BTreeSet<String>,
+    scrolled_windows: BTreeSet<String>,
+}
+
+fn slot_of(width: u64) -> usize {
+    usize::from(width < 38)
+}
+
+fn sort_lines(bytes: &[u8]) -> Vec<String> {
+    let mut lines: Vec<String> = String::from_utf8_lossy(bytes).lines().map(str::to_owned).collect();
+    lines.sort();
+    lines
+}
+
+fn client_name(mux: &parity::Mux, slot: usize) -> Option<String> {
+    let listing = mux.body(&CLIENT_NAMES);
+    listing.lines().find_map(|line| {
+        let (name, width) = line.split_once(' ')?;
+        (slot_of(width.parse().ok()?) == slot).then(|| name.to_owned())
+    })
+}
+
+fn screen_difference(slot: usize, tm: &RawClient, reference: &RawClient) -> Option<String> {
+    let rows = |client: &RawClient| -> Vec<String> {
+        client.screen_rows().iter().map(|row| row.trim_end().to_owned()).collect()
+    };
+    let tm_rows = rows(tm);
+    let reference_rows = rows(reference);
+    if tm_rows != reference_rows {
+        return Some(format!(
+            "client slot {slot} screen differs\n tm:\n{}\nref:\n{}",
+            tm_rows.join("\n"),
+            reference_rows.join("\n")
+        ));
+    }
+    parity::observation_difference("client slot modes", &tm.modes(), &reference.modes())
+}
+
+impl World {
+    fn new(label: &str) -> Result<Self, String> {
+        let pair = Pair::new(label);
+        let mut world = Self {
+            seats: [None, None],
+            pair,
+            sessions: Vec::new(),
+            client_sessions: [None, None],
+            client_sizes: [None, None],
+            window_counts: std::collections::HashMap::new(),
+            active_window_sizes: std::collections::HashMap::new(),
+            scrolled_sessions: BTreeSet::new(),
+            split_sessions: BTreeSet::new(),
+            scrolled_windows: BTreeSet::new(),
+        };
+        for name in ["a", "b"] {
+            let command = ["new-session", "-d", "-s", name, "--", "sh", "-c", "echo hello-$0; exec sleep 300", name];
+            world.pair.both("attached", &command)?;
+        }
+        world.refresh_model()?;
+        Ok(world)
+    }
+
+    fn refresh_model(&mut self) -> Result<(), String> {
+        let sessions = self.pair.reference.body(&["list-sessions", "-F", "#{session_name}"]);
+        self.sessions = sessions.lines().map(str::to_owned).collect();
+        self.window_counts.clear();
+        self.active_window_sizes.clear();
+        self.scrolled_sessions.clear();
+        self.split_sessions.clear();
+        let windows = self.pair.reference.body(&[
+            "list-windows",
+            "-a",
+            "-F",
+            "#{session_name} #{window_name} #{window_active} #{window_width}x#{window_height} #{window_panes} #{window_id}",
+        ]);
+        for line in windows.lines() {
+            let fields: Vec<&str> = line.split(' ').collect();
+            let [session, name, active, size, panes, id] = fields[..] else { continue };
+            if panes != "1" {
+                self.split_sessions.insert(session.to_owned());
+            }
+            *self.window_counts.entry(session.to_owned()).or_default() += 1;
+            if name == "burst" {
+                self.scrolled_windows.insert(id.to_owned());
+            }
+            if self.scrolled_windows.contains(id) {
+                self.scrolled_sessions.insert(session.to_owned());
+            }
+            if active == "1"
+                && let Some((columns, rows)) = size.split_once('x')
+                && let (Ok(columns), Ok(rows)) = (columns.parse(), rows.parse())
+            {
+                self.active_window_sizes.insert(session.to_owned(), (columns, rows));
+            }
+        }
+        let clients = self.pair.reference.body(&LIST_CLIENTS);
+        self.client_sessions = [None, None];
+        for line in clients.lines() {
+            let mut fields = line.split(' ');
+            let (Some(session), Some(size)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            let width: u64 = size.split('x').next().unwrap_or("0").parse().unwrap_or(0);
+            self.client_sessions[slot_of(width)] = Some(session.to_owned());
+        }
+        Ok(())
+    }
+
+    fn per_impl(&self, arguments: &[&str], reference_arguments: &[&str]) -> Result<(), String> {
+        let tm = self.pair.tm.outcome(arguments);
+        let reference = self.pair.reference.outcome(reference_arguments);
+        check_command(KNOWN_DIFFERENCES, "attached", arguments, &tm, &reference)
+    }
+
+    fn reap(&mut self, slot: usize, killed: Option<AttachedExclusion>) -> Result<(), String> {
+        let Some(mut seat) = self.seats[slot].take() else {
+            return Ok(());
+        };
+        self.client_sizes[slot] = None;
+        let tm_status = seat.tm.finish(SPAWN_TIMEOUT);
+        let reference_status = seat.reference.finish(SPAWN_TIMEOUT);
+        if killed == Some(AttachedExclusion::KilledClientTerminalRestore) {
+            return match parity::observation_difference(
+                &format!("client slot {slot} exit status ({})", AttachedExclusion::KilledClientTerminalRestore.reason()),
+                &tm_status,
+                &reference_status,
+            ) {
+                Some(difference) => Err(difference),
+                None => Ok(()),
+            };
+        }
+        let tm_exit = (
+            tm_status,
+            seat.tm.screen_rows().iter().map(|row| row.trim_end().to_owned()).collect::<Vec<_>>(),
+            seat.tm.modes(),
+            seat.tm.termios(),
+        );
+        let reference_exit = (
+            reference_status,
+            seat.reference.screen_rows().iter().map(|row| row.trim_end().to_owned()).collect::<Vec<_>>(),
+            seat.reference.modes(),
+            seat.reference.termios(),
+        );
+        match parity::observation_difference(
+            &format!("client slot {slot} exit status, final screen, outer modes and termios"),
+            &tm_exit,
+            &reference_exit,
+        ) {
+            Some(difference) => Err(difference),
+            None => Ok(()),
+        }
+    }
+
+    fn converge_difference(&self) -> Option<String> {
+        for observation in ATTACHED_OBSERVATIONS {
+            let (tm, reference) = (
+                self.pair.tm.outcome(observation),
+                self.pair.reference.outcome(observation),
+            );
+            if tm.status != reference.status || tm.stderr != reference.stderr {
+                return Some(format!("{observation:?}: status or stderr differ\n tm: {tm:?}\nref: {reference:?}"));
+            }
+            if let Some(difference) = parity::observation_difference(
+                &format!("{observation:?} ({})", AttachedExclusion::UnattachedWindowSize.reason()),
+                &mask_unattached_window_sizes(observation, &tm.stdout),
+                &mask_unattached_window_sizes(observation, &reference.stdout),
+            ) {
+                return Some(difference);
+            }
+        }
+        let tm = self.pair.tm.outcome(&LIST_CLIENTS);
+        let reference = self.pair.reference.outcome(&LIST_CLIENTS);
+        if let Some(difference) = parity::observation_difference(
+            "list-clients",
+            &sort_lines(&tm.stdout),
+            &sort_lines(&reference.stdout),
+        ) {
+            return Some(difference);
+        }
+        for (slot, seat) in self.seats.iter().enumerate() {
+            let Some(seat) = seat else { continue };
+            if let Some(difference) = parity::observation_difference(
+                &format!("client slot {slot} closed"),
+                &seat.tm.is_closed(),
+                &seat.reference.is_closed(),
+            ) {
+                return Some(difference);
+            }
+            if seat.tm.is_closed() {
+                continue;
+            }
+            if let Some(difference) = screen_difference(slot, &seat.tm, &seat.reference) {
+                return Some(difference);
+            }
+        }
+        None
+    }
+
+    fn converge(&mut self) -> Result<(), String> {
+        let deadline = Instant::now() + CONVERGE_TIMEOUT;
+        while let Some(difference) = self.converge_difference() {
+            if Instant::now() >= deadline {
+                return Err(difference);
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        for slot in 0..2 {
+            if self.seats[slot].as_ref().is_some_and(|seat| seat.tm.is_closed()) {
+                self.reap(slot, None)?;
+            }
+        }
+        self.refresh_model()
+    }
+
+    fn applicable(&self, op: &AttachedOp) -> bool {
+        let attached = self.seats[op.slot].is_some();
+        let exists = |name: &str| self.sessions.iter().any(|session| session == name);
+        match op.kind {
+            AttachedKind::Attach => !attached && exists(&op.text),
+            AttachedKind::DetachKey
+            | AttachedKind::DetachCommand
+            | AttachedKind::ResizeClient
+            | AttachedKind::ClientCommand => attached,
+            AttachedKind::SwitchClient => attached && exists(&op.text),
+            AttachedKind::KillClientRendering | AttachedKind::DetachDuringRedraw => {
+                attached && self.client_sessions[op.slot].as_deref().is_some_and(exists)
+            }
+            AttachedKind::OutsideCommand | AttachedKind::NewSession => true,
+            AttachedKind::ChildExit | AttachedKind::WindowFlood => exists(&op.text),
+        }
+    }
+
+    fn apply(&mut self, op: &AttachedOp) -> Result<(), String> {
+        if !self.applicable(op) {
+            return Ok(());
+        }
+        let slot = op.slot;
+        match op.kind {
+            AttachedKind::Attach => {
+                let (rows, columns) = op.size;
+                let arguments = ["attach-session", "-t", op.text.as_str()];
+                let tm = RawClient::spawn(&self.pair.tm, "tm", &arguments, rows, columns);
+                let reference = RawClient::spawn(&self.pair.reference, "reference", &arguments, rows, columns);
+                let needle = format!("({})", op.text);
+                tm.wait_for_text(&needle, SPAWN_TIMEOUT);
+                reference.wait_for_text(&needle, SPAWN_TIMEOUT);
+                self.seats[slot] = Some(Seat { tm, reference });
+                self.client_sizes[slot] = Some(op.size);
+            }
+            AttachedKind::DetachKey | AttachedKind::DetachCommand => {
+                if op.kind == AttachedKind::DetachKey {
+                    let seat = self.seats[slot].as_mut().expect("applicable");
+                    seat.tm.write(b"\x01d");
+                    seat.reference.write(b"\x01d");
+                } else {
+                    let tm_name = client_name(&self.pair.tm, slot).ok_or("tm lists no such client")?;
+                    let reference_name =
+                        client_name(&self.pair.reference, slot).ok_or("reference lists no such client")?;
+                    self.per_impl(&["detach-client", "-t", &tm_name], &["detach-client", "-t", &reference_name])?;
+                }
+                self.reap(slot, None)?;
+            }
+            AttachedKind::SwitchClient => {
+                let tm_name = client_name(&self.pair.tm, slot).ok_or("tm lists no such client")?;
+                let reference_name =
+                    client_name(&self.pair.reference, slot).ok_or("reference lists no such client")?;
+                self.per_impl(
+                    &["switch-client", "-c", &tm_name, "-t", &op.text],
+                    &["switch-client", "-c", &reference_name, "-t", &op.text],
+                )?;
+            }
+            AttachedKind::ClientCommand => {
+                let seat = self.seats[slot].as_mut().expect("applicable");
+                let mut bytes = op.text.as_bytes().to_vec();
+                bytes.push(b'\r');
+                for client in [&mut seat.tm, &mut seat.reference] {
+                    client.write(b"\x01/");
+                    client.wait_for_screen("command prompt", SPAWN_TIMEOUT, |screen| {
+                        let rows = screen.size().0;
+                        screen.rows(0, screen.size().1).nth(usize::from(rows) - 1).is_some_and(|row| row.starts_with(':'))
+                    });
+                    client.write(&bytes);
+                }
+            }
+            AttachedKind::OutsideCommand => {
+                let words: Vec<&str> = op.text.split(' ').collect();
+                self.pair.both("attached", &words)?;
+            }
+            AttachedKind::ResizeClient => {
+                let seat = self.seats[slot].as_ref().expect("applicable");
+                seat.tm.resize(op.size.0, op.size.1);
+                seat.reference.resize(op.size.0, op.size.1);
+                self.client_sizes[slot] = Some(op.size);
+            }
+            AttachedKind::NewSession => {
+                let (name, script) = op.text.split_once(' ').expect("session and script");
+                self.pair.both("attached", &["new-session", "-d", "-s", name, "--", "sh", "-c", script])?;
+            }
+            AttachedKind::ChildExit => {
+                let target = format!("{}:", op.text);
+                self.pair.both("attached", &["send-keys", "-t", &target, "go", "Enter"])?;
+            }
+            AttachedKind::WindowFlood => {
+                let target = format!("{}:", op.text);
+                self.pair.both("attached", &["new-window", "-t", &target, "-n", "flood", "--", "sh", "-c", "seq 1 150; exit"])?;
+            }
+            AttachedKind::KillClientRendering | AttachedKind::DetachDuringRedraw => {
+                let session = self.client_sessions[slot].clone().expect("applicable");
+                let target = format!("{session}:");
+                let mut flood = vec!["new-window", "-t", &target, "-n", "burst"];
+                flood.extend(FLOOD);
+                self.pair.both("attached", &flood)?;
+                let seat = self.seats[slot].as_mut().expect("applicable");
+                if op.kind == AttachedKind::KillClientRendering {
+                    seat.tm.signal(libc::SIGKILL);
+                    seat.reference.signal(libc::SIGKILL);
+                    self.reap(slot, Some(AttachedExclusion::KilledClientTerminalRestore))?;
+                } else {
+                    seat.tm.write(b"\x01d");
+                    seat.reference.write(b"\x01d");
+                    self.reap(slot, None)?;
+                }
+            }
+        }
+        self.converge()
+    }
+
+    fn dump(&self) -> String {
+        let mut text = String::new();
+        for (slot, seat) in self.seats.iter().enumerate() {
+            if let Some(seat) = seat {
+                text.push_str(&format!(
+                    "slot {slot} tm:\n{}\nslot {slot} ref:\n{}\n",
+                    seat.tm.screen_rows().join("\n"),
+                    seat.reference.screen_rows().join("\n")
+                ));
+            }
+        }
+        let commands: Vec<&[&str]> = ATTACHED_OBSERVATIONS.iter().copied().chain([&LIST_CLIENTS[..]]).collect();
+        let observations: Vec<(Outcome, Outcome)> = commands
+            .iter()
+            .map(|command| (self.pair.tm.outcome(command), self.pair.reference.outcome(command)))
+            .collect();
+        text.push_str(&history::observation_text(&observations, &commands));
+        text
+    }
+}
+
+fn attached_exclusion(op: &AttachedOp, world: &World) -> Option<AttachedExclusion> {
+    let other = 1 - op.slot;
+    let (session, size) = match op.kind {
+        AttachedKind::Attach | AttachedKind::SwitchClient => (Some(op.text.clone()), op.size),
+        AttachedKind::ResizeClient => (world.client_sessions[op.slot].clone(), op.size),
+        AttachedKind::WindowFlood | AttachedKind::ChildExit => {
+            return (world.window_counts.get(&op.text).copied().unwrap_or(0) >= 2)
+                .then_some(AttachedExclusion::WindowRemovalFromHistoryStack);
+        }
+        _ => return None,
+    };
+    let session = session?;
+    let size = if op.kind == AttachedKind::SwitchClient {
+        world.client_sizes[op.slot].unwrap_or(size)
+    } else {
+        size
+    };
+    if world.client_sessions[other].as_ref() == Some(&session) && Some(size) != world.client_sizes[other] {
+        return Some(AttachedExclusion::SharedSessionClientSizes);
+    }
+    let window_size = (size.1, size.0.saturating_sub(1));
+    let resizes = world.active_window_sizes.get(&session).is_some_and(|current| *current != window_size);
+    if resizes && world.scrolled_sessions.contains(&session) {
+        return Some(AttachedExclusion::ResizeOfScrolledWindow);
+    }
+    if resizes && world.split_sessions.contains(&session) {
+        return Some(AttachedExclusion::ResizeOfSplitWindow);
+    }
+    None
+}
+
+fn pick_attached_kind(rng: &mut Rng) -> AttachedKind {
+    let total: u64 = ATTACHED_WEIGHTS.iter().map(|(_, weight)| weight).sum();
+    let mut roll = rng.below(total);
+    for (kind, weight) in ATTACHED_WEIGHTS {
+        if roll < weight {
+            return kind;
+        }
+        roll -= weight;
+    }
+    unreachable!("weights cover the roll")
+}
+
+fn generate_attached(rng: &mut Rng, world: &World, counter: &mut u32) -> Option<AttachedOp> {
+    let sessions: Vec<&String> = world.sessions.iter().collect();
+    for _ in 0..40 {
+        let kind = pick_attached_kind(rng);
+        let slot = rng.index(2);
+        let size = *rng.pick(&SLOT_SIZES[slot]);
+        *counter += 1;
+        let n = *counter;
+        let session = if sessions.is_empty() { "a".to_owned() } else { (*rng.pick(&sessions)).clone() };
+        let attached_session = world.client_sessions[slot].clone().unwrap_or_else(|| session.clone());
+        let text = match kind {
+            AttachedKind::Attach | AttachedKind::SwitchClient => session,
+            AttachedKind::DetachKey
+            | AttachedKind::DetachCommand
+            | AttachedKind::ResizeClient
+            | AttachedKind::KillClientRendering
+            | AttachedKind::DetachDuringRedraw => String::new(),
+            AttachedKind::ClientCommand => match *rng.pick(&PROMPT_COMMANDS) {
+                "new-window" => format!("new-window -n p{n} -- sleep 300"),
+                "rename-window" => format!("rename-window r{n}"),
+                "split-window" => "split-window -d -- sleep 300".to_owned(),
+                "rename-session" => format!("rename-session s{n}"),
+                other => other.to_owned(),
+            },
+            AttachedKind::OutsideCommand => match rng.below(3) {
+                0 => format!("new-window -d -n o{n} -- sleep 300"),
+                1 => format!("rename-window o{n}"),
+                _ => "split-window -d -- sleep 300".to_owned(),
+            },
+            AttachedKind::NewSession => {
+                if rng.chance(1, 2) {
+                    format!("e{n} read x; seq 1 120")
+                } else {
+                    format!("n{n} echo hello-n{n}; exec sleep 300")
+                }
+            }
+            AttachedKind::ChildExit => {
+                let readers: Vec<&&String> = sessions.iter().filter(|name| name.starts_with('e')).collect();
+                if readers.is_empty() { session } else { (**rng.pick(&readers)).clone() }
+            }
+            AttachedKind::WindowFlood => attached_session,
+        };
+        let op = AttachedOp { kind, slot, text, size };
+        if world.applicable(&op) && attached_exclusion(&op, world).is_none() {
+            return Some(op);
+        }
+    }
+    None
+}
+
+fn render_attached(ops: &[AttachedOp]) -> String {
+    ops.iter()
+        .enumerate()
+        .map(|(index, op)| format!("  {index:>2} {:?} slot {} {:?} {:?}", op.kind, op.slot, op.text, op.size))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+enum Replay {
+    Passed,
+    Excluded,
+    Failed(Failure, String),
+}
+
+fn replay_attached(label: &str, ops: &[AttachedOp]) -> Replay {
+    let mut world = match history::catching(|| World::new(label)) {
+        Ok(world) => world,
+        Err(message) => return Replay::Failed(Failure { step: 0, message }, String::new()),
+    };
+    for (step, op) in ops.iter().enumerate() {
+        if world.applicable(op) && attached_exclusion(op, &world).is_some() {
+            return Replay::Excluded;
+        }
+        if let Err(message) = history::catching(|| world.apply(op)) {
+            return Replay::Failed(Failure { step, message }, world.dump());
+        }
+    }
+    Replay::Passed
+}
+
+fn run_attached_seed(seed: u64) -> Result<Vec<AttachedKind>, String> {
+    let mut rng = Rng::new(seed);
+    let length = 14 + rng.below(8) as usize;
+    let label = format!("attached-{seed}");
+    let mut ops = Vec::new();
+    let mut failure = None;
+    {
+        let mut world = World::new(&label)?;
+        let mut counter = 0;
+        for step in 0..length {
+            let Some(op) = generate_attached(&mut rng, &world, &mut counter) else {
+                continue;
+            };
+            ops.push(op.clone());
+            if let Err(message) = history::catching(|| world.apply(&op)) {
+                failure = Some((Failure { step, message }, world.dump()));
+                break;
+            }
+        }
+    }
+    let Some((failure, dump)) = failure else {
+        return Ok(ops.iter().map(|op| op.kind).collect());
+    };
+    let reduced = history::ddmin(&ops, &mut |subset| {
+        matches!(replay_attached(&format!("{label}-shrink"), subset), Replay::Failed(..))
+    });
+    let (reduced_failure, reduced_dump) = match replay_attached(&format!("{label}-final"), &reduced) {
+        Replay::Failed(failure, dump) => (failure, dump),
+        _ => (
+            Failure {
+                step: failure.step,
+                message: "reduced history no longer fails".to_owned(),
+            },
+            String::new(),
+        ),
+    };
+    let pair = Pair::new(&format!("{label}-version"));
+    Err(format!(
+        "attached history seed {seed} diverged at step {} ({:?})\n{}\n\nfull operations:\n{}\n\nobservations at the failure:\n{dump}\nreduced operations ({} of {}):\n{}\n\nreduced failure at step {}: {}\nreduced observations:\n{reduced_dump}\nreference: {}\nreplay: TM_HISTORY_SEED={seed} cargo test --features parity --test tmux_histories attached",
+        failure.step,
+        ops[failure.step],
+        failure.message,
+        render_attached(&ops),
+        reduced.len(),
+        ops.len(),
+        render_attached(&reduced),
+        reduced_failure.step,
+        reduced_failure.message,
+        history::reference_version(&pair),
+    ))
+}
+
+#[test]
+fn attached_histories_match_the_reference() {
+    let started = Instant::now();
+    let seeds = history::seeds(&(0..ATTACHED_SEEDS).collect::<Vec<_>>());
+    let next = AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(BTreeMap::new());
+    std::thread::scope(|scope| {
+        for _ in 0..WORKERS {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&seed) = seeds.get(index) else {
+                        return;
+                    };
+                    let result = run_attached_seed(seed);
+                    results.lock().expect("results").insert(seed, result);
+                }
+            });
+        }
+    });
+    let results = results.into_inner().expect("results");
+    let failures: Vec<&String> = results
+        .values()
+        .filter_map(|result| result.as_ref().err())
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} of {} attached histories diverged\n\n{}",
+        failures.len(),
+        seeds.len(),
+        failures
+            .iter()
+            .map(|failure| failure.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+    eprintln!("attached: {} seeds in {:?}", seeds.len(), started.elapsed());
+    if std::env::var_os("TM_HISTORY_SEED").is_none() {
+        let seen: BTreeSet<AttachedKind> = results
+            .iter()
+            .filter(|(seed, _)| **seed < COVERAGE_SEEDS)
+            .flat_map(|(_, result)| result.as_ref().expect("checked above").iter().copied())
+            .collect();
+        let missing: Vec<AttachedKind> = ATTACHED_WEIGHTS
+            .iter()
+            .map(|(kind, _)| *kind)
+            .filter(|kind| !seen.contains(kind))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "attached operations absent from the first {COVERAGE_SEEDS} seeds: {missing:?}"
+        );
+    }
+}
+
+fn assert_attached_history(label: &str, ops: &[AttachedOp]) {
+    match replay_attached("reg-attached", ops) {
+        Replay::Passed => {}
+        Replay::Excluded => panic!("{label}: the history hits an exclusion"),
+        Replay::Failed(failure, dump) => panic!(
+            "{label} diverged at step {} ({:?}): {}\n{dump}",
+            failure.step, ops[failure.step], failure.message
+        ),
+    }
+}
+
+fn op(kind: AttachedKind, slot: usize, text: &str) -> AttachedOp {
+    AttachedOp {
+        kind,
+        slot,
+        text: text.to_owned(),
+        size: SLOT_SIZES[slot][0],
+    }
+}
+
+#[test]
+fn regression_attached_list_clients_exposes_session_fields() {
+    assert_attached_history(
+        "list-clients session fields",
+        &[op(AttachedKind::Attach, 0, "b"), op(AttachedKind::SwitchClient, 0, "a")],
+    );
+}
+
+#[test]
+fn regression_attached_detach_prints_the_session_and_restores_the_terminal() {
+    assert_attached_history(
+        "detach by key",
+        &[op(AttachedKind::Attach, 0, "a"), op(AttachedKind::DetachKey, 0, "")],
+    );
+    assert_attached_history(
+        "detach-client",
+        &[
+            op(AttachedKind::Attach, 1, "b"),
+            op(AttachedKind::SwitchClient, 1, "a"),
+            op(AttachedKind::DetachCommand, 1, ""),
+        ],
+    );
+}
+
+#[test]
+fn regression_attached_session_end_prints_exited() {
+    assert_attached_history(
+        "session child exit",
+        &[
+            op(AttachedKind::NewSession, 0, "e1 read x; seq 1 120"),
+            op(AttachedKind::Attach, 0, "e1"),
+            op(AttachedKind::ChildExit, 0, "e1"),
+        ],
+    );
+}
+
+#[test]
+fn regression_attached_status_line_has_no_padding_after_the_left_part() {
+    assert_attached_history("status line", &[op(AttachedKind::Attach, 0, "a")]);
+}
+
+#[test]
+fn regression_attached_command_prompt_runs_against_the_client_session() {
+    assert_attached_history(
+        "command prompt",
+        &[
+            op(AttachedKind::Attach, 0, "b"),
+            op(AttachedKind::ClientCommand, 0, "new-window -n p1 -- sleep 300"),
+            op(AttachedKind::ClientCommand, 0, "rename-window r2"),
+        ],
+    );
+}
+
+#[test]
+fn regression_attached_window_listings_report_session_attached() {
+    assert_attached_history(
+        "session_attached",
+        &[
+            op(AttachedKind::Attach, 0, "a"),
+            AttachedOp {
+                size: SLOT_SIZES[0][0],
+                ..op(AttachedKind::Attach, 1, "a")
+            },
+        ],
+    );
+}
+
+#[test]
+fn regression_attached_exited_window_selects_the_previous_window() {
+    assert_attached_history(
+        "window exit",
+        &[
+            op(AttachedKind::Attach, 0, "a"),
+            op(AttachedKind::WindowFlood, 0, "a"),
+        ],
+    );
+}
+
+#[test]
+fn regression_attached_killed_client_leaves_the_session_alive() {
+    assert_attached_history(
+        "client SIGKILL",
+        &[
+            op(AttachedKind::Attach, 0, "b"),
+            op(AttachedKind::KillClientRendering, 0, ""),
+            op(AttachedKind::Attach, 0, "b"),
+            op(AttachedKind::DetachDuringRedraw, 0, ""),
         ],
     );
 }
