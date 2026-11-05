@@ -53,7 +53,7 @@ fn concurrent_startup_converges_and_replaces_a_stale_socket() {
 
 #[test]
 fn socket_and_diagnostics_keep_private_permissions() {
-    let scratch = Scratch::new("lifecycle-permissions");
+    let scratch = Scratch::new("lc-perms");
     let tm = Mux::tm(&scratch, "tm");
     std::fs::set_permissions(tm.root(), std::fs::Permissions::from_mode(0o700))
         .expect("private scratch root");
@@ -99,4 +99,127 @@ fn idle_disconnect_releases_the_client_registration() {
     drop(terminal);
     wait_clients(&tm, 0);
     assert!(tm.ok(&["has-session", "-t", "S"]).is_empty());
+}
+
+#[test]
+fn kill_server_then_new_session_succeeds_200_times_on_one_socket() {
+    let scratch = Scratch::new("lc-loop");
+    let tm = Mux::tm(&scratch, "tm");
+    let started = Instant::now();
+    for cycle in 0..200 {
+        let output = tm.run(&["new-session", "-d", "-s", "S", "--", "sleep", "30"]);
+        assert!(
+            output.status.success(),
+            "cycle {cycle}: new-session failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = tm.run(&["kill-server"]);
+        assert!(
+            output.status.success(),
+            "cycle {cycle}: kill-server failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            std::os::unix::net::UnixStream::connect(tm.socket()).is_err(),
+            "cycle {cycle}: socket still accepts after kill-server succeeded"
+        );
+    }
+    assert!(started.elapsed() < Duration::from_secs(9), "{:?}", started.elapsed());
+}
+
+#[test]
+fn kill_server_restart_matches_the_reference() {
+    let scratch = Scratch::new("lc-parity");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let new_session: &[&str] = &["new-session", "-d", "-s", "S", "--", "sleep", "30"];
+    let kill_server: &[&str] = &["kill-server"];
+    let list: &[&str] = &["list-sessions", "-F", "#{session_name}"];
+    let mut commands = Vec::new();
+    for _ in 0..5 {
+        commands.push(new_session);
+        commands.push(kill_server);
+    }
+    commands.push(new_session);
+    commands.push(list);
+    parity::compare_commands("kill_server_restart_matches_the_reference", &tm, &reference, &commands);
+}
+
+#[test]
+fn attach_racing_kill_server_gets_an_error_or_ends_cleanly() {
+    let scratch = Scratch::new("lc-race");
+    let tm = Mux::tm(&scratch, "tm");
+    for round in 0..8 {
+        tm.ok(&["new-session", "-d", "-s", "S", "-x", "40", "-y", "10", "--", "sleep", "30"]);
+        let mut terminal = pty_harness::spawn_attached(
+            &tm,
+            "race",
+            &["attach-session", "-t", "S"],
+            Size::new(40, 10).expect("size"),
+        );
+        tm.ok(&["kill-server"]);
+        let status = terminal
+            .wait_for_exit(terminal.deadline(Duration::from_secs(5)))
+            .unwrap_or_else(|error| panic!("round {round}: attach did not exit: {error}"));
+        let screen = terminal.screen().to_string();
+        match status {
+            ptytest::ExitStatus::Code(0) => {}
+            ptytest::ExitStatus::Code(1) => {
+                assert!(screen.contains("tm:"), "round {round}: silent failure: {screen:?}");
+                assert!(
+                    !screen.contains("fill whole buffer"),
+                    "round {round}: raw EOF surfaced: {screen:?}"
+                );
+            }
+            other => panic!("round {round}: unexpected exit {other:?}: {screen:?}"),
+        }
+    }
+}
+
+#[test]
+fn request_sent_after_kill_server_replied_gets_an_explicit_error() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    let scratch = Scratch::new("lc-shutdown");
+    let tm = Mux::tm(&scratch, "tm");
+    let recorder_path = tm.root().join("recorder.sock");
+    let recorder = UnixListener::bind(&recorder_path).expect("bind request recorder");
+    let mut probe = std::process::Command::new(tm.binary())
+        .arg("-S")
+        .arg(&recorder_path)
+        .arg("list-sessions")
+        .env_remove("TM_SOCKET")
+        .env_remove("TMUX")
+        .spawn()
+        .expect("spawn recording client");
+    let (mut captured, _) = recorder.accept().expect("accept recording client");
+    captured
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+    let mut request = vec![0_u8; 4096];
+    let length = captured.read(&mut request).expect("read recorded request");
+    request.truncate(length);
+    drop(captured);
+    let _ = probe.wait();
+
+    tm.ok(&["new-session", "-d", "-s", "S", "--", "sleep", "30"]);
+    let mut early = UnixStream::connect(tm.socket()).expect("connect before kill-server");
+    early
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+    tm.ok(&["kill-server"]);
+    assert!(UnixStream::connect(tm.socket()).is_err());
+    early.write_all(&request).expect("write request during shutdown");
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 256];
+    loop {
+        match early.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(length) => response.extend_from_slice(&chunk[..length]),
+            Err(error) => panic!("read response: {error}"),
+        }
+    }
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.contains("server is shutting down"), "{text:?}");
 }

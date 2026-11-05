@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -180,8 +181,9 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     log.write(&format!("listening on {}", path.display()));
     drop(lock);
-    listener.set_nonblocking(true)?;
+    let gate = Arc::new(ShutdownGate::new(path));
     let mut initial_state = ServerState::new();
+    initial_state.shutdown = Some(Arc::clone(&gate));
     // A private `TM_SOCKET` remains an isolated vanilla server for tests and
     // tooling. The normal daemon overlays the compiled interactive profile.
     if std::env::var_os("TM_SOCKET").is_none() {
@@ -189,6 +191,7 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
     }
     let state = Arc::new(Mutex::new(initial_state));
     let signal_state = Arc::clone(&state);
+    let signal_gate = Arc::clone(&gate);
     let signal_log = log.path.clone();
     let _ = thread::Builder::new()
         .name("tm-daemon-signals".to_owned())
@@ -205,38 +208,153 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
             {
                 let _ = writeln!(file, "signal {signal}");
             }
+            signal_gate.begin_close();
             if let Ok(mut state) = signal_state.lock() {
-                state.shutdown = true;
                 state.mark_render_dirty();
             }
             break;
         });
 
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let state = Arc::clone(&state);
-                thread::Builder::new()
-                    .name("tm-client".to_owned())
-                    .spawn(move || handle_connection(stream, state))
-                    .map_err(io::Error::other)?;
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if state.lock().map_err(|_| poisoned())?.shutdown {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(error) => return Err(error),
+    let result = serve(&listener, &state, &gate, path);
+    gate.mark_closed();
+    drop(listener);
+    gate.wait_idle(IN_FLIGHT_EXIT_GRACE);
+    result
+}
+
+const IN_FLIGHT_EXIT_GRACE: Duration = Duration::from_secs(1);
+
+struct ShutdownGate {
+    path: PathBuf,
+    closing: AtomicBool,
+    closed: Mutex<bool>,
+    closed_signal: Condvar,
+    in_flight: Mutex<usize>,
+    idle_signal: Condvar,
+}
+
+struct InFlight(Arc<ShutdownGate>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut count = self.0.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        *count -= 1;
+        self.0.idle_signal.notify_all();
+    }
+}
+
+impl ShutdownGate {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            closing: AtomicBool::new(false),
+            closed: Mutex::new(false),
+            closed_signal: Condvar::new(),
+            in_flight: Mutex::new(0),
+            idle_signal: Condvar::new(),
         }
     }
 
-    let _ = fs::remove_file(path);
-    Ok(())
+    fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::SeqCst)
+    }
+
+    fn begin_close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+        let _ = UnixStream::connect(&self.path);
+    }
+
+    fn mark_closed(&self) {
+        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.closed_signal.notify_all();
+    }
+
+    fn wait_closed(&self) {
+        let mut closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
+        while !*closed {
+            closed = self
+                .closed_signal
+                .wait(closed)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn enter(self: &Arc<Self>) -> InFlight {
+        *self.in_flight.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        InFlight(Arc::clone(self))
+    }
+
+    fn wait_idle(&self, grace: Duration) {
+        let deadline = Instant::now() + grace;
+        let mut count = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        while *count > 0 {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            count = self
+                .idle_signal
+                .wait_timeout(count, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
 }
 
-fn handle_connection(mut stream: UnixStream, shared: SharedState) {
-    // `run_daemon` keeps the listener nonblocking for its accept loop. On
+fn spawn_connection(
+    stream: UnixStream,
+    state: &SharedState,
+    gate: &Arc<ShutdownGate>,
+) -> io::Result<()> {
+    let state = Arc::clone(state);
+    let gate = Arc::clone(gate);
+    let in_flight = gate.enter();
+    thread::Builder::new()
+        .name("tm-client".to_owned())
+        .spawn(move || handle_connection(stream, state, gate, in_flight))
+        .map(drop)
+        .map_err(io::Error::other)
+}
+
+fn serve(
+    listener: &UnixListener,
+    state: &SharedState,
+    gate: &Arc<ShutdownGate>,
+    path: &Path,
+) -> io::Result<()> {
+    let outcome = loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if let Err(error) = spawn_connection(stream, state, gate) {
+                    break Err(error);
+                }
+                if gate.is_closing() {
+                    break Ok(());
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => break Err(error),
+        }
+    };
+    let _ = fs::remove_file(path);
+    listener.set_nonblocking(true)?;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => spawn_connection(stream, state, gate)?,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => return Err(error),
+        }
+    }
+    outcome
+}
+
+fn handle_connection(
+    mut stream: UnixStream,
+    shared: SharedState,
+    gate: Arc<ShutdownGate>,
+    in_flight: InFlight,
+) {
+    // The shutdown drain sets the listener nonblocking. On
     // platforms where accepted Unix sockets inherit that flag, an attached
     // client's input reader would observe EAGAIN before the first key and
     // tear down an otherwise healthy session. Requests and the long-lived
@@ -246,10 +364,22 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
         Ok(request) => request,
         Err(_) => return,
     };
+    if gate.is_closing() {
+        let _ = write_server_message(
+            &mut stream,
+            &ServerMessage::Response {
+                ok: false,
+                body: "server is shutting down".to_owned(),
+            },
+        );
+        return;
+    }
     if let Request::Attach { target, size, term } = request {
+        drop(in_flight);
         attach_client(stream, shared, target, size, term);
         return;
     }
+    let kills_server = matches!(request, Request::KillServer);
 
     let request = match request {
         Request::RunShell {
@@ -279,6 +409,9 @@ fn handle_connection(mut stream: UnixStream, shared: SharedState) {
         Ok(body) => (true, body),
         Err(error) => (false, error),
     };
+    if kills_server && ok {
+        gate.wait_closed();
+    }
     let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
 }
 
@@ -563,7 +696,7 @@ struct ServerState {
     mode_keys: CopyModeKeys,
     word_separators: String,
     synchronize_panes: bool,
-    shutdown: bool,
+    shutdown: Option<Arc<ShutdownGate>>,
     prefix: Vec<u8>,
     bindings: HashMap<Vec<u8>, ConfigBinding>,
     history_limit: usize,
@@ -1254,7 +1387,7 @@ impl ServerState {
             mode_keys: CopyModeKeys::Emacs,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             synchronize_panes: false,
-            shutdown: false,
+            shutdown: None,
             prefix: vec![2],
             bindings: binding_table(config::VANILLA_BINDINGS),
             history_limit: 10_000,
@@ -11694,7 +11827,9 @@ fn execute_request_inner(
             toggle,
         } => state.pipe_pane(target.as_deref(), command.as_deref(), toggle),
         Request::KillServer => {
-            state.shutdown = true;
+            if let Some(gate) = &state.shutdown {
+                gate.begin_close();
+            }
             state.clients.clear();
             for session in &state.sessions {
                 for window in &session.windows {
@@ -15200,10 +15335,6 @@ impl PaneSize for Pane {
     fn rect_size(&self) -> Size {
         Size::new(self.rect.cols.max(1), self.rect.rows.max(1))
     }
-}
-
-fn poisoned() -> io::Error {
-    io::Error::other("server state lock is poisoned")
 }
 
 #[cfg(test)]
