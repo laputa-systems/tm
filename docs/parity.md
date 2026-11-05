@@ -471,6 +471,23 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `paste-buffer` | `(control bytes)` | match | control characters other than bell, backspace, tab, and carriage return are pasted as `^X` | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_escapes_control_bytes_like_the_reference` | differential |
 | `paste-buffer` | `-S` | rejected | paste without escaping control characters | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_rejects_flags_it_does_not_implement` | internal |
 | `paste-buffer` | `(any other flag)` | rejected | tmux 3.8 defines only `-d`, `-b`, `-p`, `-r`, `-S`, `-s`, and `-t` | C6a `tests/tmux_cli_flags.rs::buffers_commands_reject_flags_tmux_does_not_define` | internal |
+| `send-keys` | `-l` | match | send the arguments as text, concatenated without separators, instead of looking up key names | C6a `tests/tmux_cli_flags.rs::keys_send_keys_key_names_and_literals_match_the_reference` | differential |
+| `send-keys` | `-N` | match | repeat the keys; a count below 1, above 4294967295, or not a number is an error | C6a `tests/tmux_cli_flags.rs::keys_send_keys_repeat_count_matches_the_reference` | differential |
+| `send-keys` | `-R` | match | reset the pane terminal state before sending | C6a `tests/tmux_cli_flags.rs::keys_send_keys_reset_matches_the_reference` | differential |
+| `send-keys` | `-t` | match | target pane | C6a `tests/tmux_cli_flags.rs::keys_send_keys_key_names_and_literals_match_the_reference` | differential |
+| `send-keys` | `-X` | match | run a copy-mode command; outside a mode it fails with `not in a mode`; `-C` and `-P` after the command are copy-mode command flags | C6a `tests/tmux_cli_flags.rs::keys_send_keys_copy_mode_command_matches_the_reference`; C6a `tests/tmux_cli_flags.rs::keys_send_keys_copy_selection_flags_match_the_reference` | differential |
+| `send-keys` | `-X (unknown command)` | tm-only | tm fails with `unknown copy-mode command`; tmux ignores a name it does not know | C6a `tests/tmux_cli_flags.rs::keys_send_keys_unknown_copy_mode_command_fails_in_tm` | internal |
+| `send-keys` | `-t (after the -X command)` | tm-only | tm reads `-t` after the copy-mode command as the target pane; tmux passes it to the command | C6a `tests/tmux_cli_flags.rs::keys_send_keys_copy_mode_command_matches_the_reference` | internal |
+| `send-keys` | `(key names)` | tm-only | tm sends the names Enter, Tab, Space, Escape, the arrow keys, BTab, and `C-` and `M-` letters like tmux and types other names as text; tmux also knows BSpace, DC, IC, Home, End, the page keys, function keys, keypad keys, and modified named keys | C6a `tests/tmux_cli_flags.rs::keys_send_keys_key_names_and_literals_match_the_reference` | internal |
+| `send-keys` | `-c` | rejected | target client | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
+| `send-keys` | `-F` | rejected | expand formats in the arguments | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
+| `send-keys` | `-H` | rejected | send arguments as hexadecimal bytes | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
+| `send-keys` | `-K` | rejected | send keys to the client | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
+| `send-keys` | `-M` | rejected | send the mouse event | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
+| `send-keys` | `-C` | rejected | not a tmux 3.8 send-keys flag (tm formerly accepted it after `-X`; it is now a copy-mode command flag) | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
+| `send-keys` | `-P` | rejected | not a tmux 3.8 send-keys flag (tm formerly accepted it after `-X`; it is now a copy-mode command flag) | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
+| `send-prefix` | `-t` | match | target pane | C6a `tests/tmux_cli_flags.rs::keys_send_prefix_flags_match_the_reference` | differential |
+| `send-prefix` | `-2` | rejected | send the secondary prefix; tm has no `prefix2` | C6a `tests/tmux_cli_flags.rs::keys_send_prefix_rejects_the_secondary_prefix` | internal |
 
 ## Baseline
 

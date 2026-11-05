@@ -180,6 +180,89 @@ fn buffer_observation(mux: &Mux) -> Vec<String> {
     observed
 }
 
+fn assert_same_buffers(test: &str, pair: &Pair, after: &[&str]) {
+    assert_eq!(
+        observation_difference(
+            &format!("{test}: buffers after {after:?}"),
+            &buffer_observation(&pair.tm),
+            &buffer_observation(&pair.reference)
+        ),
+        None
+    );
+}
+
+
+struct Paster<'a> {
+    mux: &'a Mux,
+    file: std::path::PathBuf,
+    seen: usize,
+}
+
+impl<'a> Paster<'a> {
+    fn new(mux: &'a Mux) -> Self {
+        let file = mux.root().join("pasted");
+        let script = format!(
+            "printf '\\033[?2004h'; stty raw -echo; echo ready; exec cat > {}",
+            file.display()
+        );
+        mux.ok(&["new-session", "-d", "-s", "P", "-x", "40", "-y", "6", "--", "sh", "-c", &script]);
+        assert!(mux.capture_until("P", "ready", TIMEOUT).contains("ready"));
+        Self { mux, file, seen: 0 }
+    }
+
+    fn pasted_by(&mut self, arguments: &[&str]) -> (parity::Outcome, Vec<u8>) {
+        let outcome = self.mux.outcome(arguments);
+        self.mux.ok(&["send-keys", "-t", "P", "-l", "Z"]);
+        let deadline = Instant::now() + TIMEOUT;
+        let bytes = loop {
+            let bytes = std::fs::read(&self.file).unwrap_or_default();
+            if (bytes.len() > self.seen && bytes.ends_with(b"Z")) || Instant::now() >= deadline {
+                break bytes;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let delta = bytes[self.seen.min(bytes.len())..].to_vec();
+        self.seen = bytes.len();
+        (outcome, delta)
+    }
+}
+
+fn pane_input_steps(test: &str, seed: &[&[&str]], steps: &[&[&str]]) {
+    let pair = Pair::new("pasteb");
+    let mut tm = Paster::new(&pair.tm);
+    let mut reference = Paster::new(&pair.reference);
+    for arguments in seed {
+        compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+    }
+    for arguments in steps {
+        let (tm_outcome, tm_bytes) = tm.pasted_by(arguments);
+        let (reference_outcome, reference_bytes) = reference.pasted_by(arguments);
+        assert_eq!(
+            parity::first_difference(&tm_outcome, &reference_outcome),
+            None,
+            "{test}: {arguments:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&tm_bytes),
+            String::from_utf8_lossy(&reference_bytes),
+            "{test}: bytes pasted by {arguments:?}"
+        );
+        assert_same_buffers(test, &pair, arguments);
+    }
+}
+
+fn content_pair(label: &str) -> Pair {
+    let pair = Pair::new(label);
+    for mux in pair.both() {
+        mux.ok(&[
+            "new-session", "-d", "-s", "S", "-x", "30", "-y", "6", "--", "sh", "-c",
+            "printf 'one\\ntwo  \\n\\033[31mred\\033[0m\\nlong long long long long long long long long\\nready\\n'; sleep 300",
+        ]);
+        assert!(mux.capture_until("S", "ready", TIMEOUT).contains("ready"));
+    }
+    pair
+}
+
 mod sessions {
     use super::*;
 
@@ -1948,18 +2031,6 @@ mod panes {
         }
     }
 
-    fn content_pair(label: &str) -> Pair {
-        let pair = Pair::new(label);
-        for mux in pair.both() {
-            mux.ok(&[
-                "new-session", "-d", "-s", "S", "-x", "30", "-y", "6", "--", "sh", "-c",
-                "printf 'one\\ntwo  \\n\\033[31mred\\033[0m\\nlong long long long long long long long long\\nready\\n'; sleep 300",
-            ]);
-            assert!(mux.capture_until("S", "ready", TIMEOUT).contains("ready"));
-        }
-        pair
-    }
-
     #[test]
     fn panes_capture_pane_flags_match_the_reference() {
         let test = "panes_capture_pane_flags_match_the_reference";
@@ -2299,17 +2370,6 @@ mod buffers {
             mux.ok(&["new-session", "-d", "-s", "S", "-x", "40", "-y", "6", "--", "sleep", "300"]);
         }
         pair
-    }
-
-    fn assert_same_buffers(test: &str, pair: &Pair, after: &[&str]) {
-        assert_eq!(
-            observation_difference(
-                &format!("{test}: buffers after {after:?}"),
-                &buffer_observation(&pair.tm),
-                &buffer_observation(&pair.reference)
-            ),
-            None
-        );
     }
 
     fn run_steps(test: &str, pair: &Pair, steps: &[&[&str]]) {
@@ -2653,68 +2713,9 @@ mod buffers {
         assert_rejected_everywhere("paste-buffer", &[("-S", &["paste-buffer", "-S"])]);
     }
 
-    struct Paster<'a> {
-        mux: &'a Mux,
-        file: std::path::PathBuf,
-        seen: usize,
-    }
-
-    impl<'a> Paster<'a> {
-        fn new(mux: &'a Mux) -> Self {
-            let file = mux.root().join("pasted");
-            let script = format!(
-                "printf '\\033[?2004h'; stty raw -echo; echo ready; exec cat > {}",
-                file.display()
-            );
-            mux.ok(&["new-session", "-d", "-s", "P", "-x", "40", "-y", "6", "--", "sh", "-c", &script]);
-            assert!(mux.capture_until("P", "ready", TIMEOUT).contains("ready"));
-            Self { mux, file, seen: 0 }
-        }
-
-        fn pasted_by(&mut self, arguments: &[&str]) -> (parity::Outcome, Vec<u8>) {
-            let outcome = self.mux.outcome(arguments);
-            self.mux.ok(&["send-keys", "-t", "P", "-l", "Z"]);
-            let deadline = Instant::now() + TIMEOUT;
-            let bytes = loop {
-                let bytes = std::fs::read(&self.file).unwrap_or_default();
-                if bytes.ends_with(b"Z") || Instant::now() >= deadline {
-                    break bytes;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            };
-            let delta = bytes[self.seen.min(bytes.len())..].to_vec();
-            self.seen = bytes.len();
-            (outcome, delta)
-        }
-    }
-
-    fn paste_steps(test: &str, seed: &[&[&str]], steps: &[&[&str]]) {
-        let pair = Pair::new("pasteb");
-        let mut tm = Paster::new(&pair.tm);
-        let mut reference = Paster::new(&pair.reference);
-        for arguments in seed {
-            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
-        }
-        for arguments in steps {
-            let (tm_outcome, tm_bytes) = tm.pasted_by(arguments);
-            let (reference_outcome, reference_bytes) = reference.pasted_by(arguments);
-            assert_eq!(
-                parity::first_difference(&tm_outcome, &reference_outcome),
-                None,
-                "{test}: {arguments:?}"
-            );
-            assert_eq!(
-                String::from_utf8_lossy(&tm_bytes),
-                String::from_utf8_lossy(&reference_bytes),
-                "{test}: bytes pasted by {arguments:?}"
-            );
-            assert_same_buffers(test, &pair, arguments);
-        }
-    }
-
     #[test]
     fn buffers_paste_buffer_flags_match_the_reference() {
-        paste_steps(
+        pane_input_steps(
             "buffers_paste_buffer_flags_match_the_reference",
             &[
                 &["set-buffer", "-b", "lines", "one\ntwo\n\nthree"],
@@ -2747,7 +2748,7 @@ mod buffers {
 
     #[test]
     fn buffers_paste_buffer_without_buffers_matches_the_reference() {
-        paste_steps(
+        pane_input_steps(
             "buffers_paste_buffer_without_buffers_matches_the_reference",
             &[],
             &[&["paste-buffer", "-t", "P"], &["paste-buffer", "-d", "-p", "-t", "P"]],
@@ -2761,7 +2762,7 @@ mod buffers {
             .chain([0x7f])
             .map(char::from)
             .collect::<String>();
-        paste_steps(
+        pane_input_steps(
             "buffers_paste_buffer_escapes_control_bytes_like_the_reference",
             &[
                 &["set-buffer", "-b", "controls", &controls],
@@ -2773,5 +2774,221 @@ mod buffers {
                 &["paste-buffer", "-r", "-b", "mixed", "-t", "P"],
             ],
         );
+    }
+}
+
+mod keys {
+    use super::*;
+
+    fn assert_rejected(command: &str, cases: &[(&str, &[&str])]) {
+        let pair = Pair::new("keysrej");
+        pair.start("S");
+        let before = topology(&pair.tm);
+        for (flag, arguments) in cases {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?} succeeded");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for {command}\n"),
+                "{arguments:?}"
+            );
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+            assert_eq!(topology(&pair.tm), before, "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn keys_send_keys_key_names_and_literals_match_the_reference() {
+        pane_input_steps(
+            "keys_send_keys_key_names_and_literals_match_the_reference",
+            &[],
+            &[
+                &["send-keys", "-t", "P", "abc"],
+                &["send", "-t", "P", "a", "b", "c"],
+                &["send-keys", "-t", "P", "-l", "a b"],
+                &["send-keys", "-t", "P", "-l", "a", "b"],
+                &["send-keys", "-t", "P", "-l", "Enter"],
+                &["send-keys", "-t", "P", "-l", "h\u{e9}llo \u{1f600}"],
+                &["send-keys", "-t", "P", "Enter", "Tab", "Space", "Escape"],
+                &["send-keys", "-t", "P", "C-a", "C-z", "C-[", "C-Space", "C-@", "C-A"],
+                &["send-keys", "-t", "P", "M-x", "M-a"],
+                &["send-keys", "-t", "P", "Up", "Down", "Left", "Right", "BTab"],
+                &["send-keys", "-t", "P", "NoSuchKey", "x"],
+                &["send-keys", "-t", "P", ""],
+                &["send-keys", "-t", "P", "--", "-l"],
+                &["send-keys", "-t", "P", "-l", "--", "-x"],
+                &["send-keys", "-tP", "attached"],
+                &["send-keys", "-t", "nosuch", "a"],
+                &["send-keys", "-t", "P"],
+                &["send-keys", "-t"],
+            ],
+        );
+    }
+
+    #[test]
+    fn keys_send_keys_repeat_count_matches_the_reference() {
+        pane_input_steps(
+            "keys_send_keys_repeat_count_matches_the_reference",
+            &[],
+            &[
+                &["send-keys", "-t", "P", "-N", "3", "ab"],
+                &["send-keys", "-t", "P", "-N3", "x", "y"],
+                &["send-keys", "-t", "P", "-lN", "2", "ab", "cd"],
+                &["send-keys", "-t", "P", "-N", "1", "Enter"],
+                &["send-keys", "-t", "P", "-N", "2"],
+                &["send-keys", "-t", "P", "-N", "0", "x"],
+                &["send-keys", "-t", "P", "-N", "-1", "x"],
+                &["send-keys", "-t", "P", "-N", "x", "x"],
+                &["send-keys", "-t", "P", "-N", "", "x"],
+                &["send-keys", "-t", "P", "-N", "99999999999", "x"],
+                &["send-keys", "-t", "P", "-N", "4294967296", "x"],
+                &["send-keys", "-t", "P", "-N"],
+            ],
+        );
+    }
+
+    #[test]
+    fn keys_send_keys_reset_matches_the_reference() {
+        pane_input_steps(
+            "keys_send_keys_reset_matches_the_reference",
+            &[&["set-buffer", "-b", "text", "pasted"]],
+            &[
+                &["paste-buffer", "-p", "-b", "text", "-t", "P"],
+                &["send-keys", "-t", "P", "-R"],
+                &["paste-buffer", "-p", "-b", "text", "-t", "P"],
+                &["send-keys", "-R", "-t", "P", "after"],
+                &["paste-buffer", "-p", "-b", "text", "-t", "P"],
+            ],
+        );
+    }
+
+    #[test]
+    fn keys_send_keys_copy_mode_command_matches_the_reference() {
+        pane_input_steps(
+            "keys_send_keys_copy_mode_command_matches_the_reference",
+            &[],
+            &[
+                &["send-keys", "-t", "P", "-X", "cancel"],
+                &["send-keys", "-t", "P", "-X"],
+                &["send-keys", "-t", "P", "-N", "2", "-X", "cursor-down"],
+                &["send-keys", "-t", "nosuch", "-X", "cancel"],
+            ],
+        );
+        let pair = Pair::new("keyscopy");
+        for mux in pair.both() {
+            mux.ok(&["new-session", "-d", "-s", "S", "-x", "30", "-y", "6", "--", "sleep", "300"]);
+            mux.ok(&["copy-mode", "-t", "S"]);
+        }
+        for arguments in [
+            &["send-keys", "-t", "S", "-X"][..],
+            &["send-keys", "-t", "S", "-N", "2", "-X", "cursor-left"],
+            &["send-keys", "-t", "S", "-X", "cancel"],
+            &["send-keys", "-t", "S", "-X", "cancel"],
+        ] {
+            compare_commands("keys_send_keys_copy_mode_command_matches_the_reference", &pair.tm, &pair.reference, &[arguments, &["display-message", "-p", "-t", "S", "#{pane_in_mode}"]]);
+        }
+    }
+
+    #[test]
+    fn keys_send_keys_copy_selection_flags_match_the_reference() {
+        let test = "keys_send_keys_copy_selection_flags_match_the_reference";
+        let pair = Pair::new("keyssel");
+        for mux in pair.both() {
+            mux.ok(&[
+                "new-session", "-d", "-s", "S", "-x", "30", "-y", "6", "--", "sh", "-c",
+                "printf 'alpha\\nbeta\\nready\\n'; sleep 300",
+            ]);
+            assert!(mux.capture_until("S", "ready", TIMEOUT).contains("ready"));
+        }
+        for finish in [
+            &["send-keys", "-t", "S", "-X", "copy-selection-and-cancel", "-P"][..],
+            &["send-keys", "-t", "S", "-X", "copy-selection-and-cancel", "-C"],
+            &["send-keys", "-t", "S", "-X", "copy-selection-and-cancel", "-PC"],
+            &["send-keys", "-t", "S", "-X", "copy-selection-and-cancel", "-P", "-C"],
+            &["send-keys", "-t", "S", "-X", "copy-selection-and-cancel"],
+            &["send-keys", "-t", "S", "-X", "copy-selection", "-C", "named-"],
+        ] {
+            for mux in pair.both() {
+                mux.ok(&["copy-mode", "-t", "S"]);
+                mux.ok(&["send-keys", "-t", "S", "-X", "top-line"]);
+                mux.ok(&["send-keys", "-t", "S", "-X", "select-line"]);
+            }
+            compare_commands(test, &pair.tm, &pair.reference, &[finish]);
+            for mux in pair.both() {
+                let _ = mux.run(&["send-keys", "-t", "S", "-X", "cancel"]);
+            }
+            assert_same_buffers(test, &pair, finish);
+        }
+    }
+
+    #[test]
+    fn keys_send_keys_unknown_copy_mode_command_fails_in_tm() {
+        let pair = Pair::new("keysunknown");
+        pair.start("S");
+        pair.tm.ok(&["copy-mode", "-t", "S"]);
+        let output = pair.tm.run(&["send-keys", "-t", "S", "-X", "nosuch-command"]);
+        assert!(!output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "tm: unknown copy-mode command: nosuch-command\n"
+        );
+    }
+
+    #[test]
+    fn keys_send_keys_rejects_flags_it_does_not_implement() {
+        assert_rejected(
+            "send-keys",
+            &[
+                ("-c", &["send-keys", "-c", "client", "-t", "S", "x"]),
+                ("-F", &["send-keys", "-F", "-t", "S", "x"]),
+                ("-H", &["send-keys", "-H", "-t", "S", "41"]),
+                ("-K", &["send-keys", "-K", "-t", "S", "x"]),
+                ("-M", &["send-keys", "-M", "-t", "S"]),
+                ("-C", &["send-keys", "-C", "-t", "S", "x"]),
+                ("-P", &["send-keys", "-P", "-t", "S", "x"]),
+                ("-x", &["send-keys", "-x", "-t", "S", "x"]),
+            ],
+        );
+    }
+
+    #[test]
+    fn keys_send_prefix_flags_match_the_reference() {
+        let pair = Pair::new("sendprefix");
+        for mux in pair.both() {
+            let file = mux.root().join("pasted");
+            let script = format!("stty raw -echo; echo ready; exec cat > {}", file.display());
+            mux.ok(&["new-session", "-d", "-s", "S", "-x", "30", "-y", "6", "--", "sh", "-c", &script]);
+            assert!(mux.capture_until("S", "ready", TIMEOUT).contains("ready"));
+            mux.ok(&["new-window", "-d", "-t", "S", "--", "sleep", "300"]);
+        }
+        for arguments in [
+            &["send-prefix"][..],
+            &["send-prefix", "-t", "S:1"],
+            &["send-prefix", "-tS:1"],
+            &["send-prefix", "-t", "nosuch"],
+            &["send-prefix", "extra"],
+            &["send-prefix", "-t"],
+        ] {
+            compare_commands("keys_send_prefix_flags_match_the_reference", &pair.tm, &pair.reference, &[arguments]);
+        }
+        let seen = pair.both().map(|mux| {
+            mux.ok(&["send-keys", "-t", "S:1", "-l", "Z"]);
+            let file = mux.root().join("pasted");
+            let deadline = Instant::now() + TIMEOUT;
+            loop {
+                let bytes = std::fs::read(&file).unwrap_or_default();
+                if bytes.ends_with(b"Z") || Instant::now() >= deadline {
+                    break bytes;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        assert_eq!(seen[0], seen[1]);
+        assert!(seen[0].starts_with(&[1, 1]), "{:?}", seen[0]);
+    }
+
+    #[test]
+    fn keys_send_prefix_rejects_the_secondary_prefix() {
+        assert_rejected("send-prefix", &[("-2", &["send-prefix", "-2", "-t", "S"])]);
     }
 }

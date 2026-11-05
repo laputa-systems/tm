@@ -6012,7 +6012,7 @@ impl ServerState {
                 .find_pane_mut(pane_id)
                 .ok_or_else(|| "target pane no longer exists".to_owned())?;
             let Some(mut mode) = pane.copy_mode.take() else {
-                return Err("pane is not in copy mode".to_owned());
+                return Err("not in a mode".to_owned());
             };
             let mut source_parser = copy_source_parser(pane, history_limit);
             let parser = source_parser
@@ -12156,11 +12156,19 @@ fn execute_request_inner(
             target,
             action,
             repeat,
-        } => state.execute_copy_action(
-            state.resolve_pane_target(target.as_deref())?.2,
-            parse_copy_action(&action)?,
-            repeat as usize,
-        ),
+        } => {
+            let pane_id = state.resolve_pane_target(target.as_deref())?.2;
+            if state
+                .find_pane(pane_id)
+                .is_none_or(|pane| pane.copy_mode.is_none())
+            {
+                return Err("not in a mode".to_owned());
+            }
+            if action.is_empty() {
+                return Ok(String::new());
+            }
+            state.execute_copy_action(pane_id, parse_copy_action(&action)?, repeat as usize)
+        }
         Request::ChooseTree {
             target,
             filter,

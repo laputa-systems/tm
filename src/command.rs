@@ -767,56 +767,35 @@ fn parse_respawn_window(arguments: &[String]) -> Result<InvocationSpec, String> 
 }
 
 fn parse_send_keys(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut literal = false;
-    let mut reset = false;
-    let mut copy_action = None;
+    let flags = scan_flags("send-keys", arguments, "c:FHKlMN:Rt:X", usize::MAX)?;
+    for (flag, name) in [('c', "-c"), ('F', "-F"), ('H', "-H"), ('K', "-K"), ('M', "-M")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "send-keys"));
+        }
+    }
+    let target = flags.value('t').map(str::to_owned);
+    let literal = flags.has('l');
+    let reset = flags.has('R');
+    let repeat = match flags.value('N') {
+        Some(count) => repeat_count(count)?,
+        None => 1,
+    };
+    let mut positional = flags.positional.iter().cloned();
+    let copy_action = flags
+        .has('X')
+        .then(|| positional.next().unwrap_or_default());
+    let mut keys = positional.collect::<Vec<_>>();
+    let mut target = target;
     let mut copy_no_paste = false;
     let mut copy_no_clipboard = false;
-    let mut repeat = 1;
-    let mut keys = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-l" => literal = true,
-            "-R" => reset = true,
-            "-X" => {
-                index += 1;
-                copy_action = Some(argument(arguments, index, "-X")?.to_owned());
-            }
-            "-P" if copy_action.is_some() => copy_no_paste = true,
-            "-C" if copy_action.is_some() => copy_no_clipboard = true,
-            "-N" => {
-                index += 1;
-                repeat = argument(arguments, index, "-N")?
-                    .parse::<u32>()
-                    .map_err(|_| "-N requires a positive integer".to_owned())?;
-                if repeat == 0 {
-                    return Err("-N requires a positive integer".to_owned());
-                }
-            }
-            value if value.starts_with("-N") && value.len() > 2 => {
-                repeat = value[2..]
-                    .parse::<u32>()
-                    .map_err(|_| "-N requires a positive integer".to_owned())?;
-                if repeat == 0 {
-                    return Err("-N requires a positive integer".to_owned());
-                }
-            }
-            "--" => keys.extend_from_slice(&arguments[index + 1..]),
-            value if value.starts_with('-') && !literal => {
-                return Err(format!("unknown send-keys option: {value}"));
-            }
-            value => keys.push(value.to_owned()),
+    if copy_action.is_some() {
+        let command_flags = scan_flags("send-keys", &keys, "CPt:", usize::MAX)?;
+        copy_no_paste = command_flags.has('P');
+        copy_no_clipboard = command_flags.has('C');
+        if let Some(command_target) = command_flags.value('t') {
+            target = Some(command_target.to_owned());
         }
-        if arguments.get(index).is_some_and(|value| value == "--") {
-            break;
-        }
-        index += 1;
+        keys = command_flags.positional.to_vec();
     }
     if let Some(mut action) = copy_action {
         // Keep copy-mode flags in the action name and use record separators
@@ -862,7 +841,7 @@ fn parse_send_keys(arguments: &[String]) -> Result<InvocationSpec, String> {
         }));
     }
     let bytes = if literal {
-        keys.join(" ").into_bytes()
+        keys.concat().into_bytes()
     } else {
         keys.iter().flat_map(|key| key_bytes(key)).collect()
     };
@@ -872,6 +851,16 @@ fn parse_send_keys(arguments: &[String]) -> Result<InvocationSpec, String> {
         bytes,
         reset,
     }))
+}
+
+fn repeat_count(value: &str) -> Result<u32, String> {
+    let number = value
+        .parse::<i64>()
+        .map_err(|_| "repeat count invalid".to_owned())?;
+    if number < 1 {
+        return Err("repeat count too small".to_owned());
+    }
+    u32::try_from(number).map_err(|_| "repeat count too large".to_owned())
 }
 
 fn parse_copy_mode(arguments: &[String], mut page: bool) -> Result<InvocationSpec, String> {
@@ -1550,19 +1539,13 @@ fn target_and_name(command: &str, arguments: &[String]) -> Result<(Option<String
 }
 
 fn parse_send_prefix(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            flag => return Err(format!("unsupported flag {flag} for send-prefix")),
-        }
-        index += 1;
+    let flags = scan_flags("send-prefix", arguments, "2t:", 0)?;
+    if flags.has('2') {
+        return Err(unsupported_flag("-2", "send-prefix"));
     }
-    Ok(InvocationSpec::plain(Request::SendPrefix { target }))
+    Ok(InvocationSpec::plain(Request::SendPrefix {
+        target: flags.value('t').map(str::to_owned),
+    }))
 }
 
 pub(crate) fn unsupported_flag(flag: &str, command: &str) -> String {
@@ -1748,13 +1731,12 @@ mod tests {
     fn send_keys_copy_actions_preserve_tmux_copy_flags_and_arguments() {
         let invocation = parse(&[
             "send-keys".to_owned(),
+            "-t".to_owned(),
+            "session:0".to_owned(),
             "-X".to_owned(),
             "copy-pipe-and-cancel".to_owned(),
             "-P".to_owned(),
             "-C".to_owned(),
-            "-t".to_owned(),
-            "session:0".to_owned(),
-            "--".to_owned(),
             "cat".to_owned(),
             "named-".to_owned(),
         ])

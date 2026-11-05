@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 22
+Next: 23
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -100,3 +100,12 @@ suites do not cover.
 - **Recommendation:** Share one `format_true` helper between the filters and add a differential probe with a filter that expands to `false`.
 - **Fix with:** reference-parity
 - **Effort:** S
+
+### TMUX-22 · P3 · send-keys knows few key names and no modifier combinations
+
+- **Area:** Keys
+- **Where:** `src/command.rs` `key_bytes`
+- **Problem:** tm types `BSpace`, `DC`, `IC`, `Home`, `End`, `PageUp`, `PageDown`, `PgUp`, `PgDn`, `NPage`, `PPage`, `Insert`, `F1` to `F12`, `KP0`, `KP/`, `KPEnter`, `S-Tab`, `M-Enter`, `M-Space`, `C-Up`, `M-Up`, `S-Up`, `C-S-a`, `M-C-a`, `C-1`, `C-?`, `^a`, and any key name whose case differs (`enter`) as text, and sends `Home` and `End` as `ESC [ H` and `ESC [ F`. tmux 3.8 sends the key (`Home` is `ESC [ 1~`, `F1` is `ESC O P`, `C-Up` is `ESC [ 1;5 A`).
+- **Recommendation:** Port tmux's key name table and the `input_key` encoding (cursor and keypad modes, modifier parameters), then probe every name against the reference.
+- **Fix with:** reference-parity
+- **Effort:** M
