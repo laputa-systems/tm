@@ -448,10 +448,14 @@ fn parse_select_window(arguments: &[String]) -> Result<InvocationSpec, String> {
     } else if flags.has('p') {
         Request::PreviousWindow { target }
     } else if flags.has('l') {
-        last_window_request(target.as_deref())
+        Request::SelectWindow {
+            target: target.unwrap_or_default(),
+            last: true,
+        }
     } else {
         Request::SelectWindow {
             target: target.unwrap_or_default(),
+            last: false,
         }
     }))
 }
@@ -464,7 +468,7 @@ fn last_window_request(session: Option<&str>) -> Request {
             target.split_once(':').map_or(target, |(session, _)| session)
         ),
     };
-    Request::SelectWindow { target }
+    Request::SelectWindow { target, last: false }
 }
 
 fn parse_session_window_navigation(
@@ -2152,7 +2156,7 @@ mod tests {
         let last = parse(&["last-window".to_owned()]).expect("last");
         assert!(matches!(
             last.request,
-            Request::SelectWindow { target } if target == "!"
+            Request::SelectWindow { target, last: false } if target == "!"
         ));
         assert!(parse(&["kill-window".to_owned(), "-f".to_owned()]).is_err());
     }

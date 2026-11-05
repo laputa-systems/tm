@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0002;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0003;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -70,6 +70,7 @@ pub(crate) enum Request {
     },
     SelectWindow {
         target: String,
+        last: bool,
     },
     SelectLayout {
         target: Option<String>,
@@ -480,9 +481,10 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_optional_string(&mut payload, target);
             put_optional_string(&mut payload, format);
         }
-        Request::SelectWindow { target } => {
+        Request::SelectWindow { target, last } => {
             payload.push(10);
             put_string(&mut payload, target);
+            put_bool(&mut payload, *last);
         }
         Request::SendPrefix { target } => {
             payload.push(42);
@@ -1027,6 +1029,7 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         10 => Request::SelectWindow {
             target: decoder.string()?,
+            last: decoder.bool()?,
         },
         42 => Request::SendPrefix {
             target: decoder.optional_string()?,
@@ -2124,6 +2127,7 @@ mod tests {
         },
         9 => Request::SelectWindow {
                 target: source.text(),
+                last: source.flag(),
         },
         10 => Request::SelectLayout {
                 target: source.opt_text(),
@@ -2487,7 +2491,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0002;
+    const GOLDEN_VERSION: u32 = 0x544d_0003;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2499,7 +2503,7 @@ mod tests {
         "29000000070102000000743200010100010100020000000300000074313003000000c3a9090103000000743132",
         "09000000080102000000743200",
         "09000000090102000000743200",
-        "070000000a020000007431",
+        "080000000a02000000743101",
         "0e0000003901020000007432020000007433",
         "080000000b01020000007432",
         "080000000c01020000007432",

@@ -999,6 +999,13 @@ mod windows {
                 &[&["select-window", "-t", "S:3"], &["select-window", "-p", "-n", "-t", "S"]],
                 &[&["select-window", "-t", "S:3"], &["select-window", "-pl", "-t", "S"]],
                 &[&["select-window", "S:3"]],
+                &[&["new-session", "-d", "-s", "2", "--", "sleep", "300"], &["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "2"]],
+                &[&["new-session", "-d", "-s", "2", "--", "sleep", "300"], &["select-window", "-t", "S:3"], &["select-window", "-t", "2"]],
+                &[&["new-session", "-d", "-s", "two", "--", "sleep", "300"], &["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "two"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "three"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "T"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "9"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "$0"]],
                 &[&["select-window", "-t"]],
             ],
         );

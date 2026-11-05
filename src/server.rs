@@ -7718,8 +7718,18 @@ impl ServerState {
         Ok(String::new())
     }
 
+    fn select_last_window_of(&mut self, target: &str) -> CommandResult {
+        let (session_index, _) = self.resolve_window_target(Some(target))?;
+        let (session_index, window_index) = self.window_index(session_index, "!", None)?;
+        self.select_resolved_window(session_index, window_index)
+    }
+
     fn select_window(&mut self, target: &str) -> CommandResult {
         let (session_index, window_index) = self.resolve_window_target(Some(target))?;
+        self.select_resolved_window(session_index, window_index)
+    }
+
+    fn select_resolved_window(&mut self, session_index: usize, window_index: usize) -> CommandResult {
         let index = self.sessions[session_index].windows[window_index].index;
         let window_id = self.sessions[session_index].windows[window_index].id;
         self.sessions[session_index].select_window(index);
@@ -9421,8 +9431,16 @@ impl ServerState {
         let (session_target, window_part) = match target.split_once(':') {
             Some((session, window)) => (session, window),
             None if target.is_empty() => ("", ""),
-            None if target.starts_with('$') || self.find_session(target).is_some() => (target, ""),
-            None => ("", target),
+            None if target.starts_with('$') => (target, ""),
+            None => {
+                let current = self.resolve_session_index(Some(""))?;
+                let context_window = self.exec_context.and_then(|context| context.window_id);
+                let in_current = self.window_index(current, target, context_window);
+                if in_current.is_ok() || self.find_session(target).is_none() {
+                    return in_current;
+                }
+                (target, "")
+            }
         };
         let session_index = if target.contains(':') && !session_target.is_empty() {
             self.resolve_session_target(Some(session_target))?
@@ -11639,7 +11657,8 @@ fn execute_request_inner(
         Request::ListPanes { target, format } => {
             state.list_panes(target.as_deref(), format.as_deref())
         }
-        Request::SelectWindow { target } => state.select_window(&target),
+        Request::SelectWindow { target, last: false } => state.select_window(&target),
+        Request::SelectWindow { target, last: true } => state.select_last_window_of(&target),
         Request::SelectLayout { target, layout } => {
             if !matches!(layout.as_str(), "even-horizontal" | "even-vertical") {
                 return Err(format!("unsupported layout {layout} for select-layout"));
