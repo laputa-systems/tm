@@ -24,6 +24,7 @@ struct Citation {
 
 const REFERENCE_CONSTRUCTOR: &str = "Mux::reference";
 const REFERENCE_DIRECTORY: &str = "tests/reference/";
+const REJECTION_MESSAGE: &str = "unsupported flag";
 
 #[test]
 fn parity_matrix_covers_every_compiled_option_and_effective_binding() {
@@ -43,12 +44,96 @@ fn parity_matrix_covers_every_compiled_option_and_effective_binding() {
             "## Interactive modes",
             "## CLI and lifecycle",
         ),
-        ("CLI and lifecycle", "## CLI and lifecycle", "## Baseline"),
+        ("CLI and lifecycle", "## CLI and lifecycle", "## CLI flags"),
     ] {
         let rows = rows(section(MATRIX, start, end));
         assert!(!rows.is_empty(), "{name} matrix is empty");
         assert_valid(&rows);
     }
+}
+
+#[test]
+fn cli_flag_rows_are_classified_and_cited() {
+    let rows = flag_rows(section(MATRIX, "## CLI flags", "## Baseline"));
+    assert!(!rows.is_empty(), "CLI flag matrix is empty");
+    let errors = validate_flag_rows(&rows, &Sources::load());
+    assert!(errors.is_empty(), "CLI flag matrix is invalid:\n{}", errors.join("\n"));
+}
+
+struct FlagRow {
+    command: String,
+    flag: String,
+    classification: String,
+    test: String,
+    evidence: String,
+}
+
+fn flag_rows(section: &str) -> Vec<FlagRow> {
+    section
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with('|') && !line.starts_with("| Command") && !line.starts_with("| ---")
+        })
+        .map(|line| {
+            let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
+            assert_eq!(cells.len(), 8, "CLI flag row has the wrong column count: {line}");
+            FlagRow {
+                command: cells[1].trim_matches('`').to_owned(),
+                flag: cells[2].trim_matches('`').to_owned(),
+                classification: cells[3].to_owned(),
+                test: cells[5].to_owned(),
+                evidence: cells[6].to_owned(),
+            }
+        })
+        .collect()
+}
+
+fn rejects_flag(body: &str, _: &Sources) -> bool {
+    body.contains(REJECTION_MESSAGE)
+}
+
+fn validate_flag_rows(rows: &[FlagRow], sources: &Sources) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut generic = Vec::new();
+    for row in rows {
+        let name = format!("{} {}", row.command, row.flag);
+        if !seen.insert(name.clone()) {
+            errors.push(format!("row `{name}` is listed twice"));
+        }
+        if !matches!(row.classification.as_str(), "match" | "rejected" | "tm-only") {
+            errors.push(format!(
+                "row `{name}` has invalid classification {:?}",
+                row.classification
+            ));
+        }
+        if row.classification == "match" && row.evidence != "differential" {
+            errors.push(format!("row `{name}` is match without differential evidence"));
+        }
+        if row.classification == "rejected" {
+            let rejects = parse_citations(&row.test).is_ok_and(|citations| {
+                citations.iter().any(|citation| {
+                    citation.function.as_deref().is_some_and(|function| {
+                        reaches_from(sources, &citation.path, function, rejects_flag)
+                    })
+                })
+            });
+            if !rejects {
+                errors.push(format!(
+                    "row `{name}` is rejected but no cited test asserts {REJECTION_MESSAGE:?}"
+                ));
+            }
+        }
+        generic.push(Row {
+            item: name,
+            test: row.test.clone(),
+            evidence: row.evidence.clone(),
+            status: if row.classification == "match" { "pass" } else { "fail" }.to_owned(),
+        });
+    }
+    errors.extend(validate_rows(&generic, sources));
+    errors
 }
 
 fn assert_rows_cover(kind: &str, compiled: &[String], rows: &[Row]) {
@@ -530,11 +615,12 @@ mod validator {
     const HELPED: &str = "#[test]\nfn helped() {\n    build(\"}\");\n}\n";
     const HELPER: &str = "pub fn build(name: &str) {\n    let _ = Mux::reference(name);\n}\n";
     const ISOLATED: &str = "#[test]\nfn isolated() {\n    let tm = Mux::tm(&s, \"tm\");\n}\n";
+    const REJECTS: &str = "#[test]\nfn rejects() {\n    let _ = format!(\"tm: unsupported flag {}\", f);\n}\n";
     const REPLAY: &str = "#[test]\nfn replay() {\n    let _ = include_str!(\"reference/capture.txt\");\n}\n";
 
     fn sources() -> Sources {
         let files = [
-            ("tests/a.rs", format!("{DIRECT}\n{HELPED}\n{ISOLATED}\n{REPLAY}\nfn not_a_test() {{}}\n")),
+            ("tests/a.rs", format!("{DIRECT}\n{HELPED}\n{ISOLATED}\n{REPLAY}\n{REJECTS}\nfn not_a_test() {{}}\n")),
             ("tests/support/h.rs", HELPER.to_owned()),
             ("tests/reference/capture.txt", String::new()),
         ];
@@ -611,5 +697,41 @@ mod validator {
     fn unknown_evidence_and_status_are_rejected() {
         assert_eq!(errors("X `tests/a.rs::direct`", "guess", "pass").len(), 1);
         assert_eq!(errors("X `tests/a.rs::direct`", "differential", "ok").len(), 1);
+    }
+
+    fn flag_errors(classification: &str, test: &str, evidence: &str) -> Vec<String> {
+        let row = FlagRow {
+            command: "cmd".to_owned(),
+            flag: "-x".to_owned(),
+            classification: classification.to_owned(),
+            test: test.to_owned(),
+            evidence: evidence.to_owned(),
+        };
+        validate_flag_rows(&[row], &sources())
+    }
+
+    #[test]
+    fn well_formed_flag_rows_pass() {
+        assert_eq!(flag_errors("match", "X `tests/a.rs::direct`", "differential"), Vec::<String>::new());
+        assert_eq!(flag_errors("rejected", "X `tests/a.rs::rejects`", "internal"), Vec::<String>::new());
+        assert_eq!(flag_errors("tm-only", "X `tests/a.rs::isolated`", "internal"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_match_flag_row_needs_differential_evidence() {
+        let found = flag_errors("match", "X `tests/a.rs::isolated`", "internal");
+        assert!(found.iter().any(|message| message.contains("without differential")), "{found:?}");
+    }
+
+    #[test]
+    fn a_rejected_flag_row_must_cite_a_rejection_test() {
+        let found = flag_errors("rejected", "X `tests/a.rs::direct`", "differential");
+        assert!(found.iter().any(|message| message.contains("unsupported flag")), "{found:?}");
+    }
+
+    #[test]
+    fn an_unknown_flag_classification_is_rejected() {
+        let found = flag_errors("accepted", "X `tests/a.rs::isolated`", "internal");
+        assert!(found.iter().any(|message| message.contains("invalid classification")), "{found:?}");
     }
 }

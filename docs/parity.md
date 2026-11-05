@@ -128,6 +128,98 @@ test function exist, `pass` is never `internal`, `differential` reaches
 | daemon lifecycle | startup lock, private socket, and diagnostics | L2 | `src/server.rs` daemon startup | L2 `tests/tmux_lifecycle.rs::concurrent_startup_converges_and_replaces_a_stale_socket` | internal | fail | none |
 | signals | restore termios and screen on handled signals | L3 | `src/client.rs` signal handling | L3 `tests/tmux_signals.rs::terminate_signal_restores_termios_and_screen` | internal | fail | CONT redraw is implemented but not yet independently replayed in the PTY test |
 
+## CLI flags
+
+Every command and flag that tm's parser accepts is `match`, `rejected`, or
+`tm-only`. A `rejected` row exits nonzero with `tm: unsupported flag <flag> for
+<command>`; tmux 3.8 accepts or defines the flag. A `tm-only` row is an
+intentional difference. `tests/parity_contract.rs` validates the table.
+
+| Command | Flag | Classification | tmux 3.8 meaning | Test | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| `new-session` | `-A` | match | attach to the named session when it exists, otherwise create it; tm requires `-s` with it, and `-d` does not stop the attach | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference`; C3 `tests/tmux_cli_flags.rs::sessions_new_session_attach_forms_match_the_reference` | differential |
+| `new-session` | `-A (without `-s`)` | rejected | tmux attaches to the current session; tm has no equivalent resolution | C3 `tests/tmux_cli_flags.rs::sessions_new_session_rejects_flags_it_does_not_implement` | internal |
+| `new-session` | `-c` | match | start directory of the first window | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-d` | match | create the session without attaching; without it the command needs a terminal and fails before creating anything otherwise | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference`; C3 `tests/tmux_cli_flags.rs::sessions_new_session_attach_forms_match_the_reference` | differential |
+| `new-session` | `-D` | rejected | with `-A`, detach other clients of the attached session | C3 `tests/tmux_cli_flags.rs::sessions_new_session_rejects_flags_it_does_not_implement` | internal |
+| `new-session` | `-e` | rejected | set an environment variable for the session | C3 `tests/tmux_cli_flags.rs::sessions_new_session_rejects_flags_it_does_not_implement` | internal |
+| `new-session` | `-E` | match | skip `update-environment`, which tm lacks, so it changes nothing | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-F` | match | format printed with `-P`; without `-P` nothing is printed | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-f` | rejected | client flags for the attached client | C3 `tests/tmux_cli_flags.rs::sessions_new_session_rejects_flags_it_does_not_implement` | internal |
+| `new-session` | `-n` | match | name of the first window | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-P` | match | print information about the new session; the default format is `#{session_name}:` | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-s` | match | session name, including the attached `-sNAME` and combined `-ds NAME` forms | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-t` | match | group the new session with an existing session or its group | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-t (unknown name)` | tm-only | tmux creates a named session group; tm needs an existing session and fails with `can't find session` | C3 `tests/tmux_cli_flags.rs::sessions_new_session_group_target_must_name_a_session` | internal |
+| `new-session` | `-X` | rejected | with `-A`, detach other clients and send them SIGHUP | C3 `tests/tmux_cli_flags.rs::sessions_new_session_rejects_flags_it_does_not_implement` | internal |
+| `new-session` | `-x` | match | width of a detached session | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-y` | match | height of a detached session | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `attach-session` | `-c` | rejected | working directory for the session | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_rejects_flags_it_does_not_implement` | internal |
+| `attach-session` | `-d` | rejected | detach other clients of the session | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_rejects_flags_it_does_not_implement` | internal |
+| `attach-session` | `-E` | match | skip `update-environment`, which tm lacks, so it changes nothing | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_flags_match_the_reference` | differential |
+| `attach-session` | `-f` | rejected | client flags | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_rejects_flags_it_does_not_implement` | internal |
+| `attach-session` | `-r` | rejected | read-only client | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_rejects_flags_it_does_not_implement` | internal |
+| `attach-session` | `-t` | match | session to attach to; a missing session fails with `can't find session`, and no terminal fails with `open terminal failed: not a terminal` after the lookup | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_flags_match_the_reference` | differential |
+| `attach-session` | `-x` | rejected | with `-d`, send SIGHUP to the other clients (tm formerly read it as a width) | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_rejects_flags_it_does_not_implement` | internal |
+| `attach-session` | `a` | tm-only | alias that tmux 3.8 lacks (ambiguous prefix there) | C3 `tests/tmux_cli_flags.rs::sessions_tm_only_aliases_run_the_canonical_command` | internal |
+| `detach-client` | `-a` | match | detach every client except the target client | C3 `tests/tmux_cli_flags.rs::sessions_detach_client_flags_match_the_reference` | differential |
+| `detach-client` | `-E` | rejected | run a shell command in the client instead of detaching | C3 `tests/tmux_cli_flags.rs::sessions_detach_client_rejects_flags_it_does_not_implement` | internal |
+| `detach-client` | `-P` | rejected | send SIGHUP to the client's parent | C3 `tests/tmux_cli_flags.rs::sessions_detach_client_rejects_flags_it_does_not_implement` | internal |
+| `detach-client` | `-s` | rejected | detach every client of a session | C3 `tests/tmux_cli_flags.rs::sessions_detach_client_rejects_flags_it_does_not_implement` | internal |
+| `detach-client` | `-t` | match | target client; the default is the most recently active client | C3 `tests/tmux_cli_flags.rs::sessions_detach_client_flags_match_the_reference` | differential |
+| `has-session` | `-t` | match | exit 0 when the session exists; the default is the current session | C3 `tests/tmux_cli_flags.rs::sessions_has_session_flags_match_the_reference` | differential |
+| `has-session` | `(any other flag)` | rejected | tmux 3.8 defines only `-t` | C3 `tests/tmux_cli_flags.rs::sessions_has_session_rejects_flags_it_does_not_implement` | internal |
+| `kill-session` | `-a` | match | kill every session except the target | C3 `tests/tmux_cli_flags.rs::sessions_kill_session_flags_match_the_reference` | differential |
+| `kill-session` | `-C` | rejected | clear alert flags instead of killing | C3 `tests/tmux_cli_flags.rs::sessions_kill_session_rejects_flags_it_does_not_implement` | internal |
+| `kill-session` | `-f` | rejected | filter for `-a` (tm formerly read it as force) | C3 `tests/tmux_cli_flags.rs::sessions_kill_session_rejects_flags_it_does_not_implement` | internal |
+| `kill-session` | `-g` | rejected | kill every session in the target's group | C3 `tests/tmux_cli_flags.rs::sessions_kill_session_rejects_flags_it_does_not_implement` | internal |
+| `kill-session` | `-t` | match | session to kill; a missing session fails with `can't find session` | C3 `tests/tmux_cli_flags.rs::sessions_kill_session_flags_match_the_reference` | differential |
+| `kill-session` | `kill` | tm-only | alias that tmux 3.8 lacks (ambiguous prefix there) | C3 `tests/tmux_cli_flags.rs::sessions_tm_only_aliases_run_the_canonical_command` | internal |
+| `kill-server` | `(any flag)` | rejected | tmux 3.8 defines no flags | C3 `tests/tmux_cli_flags.rs::sessions_kill_server_accepts_no_flags` | internal |
+| `list-clients` | `-F` | match | output format; `client_name` is `client<N>` in tm and the tty path in tmux, so formats compare through the shared variables | C3 `tests/tmux_cli_flags.rs::sessions_list_clients_flags_match_the_reference` | differential |
+| `list-clients` | `-F (default format)` | tm-only | tm prints `client<N>: <session>`; tmux prints the tty, session, size, and terminal | C3 `tests/tmux_cli_flags.rs::sessions_list_clients_names_and_default_format_are_tm_only` | internal |
+| `list-clients` | `-f` | rejected | format filter | C3 `tests/tmux_cli_flags.rs::sessions_list_clients_rejects_flags_it_does_not_implement` | internal |
+| `list-clients` | `-O` | rejected | sort order | C3 `tests/tmux_cli_flags.rs::sessions_list_clients_rejects_flags_it_does_not_implement` | internal |
+| `list-clients` | `-r` | rejected | reverse the sort order | C3 `tests/tmux_cli_flags.rs::sessions_list_clients_rejects_flags_it_does_not_implement` | internal |
+| `list-clients` | `-t` | rejected | list only the clients of a session | C3 `tests/tmux_cli_flags.rs::sessions_list_clients_rejects_flags_it_does_not_implement` | internal |
+| `list-sessions` | `-a` | rejected | not a tmux 3.8 flag (tm formerly ignored it) | C3 `tests/tmux_cli_flags.rs::sessions_list_sessions_rejects_flags_it_does_not_implement` | internal |
+| `list-sessions` | `-F` | match | output format, including `session_attached` for attached clients | C3 `tests/tmux_cli_flags.rs::sessions_list_sessions_flags_match_the_reference` | differential |
+| `list-sessions` | `-F (default format)` | tm-only | tm prints `<name>: <n> windows`; tmux appends the creation time, group, and `(attached)` | C3 `tests/tmux_cli_flags.rs::sessions_list_sessions_default_format_is_a_tm_only_prefix` | internal |
+| `list-sessions` | `-f` | rejected | format filter (tm formerly ignored it) | C3 `tests/tmux_cli_flags.rs::sessions_list_sessions_rejects_flags_it_does_not_implement` | internal |
+| `list-sessions` | `-O` | rejected | sort order | C3 `tests/tmux_cli_flags.rs::sessions_list_sessions_rejects_flags_it_does_not_implement` | internal |
+| `list-sessions` | `-r` | rejected | reverse the sort order | C3 `tests/tmux_cli_flags.rs::sessions_list_sessions_rejects_flags_it_does_not_implement` | internal |
+| `rename-session` | `-t` | match | session to rename; a duplicate name or missing session fails like tmux | C3 `tests/tmux_cli_flags.rs::sessions_rename_session_flags_match_the_reference` | differential |
+| `rename-session` | `(any other flag)` | rejected | tmux 3.8 defines only `-t` | C3 `tests/tmux_cli_flags.rs::sessions_rename_session_rejects_flags_it_does_not_implement` | internal |
+| `switch-client` | `-c` | match | target client; the default is the most recently active client | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_flags_match_the_reference` | differential |
+| `switch-client` | `-E` | rejected | skip `update-environment` | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-F` | rejected | format for the target | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-l` | rejected | switch to the last session | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-n` | rejected | switch to the next session | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-O` | rejected | sort order for `-n` and `-p` | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-p` | rejected | switch to the previous session | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-r` | rejected | toggle the read-only client flag | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-T` | rejected | set the client key table | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-t` | match | target session by name, `=name`, or `$id` | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_flags_match_the_reference` | differential |
+| `switch-client` | `-t (window or pane target)` | rejected | `session:window`, `.pane`, `%pane`, and `=` select a window or pane as well | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `switch-client` | `-Z` | rejected | keep the window zoomed | C3 `tests/tmux_cli_flags.rs::sessions_switch_client_rejects_flags_and_targets_it_does_not_implement` | internal |
+| `refresh-client` | `(no flag)` | match | redraw the whole target client | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_flags_match_the_reference` | differential |
+| `refresh-client` | `-A` | rejected | pane output state | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-B` | rejected | control-mode subscription | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-c` | rejected | reset the pan offset | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-C` | rejected | client size | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-D` | rejected | pan down | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-f` | rejected | client flags | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-F` | rejected | client flags (alias of `-f`) | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-l` | rejected | request the clipboard (tm formerly ignored `-S`, `-l`, and `-r`) | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-L` | rejected | pan left | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-r` | rejected | report a pane's terminal colors (tm formerly ignored `-S`, `-l`, and `-r`) | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-R` | rejected | pan right | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-S` | rejected | refresh only the status line (tm formerly ignored `-S`, `-l`, and `-r`) | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-U` | rejected | pan up | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_rejects_flags_it_does_not_implement` | internal |
+| `refresh-client` | `-t` | match | target client; the default is the most recently active client | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_flags_match_the_reference` | differential |
+| `refresh-client` | `refresh` | match | alias of `refresh-client` | C3 `tests/tmux_cli_flags.rs::sessions_tm_only_aliases_run_the_canonical_command` | differential |
+| `refresh-client` | `refreshc` | tm-only | alias that tmux 3.8 lacks | C3 `tests/tmux_cli_flags.rs::sessions_tm_only_aliases_run_the_canonical_command` | internal |
+
 ## Baseline
 
 Recorded 2026-10-30 from commit `05f4737` before the first product slice.
