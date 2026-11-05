@@ -185,7 +185,7 @@ fn start_signal_thread(
                     let _ = stdout.flush();
                     let _ = terminal::apply_termios(&original);
                     unsafe {
-                        libc::kill(libc::getpid(), libc::SIGSTOP);
+                        libc::raise(libc::SIGSTOP);
                     }
                     let _ = terminal::apply_termios(&raw);
                     let mut stdout = io::stdout();

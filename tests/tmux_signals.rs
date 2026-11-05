@@ -41,6 +41,39 @@ fn attach(mux: &Mux, name: &str) -> (ptytest::PtyTest, ptytest::TerminalBaseline
     (terminal, baseline)
 }
 
+fn attached_client_pid(mux: &Mux) -> String {
+    let pattern = format!("{} attach-session", mux.socket().display());
+    let output = std::process::Command::new("pgrep")
+        .args(["-f", &pattern])
+        .output()
+        .expect("run pgrep");
+    let pids = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(pids.len(), 1, "expected one attached client, found {pids:?}");
+    pids.into_iter().next().expect("attached client pid")
+}
+
+fn wait_until_stopped(pid: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .expect("run ps");
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if state.starts_with('T') {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "client {pid} did not stop; state {state:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn terminate_signal_restores_termios_and_screen() {
     let scratch = Scratch::new("signals-term");
@@ -68,13 +101,22 @@ fn stop_signal_restores_the_screen_before_stopping() {
     let tm = Mux::tm(&scratch, "tm");
     create_session(&tm);
     let (mut client, _baseline) = attach(&tm, "tstp");
+    let pid = attached_client_pid(&tm);
     client.signal(libc::SIGTSTP).expect("send SIGTSTP");
     client
-        .wait_for_quiescence(client.deadline(Duration::from_secs(3)), Duration::from_millis(100))
+        .wait_for_screen(
+            client.deadline(Duration::from_secs(3)),
+            "SIGTSTP leaves the alternate screen",
+            |screen| !screen.modes().alternate_screen,
+        )
         .expect("read stop restoration");
+    wait_until_stopped(&pid, Duration::from_secs(3));
+    client
+        .drain(client.deadline(Duration::from_millis(1)))
+        .expect("drain output written before the stop");
     assert!(
         !client.screen().modes().alternate_screen,
-        "SIGTSTP must leave the alternate screen before stopping"
+        "the stopped client must not re-enter the alternate screen"
     );
     client.signal(libc::SIGKILL).expect("send SIGKILL");
     let _ = client.wait_for_exit(client.deadline(Duration::from_secs(3)));

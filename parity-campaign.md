@@ -5,9 +5,9 @@
 - **Goal:** within tm's compiled profile and narrow scope, every behavior advertised as matching tmux 3.8 has evidence that runs both implementations, observes the effect exactly, and passes at the qualified commit. The known CLI and lifecycle mismatches are fixed. Generated histories cover multi-step use, and the release artifact on this host passes the suite.
 - **Base:** `d171bbd`, toolchain `nightly-2026-09-15` (pinned; do not change), host x86_64 Alpine (`x86_64-unknown-linux-musl`).
 - **Preflight:** 2026-11-05. Verdict: ready.
-- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1.
+- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2.
 - **Red / parked:** none. Baseline reds are listed in **Baseline**.
-- **Next:** G2.
+- **Next:** G3.
 
 ## Charter
 
@@ -125,7 +125,6 @@ Measured 2026-11-05 at `d171bbd` on this host, under concurrent load from other 
 
 Known red before any change:
 
-- `tmux_signals::stop_signal_restores_the_screen_before_stopping` fails 4 of 5 runs. It waits on `wait_for_quiescence` (a settle wait) and matches the hosted Linux CI failure.
 - TMUX-9 reproduces 10 of 10: `tm -S S kill-server; tm -S S new-session -d` gives `failed to fill whole buffer`.
 - TMUX-8 reproduces: after `pipe-pane -t S -- true`, a `[sh] <defunct>` child stays under the daemon.
 - `tmux_modes` has 4 tests that each run longer than 60 s.
