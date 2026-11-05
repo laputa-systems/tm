@@ -1201,6 +1201,8 @@ mod windows {
                 &[&["respawn-window", "-k", "-t", "S:3", "--", "sleep", "301"], &["display-message", "-p", "-t", "S:3", "#{pane_start_command}"]],
                 &[&["respawn-window", "-k", "-t", "S:3", "sleep 302"]],
                 &[&["respawn-window", "-kt", "S:3"]],
+                &[&["respawn-window", "-k", "-t", "S:2"], &["list-panes", "-t", "S:2", "-F", "#{pane_index} #{pane_id}"]],
+                &[&["respawn-window", "-k", "-t", "S:3"], &["list-panes", "-t", "S:3", "-F", "#{pane_id}"]],
                 &[&["respawn-window", "-k"]],
                 &[&["respawn-window"]],
             ],

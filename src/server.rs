@@ -8528,7 +8528,11 @@ impl ServerState {
             });
         if window_command {
             let session_id = self.sessions[session_index].id;
-            let pane_id = self.next_pane_id();
+            let pane_id = self.sessions[session_index].windows[window_index]
+                .panes
+                .first()
+                .map(|pane| pane.id)
+                .ok_or_else(|| "target pane no longer exists".to_owned())?;
             let pane = self.new_pane(
                 shared,
                 NewPaneOptions {
@@ -8541,9 +8545,14 @@ impl ServerState {
                 },
             )?;
             let window = &mut self.sessions[session_index].windows[window_index];
-            for old in window.panes.drain(..) {
+            let replaced = window.panes.drain(..).collect::<Vec<_>>();
+            for old in &replaced {
                 old.pty.kill();
             }
+            for old in &replaced {
+                self.pane_pipes.remove(&old.id);
+            }
+            let window = &mut self.sessions[session_index].windows[window_index];
             window.layout = crate::model::Layout::Leaf(pane_id);
             window.panes.push(pane);
             window.active_pane = pane_id;
