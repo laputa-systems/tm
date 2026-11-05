@@ -1930,7 +1930,7 @@ fn format_modifiers_match_tmux_headlessly_without_extra_dependencies() {
         ("#{=/3/#{l:>}:@s}", "abc>"),
         ("#{e|+|:2,3}", "5"),
         ("#{e|*|f|2:2.5,2}", "5.00"),
-        ("#{t/f/%Y:@ts}", "__NONEMPTY__"),
+        ("#{t/f/%Y:@ts}", "__CURRENT_YEAR__"),
         ("#{T:@ts}", "1000000000"),
         ("#{E:@rec}", "__EMPTY__"),
         ("#{t/r:@ts}", "__NONEMPTY__"),
@@ -1945,7 +1945,19 @@ fn format_modifiers_match_tmux_headlessly_without_extra_dependencies() {
         ("#{s/(.)(.)/\\2\\1/:@s}", "badcfehgji"),
         ("#{s|foo/|bar/|:@slash}", "bar/bar bar/"),
     ];
+    let current_year = String::from_utf8(
+        std::process::Command::new("date")
+            .arg("+%Y")
+            .output()
+            .expect("date runs")
+            .stdout,
+    )
+    .expect("date prints UTF-8");
     for (format, expected) in cases {
+        if expected == "__CURRENT_YEAR__" {
+            assert_eq!(tm.ok(&["display-message", "-p", format]), current_year, "format {format:?}");
+            continue;
+        }
         if expected == "__NONEMPTY__" {
             assert!(!tm.ok(&["display-message", "-p", format]).trim().is_empty());
             continue;

@@ -114,7 +114,7 @@ suites do not cover.
 
 - **Area:** Formats
 - **Where:** `src/server.rs` time modifier handling
-- **Problem:** With `@ts` set to `1000000000`, `display-message -p '#{t/f/%%Y:@ts}'` prints `2001` in tm and the current year in tmux 3.8, and `#{t/f/%%Y:#{@ts}}` prints `2001` in tm and `1000000000` in tmux. `tests/tmux_core_compat.rs` expected `2001` for the single-percent form, which tmux answers with the current year because `display-message` runs `strftime` over the whole message first; the case was never compared with the reference and now only checks for output.
+- **Problem:** With `@ts` set to `1000000000`, `display-message -p '#{t/f/%%Y:@ts}'` prints `2001` in tm and the current year in tmux 3.8, and `#{t/f/%%Y:#{@ts}}` prints `2001` in tm and `1000000000` in tmux. `tests/tmux_core_compat.rs` expected `2001` for the single-percent form, which tmux answers with the current year because `display-message` runs `strftime` over the whole message first; the case was never compared with the reference and now asserts the current year that tmux prints.
 - **Recommendation:** Port `format_modifiers` time handling after probing the forms above and restore an exact assertion.
 - **Fix with:** reference-parity
 - **Effort:** S
