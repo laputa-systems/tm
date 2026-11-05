@@ -3,6 +3,7 @@ use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -444,13 +445,15 @@ fn handle_connection(
             command,
             background: false,
             target,
+            cwd,
+            delay_ms,
         } => {
-            let result = run_foreground_shell(&shared, &command, target.as_deref());
-            let (ok, body) = match result {
-                Ok(body) => (true, body),
-                Err(error) => (false, error),
-            };
-            let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
+            let message =
+                match run_foreground_shell(&shared, command, target.as_deref(), &cwd, delay_ms) {
+                    Ok((status, bytes)) => ServerMessage::Output { status, bytes },
+                    Err(body) => ServerMessage::Response { ok: false, body },
+                };
+            let _ = write_server_message(&mut stream, &message);
             return;
         }
         request => request,
@@ -473,30 +476,87 @@ fn handle_connection(
     let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
 }
 
+struct ShellRun {
+    output: Vec<u8>,
+    status: u8,
+}
+
+fn run_shell_process(
+    command: &str,
+    cwd: &str,
+    environment: &HashMap<String, String>,
+    delay_ms: Option<u32>,
+) -> Result<ShellRun, String> {
+    if let Some(delay_ms) = delay_ms {
+        thread::sleep(Duration::from_millis(u64::from(delay_ms)));
+    }
+    let output = Command::new("/bin/sh")
+        .arg0("sh")
+        .arg("-c")
+        .arg(command)
+        .envs(environment.iter())
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run command: {command}: {error}"))?;
+    let mut lines = Vec::new();
+    for line in output.stdout.split_inclusive(|byte| *byte == b'\n') {
+        lines.extend_from_slice(line.strip_suffix(b"\n").unwrap_or(line));
+        lines.push(b'\n');
+    }
+    let status = {
+        if let Some(code) = output.status.code() {
+            if code != 0 {
+                lines.extend_from_slice(format!("'{command}' returned {code}\n").as_bytes());
+            }
+            u8::try_from(code).unwrap_or(255)
+        } else if let Some(signal) = output.status.signal() {
+            lines.extend_from_slice(
+                format!("'{command}' terminated by signal {signal}\n").as_bytes(),
+            );
+            u8::try_from(128 + signal).unwrap_or(255)
+        } else {
+            0
+        }
+    };
+    Ok(ShellRun {
+        output: lines,
+        status,
+    })
+}
+
 fn run_foreground_shell(
     shared: &SharedState,
-    command: &str,
+    command: Option<String>,
     target: Option<&str>,
-) -> CommandResult {
-    let (environment, suppress_output) = {
+    cwd: &str,
+    delay_ms: Option<u32>,
+) -> Result<(u8, Vec<u8>), String> {
+    let (expanded, environment) = {
         let state = shared
             .lock()
             .map_err(|_| "server state lock is poisoned".to_owned())?;
         if let Some(target) = target {
             state.resolve_pane_target(Some(target))?;
         }
-        (state.environment.clone(), target.is_some())
+        let expanded = command
+            .as_deref()
+            .map(|command| state.display_message(target, command))
+            .transpose()?;
+        (expanded, state.environment.clone())
     };
-    let output = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command)
-        .envs(environment.iter())
-        .output()
-        .map_err(|error| format!("run-shell: {error}"))?;
-    if suppress_output {
-        Ok(String::new())
+    let Some(command) = expanded else {
+        if let Some(delay_ms) = delay_ms {
+            thread::sleep(Duration::from_millis(u64::from(delay_ms)));
+        }
+        return Ok((0, Vec::new()));
+    };
+    let run = run_shell_process(&command, cwd, &environment, delay_ms)?;
+    if target.is_some() {
+        Ok((run.status, Vec::new()))
     } else {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok((run.status, run.output))
     }
 }
 
@@ -7327,41 +7387,38 @@ impl ServerState {
 
     fn run_shell(
         &mut self,
-        command: &str,
+        command: Option<String>,
         background: bool,
         target: Option<&str>,
+        cwd: &str,
+        delay_ms: Option<u32>,
     ) -> CommandResult {
         if let Some(target) = target {
             let _ = self.resolve_pane_target(Some(target))?;
         }
+        let Some(command) = command
+            .as_deref()
+            .map(|command| self.display_message(target, command))
+            .transpose()?
+        else {
+            return Ok(String::new());
+        };
+        let environment = self.environment.clone();
         if background {
-            let mut child = Command::new("/bin/sh")
-                .arg("-c")
-                .arg(command)
-                .envs(self.environment.iter())
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|error| format!("run-shell: {error}"))?;
+            let cwd = cwd.to_owned();
             thread::Builder::new()
                 .name("tm-run-shell".to_owned())
                 .spawn(move || {
-                    let _ = child.wait();
+                    let _ = run_shell_process(&command, &cwd, &environment, delay_ms);
                 })
-                .ok();
+                .map_err(|error| format!("run-shell: {error}"))?;
             return Ok(String::new());
         }
-        let output = Command::new("/bin/sh")
-            .arg("-c")
-            .arg(command)
-            .envs(self.environment.iter())
-            .output()
-            .map_err(|error| format!("run-shell: {error}"))?;
+        let run = run_shell_process(&command, cwd, &environment, delay_ms)?;
         if target.is_some() {
             return Ok(String::new());
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(String::from_utf8_lossy(&run.output).into_owned())
     }
 
     fn session_group_info(&self, session_index: usize) -> (bool, usize, String) {
@@ -11786,7 +11843,9 @@ fn execute_request_inner(
             command,
             background,
             target,
-        } => state.run_shell(&command, background, target.as_deref()),
+            cwd,
+            delay_ms,
+        } => state.run_shell(command, background, target.as_deref(), &cwd, delay_ms),
         Request::HasSession { target } => state
             .resolve_session_target(Some(&target))
             .map(|_| String::new()),
@@ -12276,8 +12335,20 @@ fn execute_request_inner(
                 )
             }
         }
-        Request::DisplayMessage { target, format } => {
-            state.display_message(target.as_deref(), &format)
+        Request::DisplayMessage {
+            target,
+            format,
+            print,
+            literal,
+        } => {
+            let message = if literal {
+                state.resolve_pane_target(target.as_deref())?;
+                format
+            } else {
+                let expanded = format_strftime(unix_time(), &format);
+                state.display_message(target.as_deref(), &expanded)?
+            };
+            Ok(if print { message } else { String::new() })
         }
         Request::SetBuffer {
             name,
@@ -13941,7 +14012,7 @@ fn format_strftime(timestamp: i64, format: &str) -> String {
     if unsafe { libc::localtime_r(&timestamp, &mut broken_down) }.is_null() {
         return String::new();
     }
-    let mut buffer = [0u8; 256];
+    let mut buffer = [0u8; 2048];
     let length = unsafe {
         libc::strftime(
             buffer.as_mut_ptr().cast(),

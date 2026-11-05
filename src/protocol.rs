@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0007;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0009;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -178,6 +178,8 @@ pub(crate) enum Request {
     DisplayMessage {
         target: Option<String>,
         format: String,
+        print: bool,
+        literal: bool,
     },
     SetBuffer {
         name: Option<String>,
@@ -326,9 +328,11 @@ pub(crate) enum Request {
         target: Option<String>,
     },
     RunShell {
-        command: String,
+        command: Option<String>,
         background: bool,
         target: Option<String>,
+        cwd: String,
+        delay_ms: Option<u32>,
     },
 }
 
@@ -377,6 +381,7 @@ pub(crate) enum ClientMessage {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ServerMessage {
     Response { ok: bool, body: String },
+    Output { status: u8, bytes: Vec<u8> },
     Render(Vec<u8>),
     Restore(Vec<u8>),
     Closed,
@@ -656,10 +661,17 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_string(&mut payload, action);
             payload.extend_from_slice(&repeat.to_le_bytes());
         }
-        Request::DisplayMessage { target, format } => {
+        Request::DisplayMessage {
+            target,
+            format,
+            print,
+            literal,
+        } => {
             payload.push(23);
             put_optional_string(&mut payload, target);
             put_string(&mut payload, format);
+            put_bool(&mut payload, *print);
+            put_bool(&mut payload, *literal);
         }
         Request::SetBuffer {
             name,
@@ -930,11 +942,16 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             command,
             background,
             target,
+            cwd,
+            delay_ms,
         } => {
             payload.push(52);
-            put_string(&mut payload, command);
+            put_optional_string(&mut payload, command);
             put_bool(&mut payload, *background);
             put_optional_string(&mut payload, target);
+            put_string(&mut payload, cwd);
+            put_bool(&mut payload, delay_ms.is_some());
+            payload.extend_from_slice(&delay_ms.unwrap_or_default().to_le_bytes());
         }
         Request::ChooseTree {
             target,
@@ -1164,6 +1181,8 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         23 => Request::DisplayMessage {
             target: decoder.optional_string()?,
             format: decoder.string()?,
+            print: decoder.bool()?,
+            literal: decoder.bool()?,
         },
         24 => Request::SetBuffer {
             name: decoder.optional_string()?,
@@ -1314,11 +1333,21 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         51 => Request::RefreshClient {
             target: decoder.optional_string()?,
         },
-        52 => Request::RunShell {
-            command: decoder.string()?,
-            background: decoder.bool()?,
-            target: decoder.optional_string()?,
-        },
+        52 => {
+            let command = decoder.optional_string()?;
+            let background = decoder.bool()?;
+            let target = decoder.optional_string()?;
+            let cwd = decoder.string()?;
+            let delayed = decoder.bool()?;
+            let millis = decoder.u32()?;
+            Request::RunShell {
+                command,
+                background,
+                target,
+                cwd,
+                delay_ms: delayed.then_some(millis),
+            }
+        }
         53 => Request::ChooseTree {
             target: decoder.optional_string()?,
             filter: decoder.optional_string()?,
@@ -1372,6 +1401,11 @@ pub(crate) fn write_server_message(
             put_bool(&mut payload, *ok);
             put_string(&mut payload, body);
         }
+        ServerMessage::Output { status, bytes } => {
+            payload.push(5);
+            payload.push(*status);
+            put_bytes(&mut payload, bytes);
+        }
         ServerMessage::Render(bytes) => {
             payload.push(2);
             put_bytes(&mut payload, bytes);
@@ -1394,6 +1428,10 @@ pub(crate) fn read_server_message(stream: &mut impl Read) -> io::Result<ServerMe
             body: decoder.string()?,
         },
         2 => ServerMessage::Render(decoder.bytes()?),
+        5 => ServerMessage::Output {
+            status: decoder.byte()?,
+            bytes: decoder.bytes()?,
+        },
         4 => ServerMessage::Restore(decoder.bytes()?),
         3 => ServerMessage::Closed,
         _ => return Err(invalid_data("unknown server message tag")),
@@ -2255,6 +2293,8 @@ mod tests {
         28 => Request::DisplayMessage {
                 target: source.opt_text(),
                 format: source.text(),
+                print: source.flag(),
+                literal: source.flag(),
         },
         29 => Request::SetBuffer {
                 name: source.opt_text(),
@@ -2403,9 +2443,11 @@ mod tests {
                 target: source.opt_text(),
         },
         47 => Request::RunShell {
-                command: source.text(),
+                command: source.opt_text(),
                 background: source.flag(),
                 target: source.opt_text(),
+                cwd: source.text(),
+                delay_ms: source.flag().then(|| source.number()),
         },
         _ => unreachable!("request variant index out of range"),
         }
@@ -2516,7 +2558,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0007;
+    const GOLDEN_VERSION: u32 = 0x544d_0009;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2547,7 +2589,7 @@ mod tests {
         "18000000360102000000743200010200000074350200000074360101",
         "110000003701020000007432000102000000743500",
         "1d00000038010200000074320001010200000002000000743603000000c3a90901",
-        "0e0000001701020000007432020000007433",
+        "1000000017010200000074320200000074330101",
         "17000000180102000000743200030000000004ff01020000007436",
         "080000001901020000007432",
         "090000001b0102000000743200",
@@ -2566,7 +2608,7 @@ mod tests {
         "09000000270102000000743200",
         "0a00000028010200000074320001",
         "0d00000029010200000074320001010001",
-        "09000000340200000074310100",
+        "1b000000340102000000743200010200000074350200000074360108000001",
         "090000002b0102000000743200",
         "0f0000002c0102000000743200010100010100",
         "0f0000002d0200000074310102000000743301",
@@ -2622,6 +2664,10 @@ mod tests {
             (ServerMessage::Render(vec![27, 91]), "0700000002020000001b5b"),
             (ServerMessage::Restore(vec![27, 91]), "0700000004020000001b5b"),
             (ServerMessage::Closed, "0100000003"),
+            (
+                ServerMessage::Output { status: 3, bytes: vec![27, 91] },
+                "080000000503020000001b5b",
+            ),
         ];
         for (message, golden) in server {
             let mut bytes = Vec::new();

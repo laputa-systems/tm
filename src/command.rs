@@ -373,43 +373,30 @@ fn parse_has_session(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_run_shell(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut background = false;
-    let mut target = None;
-    let mut command = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-b" => background = true,
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-d" => {
-                index += 1;
-                let _ = argument(arguments, index, "-d")?;
-            }
-            "--" => {
-                command.extend_from_slice(&arguments[index + 1..]);
-                break;
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown run-shell option: {value}"));
-            }
-            _ => {
-                command.extend_from_slice(&arguments[index..]);
-                break;
-            }
+    let flags = scan_flags("run-shell", arguments, "bd:Ct:Es:c:", usize::MAX)?;
+    for (flag, name) in [('C', "-C"), ('E', "-E"), ('c', "-c")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "run-shell"));
         }
-        index += 1;
     }
-    if command.is_empty() {
-        return Err("run-shell requires a command".to_owned());
-    }
+    let delay_ms = flags.value('d').map(run_shell_delay).transpose()?;
+    let command = (!flags.positional.is_empty()).then(|| flags.positional.join(" "));
     Ok(InvocationSpec::plain(Request::RunShell {
-        command: command.join(" "),
-        background,
-        target,
+        command,
+        background: flags.has('b'),
+        target: flags.value('t').map(str::to_owned),
+        cwd: current_dir().ok_or_else(|| "cannot read the current directory".to_owned())?,
+        delay_ms,
     }))
+}
+
+fn run_shell_delay(value: &str) -> Result<u32, String> {
+    let seconds = value
+        .parse::<f64>()
+        .ok()
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .ok_or_else(|| format!("invalid delay time: {value}"))?;
+    u32::try_from((seconds * 1000.0) as u64).map_err(|_| format!("invalid delay time: {value}"))
 }
 
 fn parse_select_window(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -1123,28 +1110,37 @@ fn parse_capture_offset(value: &str) -> Option<i32> {
         .filter(|offset| *offset <= i32::from(i16::MAX))
 }
 
+const DISPLAY_MESSAGE_TEMPLATE: &str = "[#{session_name}] #{window_index}:#{window_name}, current pane #{pane_index} - (%H:%M %d-%b-%y)";
+
 fn parse_display_message(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut format = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-p" | "-v" => {}
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "--" => {
-                format = arguments.get(index + 1).cloned();
-                break;
-            }
-            value => format = Some(value.to_owned()),
+    let flags = scan_flags("display-message", arguments, "aCc:d:jlINpt:F:v", 1)?;
+    for (flag, name) in [
+        ('a', "-a"),
+        ('C', "-C"),
+        ('c', "-c"),
+        ('d', "-d"),
+        ('I', "-I"),
+        ('j', "-j"),
+        ('N', "-N"),
+        ('v', "-v"),
+    ] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "display-message"));
         }
-        index += 1;
     }
+    let format = match (flags.positional.first(), flags.value('F')) {
+        (Some(_), Some(_)) => {
+            return Err("only one of -F or argument must be given".to_owned());
+        }
+        (Some(message), None) => message.clone(),
+        (None, Some(format)) => format.to_owned(),
+        (None, None) => DISPLAY_MESSAGE_TEMPLATE.to_owned(),
+    };
     Ok(InvocationSpec::plain(Request::DisplayMessage {
-        target,
-        format: format.ok_or_else(|| "display-message requires a format".to_owned())?,
+        target: flags.value('t').map(str::to_owned),
+        format,
+        print: flags.has('p'),
+        literal: flags.has('l'),
     }))
 }
 

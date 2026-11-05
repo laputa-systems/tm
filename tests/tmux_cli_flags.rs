@@ -2992,3 +2992,217 @@ mod keys {
         assert_rejected("send-prefix", &[("-2", &["send-prefix", "-2", "-t", "S"])]);
     }
 }
+
+mod display {
+    use super::*;
+
+    fn probes(test: &str, commands: &[&[&str]]) {
+        let pair = Pair::new("display");
+        pair.start("S");
+        for mux in pair.both() {
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "two", "--", "sleep", "300"]);
+        }
+        for arguments in commands {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+        }
+    }
+
+    #[test]
+    fn display_display_message_flags_match_the_reference() {
+        probes(
+            "display_display_message_flags_match_the_reference",
+            &[
+                &["display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}"],
+                &["display", "-p", "#{window_name}"],
+                &["display-message", "-p", "-t", "S:two", "#{window_name}"],
+                &["display-message", "-pt", "S:two", "#{window_name}"],
+                &["display-message", "-p", "-F", "#{window_name}"],
+                &["display-message", "-pF", "#{window_name}", "-t", "S:two"],
+                &["display-message", "-p", "-F", "#{window_name}", "extra"],
+                &["display-message", "-p", "-l", "#{window_name} literal"],
+                &["display-message", "-pl", "-t", "S:two", "#{window_name}"],
+                &["display-message", "-p", "--", "-dash"],
+                &["display-message", "-p", "%Y"],
+                &["display-message", "-p", "100%%|%H:%M|%d-%b-%y"],
+                &["display-message", "-p", "%"],
+                &["display-message", "-l", "-p", "%Y"],
+                &["display-message", "-p", ""],
+                &["display-message", "-p", "a", "b"],
+                &["display-message", "-p"],
+                &["display-message", "-p", "-t"],
+                &["display-message", "-p", "#{window_name}", "-t", "S:two"],
+                &["display-message", "#{window_name}"],
+                &["display-message", "-t", "S:two", "#{window_name}"],
+            ],
+        );
+    }
+
+    #[test]
+    fn display_display_message_default_template_matches_the_reference() {
+        let pair = Pair::new("displaydefault");
+        pair.start("S");
+        let tm = pair.tm.body(&["display-message", "-p"]);
+        let reference = pair.reference.body(&["display-message", "-p"]);
+        let (tm_head, _) = tm.rsplit_once(" - (").expect("template tail");
+        let (reference_head, _) = reference.rsplit_once(" - (").expect("template tail");
+        assert_eq!(tm_head, reference_head);
+        assert_eq!(tm.len(), reference.len());
+    }
+
+    #[test]
+    fn display_display_message_unresolved_targets_fail_in_tm() {
+        let pair = Pair::new("displayfail");
+        pair.start("S");
+        for (target, message) in [
+            ("nosuch", "can't find pane: nosuch"),
+            ("S:nosuch", "can't find window: nosuch"),
+            ("S:1.7", "can't find pane: 7"),
+            ("%9", "can't find pane: %9"),
+        ] {
+            let output = pair.tm.run(&["display-message", "-p", "-t", target, "#{pane_id}"]);
+            assert!(!output.status.success(), "{target}");
+            assert_eq!(String::from_utf8_lossy(&output.stderr), format!("tm: {message}\n"));
+            assert!(output.stdout.is_empty(), "{target}");
+        }
+    }
+
+    #[test]
+    fn display_display_message_without_p_prints_nothing_in_tm() {
+        let pair = Pair::new("displayquiet");
+        pair.start("S");
+        let output = pair.tm.run(&["display-message", "#{pane_id}"]);
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn display_display_message_rejects_flags_it_does_not_implement() {
+        let pair = Pair::new("displayrej");
+        pair.start("S");
+        for (flag, arguments) in [
+            ("-a", &["display-message", "-p", "-a"][..]),
+            ("-C", &["display-message", "-C", "x"]),
+            ("-c", &["display-message", "-p", "-c", "client", "x"]),
+            ("-d", &["display-message", "-d", "10", "x"]),
+            ("-I", &["display-message", "-I"]),
+            ("-j", &["display-message", "-p", "-j", "{}"]),
+            ("-N", &["display-message", "-N", "x"]),
+            ("-v", &["display-message", "-p", "-v", "x"]),
+            ("-v", &["display-message", "-pv", "x"]),
+            ("-x", &["display-message", "-p", "-x", "x"]),
+        ] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for display-message\n"),
+                "{arguments:?}"
+            );
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn display_run_shell_flags_match_the_reference() {
+        let pair = Pair::new("runshell");
+        pair.start("S");
+        for mux in pair.both() {
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "two", "--", "sleep", "300"]);
+        }
+        let test = "display_run_shell_flags_match_the_reference";
+        for arguments in [
+            &["run-shell", "echo hi"][..],
+            &["run", "printf a"],
+            &["run-shell", "printf 'a\\nb\\n'"],
+            &["run-shell", "printf 'no newline'"],
+            &["run-shell", "printf '\\n\\n'"],
+            &["run-shell", "printf ''"],
+            &["run-shell", "true"],
+            &["run-shell", "false"],
+            &["run-shell", "exit 3"],
+            &["run-shell", "printf out; exit 2"],
+            &["run-shell", "echo err >&2"],
+            &["run-shell", "echo err >&2; exit 4"],
+            &["run-shell", "kill -9 $$"],
+            &["run-shell", "echo #{session_name}:#{window_index}"],
+            &["run-shell", "-t", "S:two", "echo #{window_name}"],
+            &["run-shell", "-t", "S:two", "echo hidden; exit 5"],
+            &["run-shell", "pwd"],
+            &["run-shell", "echo $0"],
+            &["run-shell", "-b", "echo hidden"],
+            &["run-shell", "-b", "exit 3"],
+            &["run-shell", "-bd", "0.1", "echo hidden"],
+            &["run-shell", "-d", "0.1", "echo delayed"],
+            &["run-shell", "-d", "0", "echo delayed"],
+            &["run-shell", "-d", "1e-1", "echo delayed"],
+            &["run-shell", "-d", "x", "echo no"],
+            &["run-shell", "-d", "1x", "echo no"],
+            &["run-shell", "-d", "0.1"],
+            &["run-shell", "-d"],
+            &["run-shell", "-s", "ignored", "echo hi"],
+            &["run-shell", "--", "echo dashed"],
+            &["run-shell"],
+            &["run-shell", "-t", "S:two"],
+            &["run-shell", "-b"],
+        ] {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+        }
+        for mux in pair.both() {
+            let marker = mux.root().join("marker");
+            let command = format!("touch {}", marker.display());
+            mux.ok(&["run-shell", "-b", &command]);
+            let deadline = Instant::now() + TIMEOUT;
+            while !marker.exists() {
+                assert!(Instant::now() < deadline, "background command never ran");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    #[test]
+    fn display_run_shell_delay_waits_in_both() {
+        let pair = Pair::new("runshelldelay");
+        pair.start("S");
+        for mux in pair.both() {
+            let started = Instant::now();
+            mux.ok(&["run-shell", "-d", "0.3", "true"]);
+            assert!(started.elapsed() >= Duration::from_millis(300), "{:?}", mux.implementation());
+            let started = Instant::now();
+            mux.ok(&["run-shell", "-bd", "0.3", "true"]);
+            assert!(started.elapsed() < Duration::from_millis(300), "{:?}", mux.implementation());
+        }
+    }
+
+    #[test]
+    fn display_run_shell_joins_arguments_and_fails_unresolved_targets_in_tm() {
+        let pair = Pair::new("runshelltm");
+        pair.start("S");
+        assert_eq!(pair.tm.ok(&["run-shell", "echo", "joined", "words"]), "joined words\n");
+        let output = pair.tm.run(&["run-shell", "-t", "nosuch", "echo hidden"]);
+        assert!(!output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "tm: can't find pane: nosuch\n");
+        assert!(output.stdout.is_empty());
+    }
+
+    #[test]
+    fn display_run_shell_rejects_flags_it_does_not_implement() {
+        let pair = Pair::new("runshellrej");
+        pair.start("S");
+        for (flag, arguments) in [
+            ("-C", &["run-shell", "-C", "display-message -p x"][..]),
+            ("-E", &["run-shell", "-E", "echo x"]),
+            ("-c", &["run-shell", "-c", "/", "echo x"]),
+            ("-x", &["run-shell", "-x", "echo x"]),
+        ] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for run-shell\n"),
+                "{arguments:?}"
+            );
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+        }
+    }
+}

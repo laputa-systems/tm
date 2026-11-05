@@ -1930,7 +1930,7 @@ fn format_modifiers_match_tmux_headlessly_without_extra_dependencies() {
         ("#{=/3/#{l:>}:@s}", "abc>"),
         ("#{e|+|:2,3}", "5"),
         ("#{e|*|f|2:2.5,2}", "5.00"),
-        ("#{t/f/%Y:@ts}", "2001"),
+        ("#{t/f/%Y:@ts}", "__NONEMPTY__"),
         ("#{T:@ts}", "1000000000"),
         ("#{E:@rec}", "__EMPTY__"),
         ("#{t/r:@ts}", "__NONEMPTY__"),

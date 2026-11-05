@@ -43,15 +43,27 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     let mut stream = connect_or_start(&socket, starts_server)?;
     send_request(&mut stream, &socket, &frame)?;
     let response = read_server_message(&mut stream).map_err(|error| error.to_string())?;
-    let ServerMessage::Response { ok, body } = response else {
-        return Err("server returned an invalid command response".to_owned());
+    let (ok, body) = match response {
+        ServerMessage::Response { ok, body } => (ok, body),
+        ServerMessage::Output { status, bytes } => {
+            let mut stdout = io::stdout();
+            stdout
+                .write_all(&bytes)
+                .and_then(|()| stdout.flush())
+                .map_err(|error| error.to_string())?;
+            if status != 0 {
+                std::process::exit(i32::from(status));
+            }
+            return Ok(());
+        }
+        _ => return Err("server returned an invalid command response".to_owned()),
     };
     if !ok {
         return Err(body);
     }
     let prints_body = match &request {
         crate::protocol::Request::NewSession { format, .. } => format.is_some(),
-        crate::protocol::Request::DisplayMessage { .. } => true,
+        crate::protocol::Request::DisplayMessage { print, .. } => *print,
         crate::protocol::Request::CapturePane { print, .. } => *print,
         _ => !body.is_empty(),
     };
@@ -370,7 +382,7 @@ fn attach_stream(mut stream: UnixStream, size: Size) -> Result<(), String> {
                 stdout.flush().map_err(|error| error.to_string())?;
             }
             Ok(ServerMessage::Closed) => break,
-            Ok(ServerMessage::Response { .. }) => {}
+            Ok(ServerMessage::Response { .. } | ServerMessage::Output { .. }) => {}
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(error) => return Err(error.to_string()),
         }

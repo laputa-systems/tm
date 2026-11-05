@@ -488,6 +488,32 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `send-keys` | `-P` | rejected | not a tmux 3.8 send-keys flag (tm formerly accepted it after `-X`; it is now a copy-mode command flag) | C6a `tests/tmux_cli_flags.rs::keys_send_keys_rejects_flags_it_does_not_implement` | internal |
 | `send-prefix` | `-t` | match | target pane | C6a `tests/tmux_cli_flags.rs::keys_send_prefix_flags_match_the_reference` | differential |
 | `send-prefix` | `-2` | rejected | send the secondary prefix; tm has no `prefix2` | C6a `tests/tmux_cli_flags.rs::keys_send_prefix_rejects_the_secondary_prefix` | internal |
+| `display-message` | `-p` | match | print the message on standard output (row `(without -p)` covers the other case); tmux without it shows the message on an attached client and prints nothing otherwise | C6a `tests/tmux_cli_flags.rs::display_display_message_flags_match_the_reference` | differential |
+| `display-message` | `(message)` | match | format expanded after `strftime`; with no message and no `-F` the default template `[#{session_name}] #{window_index}:#{window_name}, current pane #{pane_index} - (%H:%M %d-%b-%y)` | C6a `tests/tmux_cli_flags.rs::display_display_message_flags_match_the_reference`; C6a `tests/tmux_cli_flags.rs::display_display_message_default_template_matches_the_reference` | differential |
+| `display-message` | `-F` | match | format to expand; combined with a message it is an error | C6a `tests/tmux_cli_flags.rs::display_display_message_flags_match_the_reference` | differential |
+| `display-message` | `-l` | match | print the message without expanding formats | C6a `tests/tmux_cli_flags.rs::display_display_message_flags_match_the_reference` | differential |
+| `display-message` | `-t` | match | target pane | C6a `tests/tmux_cli_flags.rs::display_display_message_flags_match_the_reference` | differential |
+| `display-message` | `-t (unresolved target)` | tm-only | tmux falls back to the current session, window, or pane (or to empty values for an unknown session or pane id); tm fails with `can't find ...` | C6a `tests/tmux_cli_flags.rs::display_display_message_unresolved_targets_fail_in_tm` | internal |
+| `display-message` | `(without -p)` | tm-only | tmux shows the message on the status line of an attached client; tm has no status messages and prints nothing | C6a `tests/tmux_cli_flags.rs::display_display_message_without_p_prints_nothing_in_tm` | internal |
+| `display-message` | `-a` | rejected | list every format variable | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `display-message` | `-C` | rejected | status message without freezing the screen | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `display-message` | `-c` | rejected | target client | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `display-message` | `-d` | rejected | status message delay | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `display-message` | `-I` | rejected | forward pane input | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `display-message` | `-j` | rejected | print JSON | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `display-message` | `-N` | rejected | ignore key presses on the status message | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `display-message` | `-v` | rejected | print the format expansion trace (tm formerly ignored it) | C6a `tests/tmux_cli_flags.rs::display_display_message_rejects_flags_it_does_not_implement` | internal |
+| `run-shell` | `(command)` | match | run through `/bin/sh -c` in the client directory after format expansion; output is printed a line at a time, a nonzero status adds `'cmd' returned N` and becomes the exit status, a signal adds `terminated by signal N`; stderr is dropped | C6a `tests/tmux_cli_flags.rs::display_run_shell_flags_match_the_reference` | differential |
+| `run-shell` | `-b` | tm-only | return immediately and run the command in the background, as tmux does; tmux shows the command's output in a view-mode pane, tm drops it | C6a `tests/tmux_cli_flags.rs::display_run_shell_flags_match_the_reference`; C6a `tests/tmux_cli_flags.rs::display_run_shell_delay_waits_in_both` | differential |
+| `run-shell` | `-d` | match | wait this many seconds before running; a value that is not a number is an error | C6a `tests/tmux_cli_flags.rs::display_run_shell_flags_match_the_reference`; C6a `tests/tmux_cli_flags.rs::display_run_shell_delay_waits_in_both` | differential |
+| `run-shell` | `-s` | match | accepted and ignored | C6a `tests/tmux_cli_flags.rs::display_run_shell_flags_match_the_reference` | differential |
+| `run-shell` | `-t` | tm-only | pane for format expansion and exit status match tmux; tmux shows the output in a view-mode pane, tm drops it | C6a `tests/tmux_cli_flags.rs::display_run_shell_flags_match_the_reference` | differential |
+| `run-shell` | `(extra arguments)` | tm-only | tm joins every argument with spaces; tmux runs only the first and exposes the rest as `#{1}`, `#{2}` | C6a `tests/tmux_cli_flags.rs::display_run_shell_joins_arguments_and_fails_unresolved_targets_in_tm` | internal |
+| `run-shell` | `-t (unresolved target)` | tm-only | tmux prints to standard output when the target is unresolved; tm fails with `can't find ...` | C6a `tests/tmux_cli_flags.rs::display_run_shell_joins_arguments_and_fails_unresolved_targets_in_tm` | internal |
+| `run-shell` | `-C` | rejected | run the argument as a tmux command | C6a `tests/tmux_cli_flags.rs::display_run_shell_rejects_flags_it_does_not_implement` | internal |
+| `run-shell` | `-E` | rejected | show standard error | C6a `tests/tmux_cli_flags.rs::display_run_shell_rejects_flags_it_does_not_implement` | internal |
+| `run-shell` | `-c` | rejected | start directory | C6a `tests/tmux_cli_flags.rs::display_run_shell_rejects_flags_it_does_not_implement` | internal |
+| `run-shell` | `(any other flag)` | rejected | tmux 3.8 defines only `-b`, `-d`, `-C`, `-t`, `-E`, `-s`, and `-c` | C6a `tests/tmux_cli_flags.rs::display_run_shell_rejects_flags_it_does_not_implement` | internal |
 
 ## Baseline
 
