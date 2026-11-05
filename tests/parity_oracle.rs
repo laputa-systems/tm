@@ -3,15 +3,15 @@
 #[path = "support/parity.rs"]
 #[allow(dead_code)]
 mod parity;
-#[path = "support/pty_harness.rs"]
+#[path = "support/raw_pty.rs"]
 #[allow(dead_code)]
-mod pty_harness;
+mod raw_pty;
 
 use std::process::Command;
 use std::time::Duration;
 
 use parity::{ExitStatus, Field, KnownDifference, Mux, Outcome, Scratch};
-use ptytest::{ProtocolProfile, Size};
+use raw_pty::RawClient;
 
 fn create_session(mux: &Mux) {
     mux.ok(&[
@@ -88,42 +88,41 @@ fn listed_difference_must_persist_and_unlisted_difference_fails() {
     assert!(parity::check_command(&known, "listed", command, &diverged, &reference).is_err());
 }
 
-fn attached_screen(mux: &Mux, name: &str) -> ptytest::ScreenSnapshot {
-    let mut client = pty_harness::spawn_attached_with_profile(
-        mux,
-        name,
-        &["attach-session", "-t", "S"],
-        Size::new(80, 8).expect("size"),
-        ProtocolProfile::xterm_minimal_v1(),
-    );
-    let baseline = client.terminal_baseline();
-    let screen = client
-        .wait_for_screen(
-            client.deadline(Duration::from_secs(5)),
-            "alternate screen entered",
-            |screen| screen.modes().alternate_screen,
-        )
-        .expect("attached client enters the alternate screen");
-    pty_harness::detach(&mut client, &baseline);
-    screen
+fn attached_modes(mux: &Mux, name: &str) -> raw_pty::ObservedModes {
+    let mut client = RawClient::spawn(mux, name, &["attach-session", "-t", "S"], 8, 80);
+    client.wait_for_screen("alternate screen entered", Duration::from_secs(5), |screen| {
+        screen.alternate_screen() && screen.bracketed_paste()
+    });
+    client.wait_for_text("(S)", Duration::from_secs(5));
+    let modes = client.modes();
+    assert_eq!(client.detach(), Some(0));
+    modes
 }
 
 #[test]
 fn comparator_detects_a_flipped_terminal_mode_of_an_attached_client() {
     let scratch = Scratch::new("oracle-modes");
     let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
     create_session(&tm);
-    let first = attached_screen(&tm, "first").modes().clone();
-    let second = attached_screen(&tm, "second").modes().clone();
-    assert!(first.alternate_screen);
-    assert_eq!(parity::observation_difference("terminal modes", &first, &second), None);
+    create_session(&reference);
+    let observed = attached_modes(&tm, "tm");
+    let expected = attached_modes(&reference, "reference");
+    assert!(expected.alternate_screen && expected.bracketed_paste);
+    assert_eq!(
+        parity::observation_difference("terminal modes", &observed, &expected),
+        None
+    );
 
-    let mut flipped = second.clone();
+    let mut flipped = observed.clone();
     flipped.alternate_screen = !flipped.alternate_screen;
-    assert!(parity::observation_difference("terminal modes", &first, &flipped).is_some());
-    let mut flipped = second.clone();
+    assert!(parity::observation_difference("terminal modes", &flipped, &expected).is_some());
+    let mut flipped = observed.clone();
     flipped.bracketed_paste = !flipped.bracketed_paste;
-    assert!(parity::observation_difference("terminal modes", &first, &flipped).is_some());
+    assert!(parity::observation_difference("terminal modes", &flipped, &expected).is_some());
+    let mut flipped = observed.clone();
+    flipped.mouse_mode.push('x');
+    assert!(parity::observation_difference("terminal modes", &flipped, &expected).is_some());
 }
 
 #[test]

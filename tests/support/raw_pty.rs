@@ -17,6 +17,17 @@ pub struct Shared {
 
 type Monitor = Arc<(Mutex<Shared>, Condvar)>;
 
+const DEVICE_ATTRIBUTES_QUERY: &[u8] = b"\x1b[c";
+const DEVICE_ATTRIBUTES_REPLY: &[u8] = b"\x1b[?1;2c";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservedModes {
+    pub alternate_screen: bool,
+    pub bracketed_paste: bool,
+    pub mouse_mode: String,
+    pub mouse_encoding: String,
+}
+
 pub struct RawClient {
     master: File,
     child: Child,
@@ -115,8 +126,10 @@ impl RawClient {
         ));
         let mut source = master.try_clone().expect("duplicate master for reader");
         let reader_monitor = Arc::clone(&monitor);
+        let mut replies = master.try_clone().expect("duplicate master for replies");
         let reader = std::thread::spawn(move || {
             let mut buffer = [0u8; 4096];
+            let mut answered = 0;
             loop {
                 let count = match source.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
@@ -125,6 +138,11 @@ impl RawClient {
                 let mut shared = lock(&reader_monitor);
                 shared.bytes.extend_from_slice(&buffer[..count]);
                 shared.parser.process(&buffer[..count]);
+                let queries = self::count(&shared.bytes, DEVICE_ATTRIBUTES_QUERY);
+                while answered < queries {
+                    answered += 1;
+                    let _ = replies.write_all(DEVICE_ATTRIBUTES_REPLY);
+                }
                 reader_monitor.1.notify_all();
             }
             lock(&reader_monitor).closed = true;
@@ -157,6 +175,17 @@ impl RawClient {
 
     pub fn screen_text(&self) -> String {
         lock(&self.monitor).parser.screen().contents()
+    }
+
+    pub fn modes(&self) -> ObservedModes {
+        let shared = lock(&self.monitor);
+        let screen = shared.parser.screen();
+        ObservedModes {
+            alternate_screen: screen.alternate_screen(),
+            bracketed_paste: screen.bracketed_paste(),
+            mouse_mode: format!("{:?}", screen.mouse_protocol_mode()),
+            mouse_encoding: format!("{:?}", screen.mouse_protocol_encoding()),
+        }
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -207,6 +236,16 @@ impl RawClient {
         })
     }
 
+    pub fn wait_for_stream<T>(
+        &self,
+        from: Mark,
+        what: &str,
+        timeout: Duration,
+        mut probe: impl FnMut(&[u8]) -> Option<T>,
+    ) -> T {
+        self.wait_until(what, timeout, |shared| probe(&shared.bytes[from.0..]))
+    }
+
     pub fn wait_for_text(&self, text: &str, timeout: Duration) {
         self.wait_until(&format!("screen text {text:?}"), timeout, |shared| {
             shared.parser.screen().contents().contains(text).then_some(())
@@ -254,4 +293,21 @@ pub fn count(haystack: &[u8], needle: &[u8]) -> usize {
 
 pub fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+pub fn osc52_payloads(stream: &[u8]) -> Vec<String> {
+    let opener = b"\x1b]52;";
+    let mut payloads = Vec::new();
+    let mut offset = 0;
+    while let Some(at) = find(&stream[offset..], opener) {
+        let body = &stream[offset + at + opener.len()..];
+        let Some(end) = body.iter().position(|byte| *byte == 0x07 || *byte == 0x1b) else {
+            break;
+        };
+        let text = String::from_utf8_lossy(&body[..end]);
+        let (_, payload) = text.split_once(';').unwrap_or(("", &text));
+        payloads.push(payload.to_owned());
+        offset += at + opener.len() + end;
+    }
+    payloads
 }

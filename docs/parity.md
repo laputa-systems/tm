@@ -17,7 +17,7 @@ the proving slice and the test that must carry the evidence.
 | Contract item | Selected semantics | Scenario | Implementation | Test | Status | Intentional difference |
 | --- | --- | --- | --- | --- | --- | --- |
 | `default-terminal` | Pane `TERM=tmux-256color` | R2 | `src/server.rs` pane spawn environment | R2 `tests/terminal_corpus.rs::pane_terminal_and_set_titles_match_the_reference` | pass | none |
-| `terminal-features` | `tmux-256color:Sync:clipboard` selects sync and clipboard | C1 | `src/terminal.rs` capability profile | C1 `tests/tmux_terminal_modes.rs::runtime_extkeys_feature_uses_the_reference_pair` | pass | none |
+| `terminal-features` | `tmux-256color:Sync:clipboard` selects sync and clipboard | C1 | `src/terminal.rs` capability profile | C1 `tests/tmux_terminal_modes.rs::terminal_features_sync_and_clipboard_select_for_the_term_like_the_reference` | pass | none |
 | `set-clipboard` | `external`: tm copies use OSC 52, application OSC 52 ignored | R5 | `src/server.rs` clipboard path | R5 `tests/tmux_notifications.rs::application_osc52_is_ignored_in_external_mode`; R5 `tests/tmux_notifications.rs::tm_copy_emits_osc52_once_per_capable_client` | pass | none |
 | `extended-keys` | `on`: pane-requested CSI-u input | I3 | `src/server.rs` input decoder | I3 `tests/tmux_modes.rs::extended_pane_receives_all_modified_printable_keys`; I3 `tests/tmux_modes.rs::extended_pane_receives_specials_and_special_modifiers` | pass | none |
 | `extended-keys-format` | `csi-u` selected for extended panes | I3 | `src/server.rs` pane encoder | I3 `tests/tmux_modes.rs::extended_pane_receives_all_modified_printable_keys`; I3 `tests/tmux_modes.rs::legacy_pane_receives_the_legacy_encoding` | pass | none |
