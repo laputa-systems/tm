@@ -1909,7 +1909,19 @@ impl ServerState {
                 return Ok(String::new());
             }
         }
-        let insertion_index = if after || before {
+        let relative_target = target
+            .map(|target| target.split_once(':').map_or(target, |(_, window)| window))
+            .is_some_and(|part| part.starts_with(['+', '-']));
+        let absent_index = requested_index.filter(|index| {
+            !relative_target
+                && self.sessions[session_index]
+                    .windows
+                    .iter()
+                    .all(|window| window.index != *index)
+        });
+        let insertion_index = if absent_index.is_some() {
+            absent_index
+        } else if after || before {
             let session = &self.sessions[session_index];
             let base = requested_index
                 .filter(|index| session.windows.iter().any(|window| window.index == *index))
@@ -1939,9 +1951,9 @@ impl ServerState {
         let (session_id, size, window_index, session_cwd) = {
             let session = &mut self.sessions[session_index];
             let index = insertion_index.unwrap_or_else(|| {
-                (session.base_index..=session.next_window_index)
+                (session.base_index..)
                     .find(|index| session.windows.iter().all(|window| window.index != *index))
-                    .unwrap_or(session.next_window_index)
+                    .expect("a free window index exists")
             });
             (session.id, session.size, index, session.cwd.clone())
         };
@@ -7234,9 +7246,10 @@ impl ServerState {
     }
 
     fn list_sessions(&self, format: Option<&str>) -> String {
-        self.sessions
-            .iter()
-            .enumerate()
+        let mut order = self.sessions.iter().enumerate().collect::<Vec<_>>();
+        order.sort_by(|left, right| left.1.name.cmp(&right.1.name));
+        order
+            .into_iter()
             .map(|(index, session)| match format {
                 Some(format) => {
                     let (grouped, group_size, group_list) = self.session_group_info(index);
@@ -8048,7 +8061,11 @@ impl ServerState {
             .next_window_index
             .max(destination_number.saturating_add(1));
         if select {
-            destination.select_window(destination_number);
+            if destination_session == source_session && destination.active_window == source_number {
+                destination.active_window = destination_number;
+            } else {
+                destination.select_window(destination_number);
+            }
         }
         let destination_id = destination.id;
         let source_session_id = self.sessions[source_session].id;
@@ -8118,7 +8135,10 @@ impl ServerState {
     ) -> CommandResult {
         if renumber {
             let session_index = match target {
-                Some(target) => self.resolve_session_target(Some(target))?,
+                Some(target) => match self.resolve_session_target(Some(target)) {
+                    Ok(index) => index,
+                    Err(_) => return Ok(String::new()),
+                },
                 None => self.resolve_session_index(None)?,
             };
             let session_id = self.sessions[session_index].id;
@@ -8376,6 +8396,14 @@ impl ServerState {
         direction: Option<PaneDirection>,
         detached: bool,
     ) -> CommandResult {
+        let marked = self.marked_pane.map(|id| format!("%{id}"));
+        let resolved_source = match (direction, source.or(marked.as_deref())) {
+            (None, requested) => Some(self.resolve_pane_target(requested)?),
+            (Some(_), Some(requested)) if source.is_some() => {
+                Some(self.resolve_pane_target(Some(requested))?)
+            }
+            (Some(_), _) => None,
+        };
         let (target_session, target_window, target_id) = self.resolve_pane_target(target)?;
         let (source_session, source_window, source_id) = match direction {
             Some(direction) => {
@@ -8392,10 +8420,7 @@ impl ServerState {
                 };
                 (target_session, target_window, other)
             }
-            None => {
-                let marked = self.marked_pane.map(|id| format!("%{id}"));
-                self.resolve_pane_target(source.or(marked.as_deref()))?
-            }
+            None => resolved_source.expect("source resolved when no direction is given"),
         };
         if source_id == target_id {
             return Ok(String::new());
@@ -8459,9 +8484,9 @@ impl ServerState {
 
     fn next_free_window_index(&self, session_index: usize) -> u32 {
         let session = &self.sessions[session_index];
-        (session.base_index..=session.next_window_index)
+        (session.base_index..)
             .find(|index| session.windows.iter().all(|window| window.index != *index))
-            .unwrap_or_else(|| session.next_window_index.saturating_add(1))
+            .expect("a free window index exists")
     }
 
     fn break_pane(
@@ -8494,15 +8519,22 @@ impl ServerState {
         };
         let target_session = self.resolve_session_target(Some(target_session_target))?;
         let new_index = if let Some(part) = target_window_part {
-            let index = part
-                .parse::<u32>()
-                .map_err(|_| format!("can't find window: {part}"))?;
+            let index = self
+                .window_index_for_creation(target_session, part)?
+                .ok_or_else(|| format!("can't find window: {part}"))?;
             if self.sessions[target_session]
                 .windows
                 .iter()
                 .any(|window| window.index == index)
             {
-                return Err(format!("index in use: {index}"));
+                let only_pane_stays = target_session == source_session
+                    && self.sessions[source_session].windows[source_window].index == index
+                    && self.sessions[source_session].windows[source_window].panes.len() == 1;
+                return Err(if only_pane_stays {
+                    format!("same index: {index}")
+                } else {
+                    format!("index in use: {index}")
+                });
             }
             index
         } else {
@@ -8511,6 +8543,7 @@ impl ServerState {
         let source_window_id = self.sessions[source_session].windows[source_window].id;
         if self.sessions[source_session].windows[source_window].panes.len() == 1 {
             let target_text = format!("{}:{new_index}", self.sessions[target_session].name);
+            let target_session_id = self.sessions[target_session].id;
             self.relink_window(
                 Some(&format!("@{source_window_id}")),
                 Some(&target_text),
@@ -8527,7 +8560,7 @@ impl ServerState {
                         .windows
                         .iter()
                         .position(|window| window.id == source_window_id)
-                        .filter(|_| session.id == self.sessions[target_session].id)
+                        .filter(|_| session.id == target_session_id)
                         .map(|window_index| (session_index, window_index))
                 })
                 .ok_or_else(|| "moved window no longer exists".to_owned())?;
@@ -8568,6 +8601,9 @@ impl ServerState {
             pane,
         );
         self.sessions[target_session].windows.push(window);
+        self.sessions[target_session]
+            .windows
+            .sort_by_key(|window| window.index);
         self.sessions[target_session].next_window_index = self.sessions[target_session]
             .next_window_index
             .max(new_index.saturating_add(1));
@@ -8917,12 +8953,11 @@ impl ServerState {
             pane.pty.kill();
         }
         if window.panes.is_empty() {
-            self.sessions[session_index].windows.remove(window_index);
+            let removed = self.sessions[session_index].windows.remove(window_index);
             if self.sessions[session_index].windows.is_empty() {
                 self.sessions.remove(session_index);
             } else {
-                let new_index = self.sessions[session_index].windows[0].index;
-                self.sessions[session_index].select_window(new_index);
+                self.sessions[session_index].select_after_removing(removed.index);
                 if self.sessions[session_index].renumber_windows {
                     renumber_session_windows(&mut self.sessions[session_index]);
                 }
@@ -8936,10 +8971,21 @@ impl ServerState {
         Ok(String::new())
     }
 
+    fn renumber_all_sessions(&mut self) {
+        for session in &mut self.sessions {
+            if session.renumber_windows {
+                renumber_session_windows(session);
+            }
+        }
+    }
+
     fn kill_window(&mut self, target: Option<&str>, all: bool) -> CommandResult {
         let (session_index, window_index) = self.resolve_window_target(target)?;
         let session_id = self.sessions[session_index].id;
         if all {
+            if self.sessions[session_index].windows.len() == 1 {
+                return Ok(String::new());
+            }
             let keep_index = self.sessions[session_index].windows[window_index].index;
             let windows = std::mem::take(&mut self.sessions[session_index].windows);
             let mut kept = Vec::with_capacity(1);
@@ -8960,9 +9006,7 @@ impl ServerState {
             self.sessions[session_index].windows = kept;
             self.sessions[session_index].select_window(keep_index);
             self.sessions[session_index].last_window = None;
-            if self.sessions[session_index].renumber_windows {
-                renumber_session_windows(&mut self.sessions[session_index]);
-            }
+            self.renumber_all_sessions();
             self.sync_group_windows(session_index);
             self.reflow_session(session_id);
             return Ok(String::new());
@@ -9628,7 +9672,7 @@ impl ServerState {
                     .sessions
                     .iter()
                     .position(|session| session.id == id)
-                    .ok_or_else(|| format!("session not found: ${id}"));
+                    .ok_or_else(|| format!("can't find session: ${id}"));
             }
             return self.best_session_index(false);
         }
@@ -9640,7 +9684,7 @@ impl ServerState {
                 .sessions
                 .iter()
                 .position(|session| session.id == id)
-                .ok_or_else(|| format!("session not found: ${id}"));
+                .ok_or_else(|| format!("can't find session: ${id}"));
         }
         if let Some(id) = session_name
             .strip_prefix('@')
@@ -9661,7 +9705,7 @@ impl ServerState {
                 .sessions
                 .iter()
                 .position(|session| session.name == exact)
-                .ok_or_else(|| format!("session not found: {exact}"));
+                .ok_or_else(|| format!("can't find session: {exact}"));
         }
         if !target.contains(':') && self.find_session(target).is_none() {
             if let Some(id) = context_session {
@@ -9669,12 +9713,12 @@ impl ServerState {
                     .sessions
                     .iter()
                     .position(|session| session.id == id)
-                    .ok_or_else(|| format!("session not found: ${id}"));
+                    .ok_or_else(|| format!("can't find session: ${id}"));
             }
             return self.best_session_index(false);
         }
         self.find_session(exact)
-            .ok_or_else(|| format!("session not found: {exact}"))
+            .ok_or_else(|| format!("can't find session: {exact}"))
     }
 
     fn resolve_window_target(&self, target: Option<&str>) -> Result<(usize, usize), String> {
@@ -9758,15 +9802,12 @@ impl ServerState {
         let token = pane_token.unwrap_or("");
         let pane_id = if token.is_empty() {
             window.active_pane
+        } else if let Some((sign, count)) = pane_offset(token) {
+            next_pane_id(window, window.active_pane, sign * count)
+                .ok_or_else(|| format!("can't find pane: {token}"))?
         } else if let Ok(index) = token.parse::<u32>() {
             window
                 .pane_for_index(index)
-                .ok_or_else(|| format!("can't find pane: {token}"))?
-        } else if token == "+" {
-            next_pane_id(window, window.active_pane, 1)
-                .ok_or_else(|| format!("can't find pane: {token}"))?
-        } else if token == "-" {
-            next_pane_id(window, window.active_pane, -1)
                 .ok_or_else(|| format!("can't find pane: {token}"))?
         } else if token == "!" {
             window
@@ -10017,8 +10058,7 @@ impl ServerState {
             .collect::<Vec<_>>();
         match matches.as_slice() {
             [index] => Ok((session_index, *index)),
-            [] => Err(format!("can't find window: {exact}")),
-            _ => Err(format!("window target is ambiguous: {target}")),
+            _ => Err(format!("can't find window: {exact}")),
         }
     }
 
@@ -16110,12 +16150,28 @@ fn adjacent_pane(window: &Window, current_id: u64, direction: PaneDirection) -> 
     best.map(|pane| pane.id)
 }
 
+fn pane_offset(token: &str) -> Option<(isize, isize)> {
+    let sign = match token.chars().next()? {
+        '+' => 1,
+        '-' => -1,
+        _ => return None,
+    };
+    let digits = &token[1..];
+    let count = if digits.is_empty() {
+        1
+    } else {
+        digits.parse::<isize>().ok().filter(|count| *count >= 1)?
+    };
+    Some((sign, count))
+}
+
 fn next_pane_id(window: &Window, current_id: u64, delta: isize) -> Option<u64> {
     if window.panes.is_empty() {
         return None;
     }
     let position = window.panes.iter().position(|pane| pane.id == current_id)? as isize;
-    let next = (position + delta).rem_euclid(window.panes.len() as isize) as usize;
+    let count = window.panes.len() as isize;
+    let next = (position + delta % count).rem_euclid(count) as usize;
     Some(window.panes[next].id)
 }
 
