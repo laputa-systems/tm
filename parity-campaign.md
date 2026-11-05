@@ -5,9 +5,9 @@
 - **Goal:** within tm's compiled profile and narrow scope, every behavior advertised as matching tmux 3.8 has evidence that runs both implementations, observes the effect exactly, and passes at the qualified commit. The known CLI and lifecycle mismatches are fixed. Generated histories cover multi-step use, and the release artifact on this host passes the suite.
 - **Base:** `d171bbd`, toolchain `nightly-2026-09-15` (pinned; do not change), host x86_64 Alpine (`x86_64-unknown-linux-musl`).
 - **Preflight:** 2026-11-05. Verdict: ready.
-- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2.
+- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2, G3.
 - **Red / parked:** none. Baseline reds are listed in **Baseline**.
-- **Next:** G3.
+- **Next:** O1.
 
 ## Charter
 
@@ -127,7 +127,6 @@ Known red before any change:
 
 - TMUX-9 reproduces 10 of 10: `tm -S S kill-server; tm -S S new-session -d` gives `failed to fill whole buffer`.
 - TMUX-8 reproduces: after `pipe-pane -t S -- true`, a `[sh] <defunct>` child stays under the daemon.
-- `tmux_modes` has 4 tests that each run longer than 60 s.
 
 `make test` stops at the first failing binary. Use `cargo test --no-fail-fast` to see all of them. Without the reference, 16 tests in `terminal_corpus`, `tmux_copy_cells`, `tmux_cwd`, `tmux_history`, `tmux_layouts`, and `tmux_windows` fail at `tests/support/parity.rs:80`. Without `vim`, `tmux_apps` fails.
 

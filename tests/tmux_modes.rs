@@ -12,6 +12,9 @@ use std::time::Duration;
 use parity::{Mux, Scratch};
 use ptytest::{PtyTest, Size};
 
+const CLIENT_COLUMNS: u16 = 240;
+const CLIENT_ROWS: u16 = 8;
+
 fn session(mux: &Mux, command: &str) {
     mux.ok(&[
         "new-session",
@@ -19,9 +22,9 @@ fn session(mux: &Mux, command: &str) {
         "-s",
         "S",
         "-x",
-        "240",
+        &CLIENT_COLUMNS.to_string(),
         "-y",
-        "30",
+        &CLIENT_ROWS.to_string(),
         "--",
         env!("CARGO_BIN_EXE_tm-pty-fixture"),
     ]);
@@ -35,7 +38,7 @@ fn attach(mux: &Mux, name: &str) -> (PtyTest, ptytest::TerminalBaseline) {
         mux,
         name,
         &["attach-session", "-t", "S"],
-        Size::new(240, 30).expect("size"),
+        Size::new(CLIENT_COLUMNS, CLIENT_ROWS).expect("size"),
     );
     pty_harness::wait_for_text(&mut terminal, "(S)", Duration::from_secs(3));
     let baseline = terminal.terminal_baseline();
