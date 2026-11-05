@@ -128,12 +128,24 @@ fn send_request(
     written.map_err(|error| error.to_string())
 }
 
-fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream, String> {
-    if let Ok(stream) = UnixStream::connect(socket) {
-        return Ok(stream);
+fn connect_failure(socket: &std::path::Path, error: &io::Error) -> String {
+    if error.kind() == io::ErrorKind::ConnectionRefused {
+        return format!("no server running on {}", socket.display());
     }
+    let text = error.to_string();
+    let reason = text
+        .rsplit_once(" (os error ")
+        .map_or(text.as_str(), |(reason, _)| reason);
+    format!("error connecting to {} ({reason})", socket.display())
+}
+
+fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream, String> {
+    let refusal = match UnixStream::connect(socket) {
+        Ok(stream) => return Ok(stream),
+        Err(error) => error,
+    };
     if !start {
-        return Err(format!("no tm server at {}", socket.display()));
+        return Err(connect_failure(socket, &refusal));
     }
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut daemon = Command::new(executable);

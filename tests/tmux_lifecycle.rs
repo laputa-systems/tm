@@ -315,3 +315,26 @@ fn exited_pipe_helper_is_reaped_and_pane_pipe_follows_the_reference() {
         wait_pane_pipe(mux, "0");
     }
 }
+
+#[test]
+fn commands_without_a_server_fail_like_the_reference() {
+    let test = "commands_without_a_server_fail_like_the_reference";
+    let commands: [&[&str]; 8] = [
+        &["has-session"],
+        &["has-session", "-t", "a"],
+        &["list-sessions"],
+        &["list-windows", "-t", "a"],
+        &["kill-server"],
+        &["send-keys", "-t", "a", "x"],
+        &["display-message", "-p", "x"],
+        &["kill-session", "-t", "a"],
+    ];
+    let scratch = Scratch::new("lc-noserver");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    parity::compare_commands(test, &tm, &reference, &commands);
+    for mux in [&tm, &reference] {
+        drop(std::os::unix::net::UnixListener::bind(mux.socket()).expect("bind stale socket"));
+    }
+    parity::compare_commands(test, &tm, &reference, &commands);
+}
