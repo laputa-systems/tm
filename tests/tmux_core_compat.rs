@@ -1662,8 +1662,9 @@ fn show_options_round_trips_global_and_window_state_headlessly() {
         "SESSION\n"
     );
     tm.ok(&["set-option", "-u", "-t", "options", "status-left"]);
+    assert_eq!(tm.ok(&["show", "-t", "options", "-v", "status-left"]), "");
     assert_eq!(
-        tm.ok(&["show", "-t", "options", "-v", "status-left"]),
+        tm.ok(&["show", "-A", "-t", "options", "-v", "status-left"]),
         "GLOBAL\n"
     );
     tm.ok(&[
@@ -1698,11 +1699,16 @@ fn show_options_round_trips_global_and_window_state_headlessly() {
     );
 
     tm.ok(&["set-window-option", "-g", "mode-keys", "vi"]);
-    assert_eq!(tm.ok(&["show-window-options", "-v", "mode-keys"]), "vi\n");
+    assert_eq!(tm.ok(&["show-window-options", "-v", "mode-keys"]), "");
+    assert_eq!(tm.ok(&["show-window-options", "-gv", "mode-keys"]), "vi\n");
     tm.ok(&["set-window-option", "-t", "options:0", "mode-keys", "emacs"]);
     tm.ok(&["set-window-option", "-u", "-t", "options:0", "mode-keys"]);
     assert_eq!(
         tm.ok(&["show-window-options", "-t", "options:0", "-v", "mode-keys",]),
+        ""
+    );
+    assert_eq!(
+        tm.ok(&["show-options", "-wAv", "-t", "options:0", "mode-keys"]),
         "vi\n"
     );
     tm.ok(&[
@@ -1741,6 +1747,10 @@ fn show_options_round_trips_global_and_window_state_headlessly() {
             "-v",
             "mode-keys",
         ]),
+        ""
+    );
+    assert_eq!(
+        tm.ok(&["show-options", "-wAv", "-t", "options:future", "mode-keys"]),
         "vi\n"
     );
     assert!(
@@ -1768,15 +1778,7 @@ fn environment_commands_reach_subsequently_spawned_panes_headlessly() {
         tm.ok(&["show-environment", &name]),
         format!("{name}=from-tm\n")
     );
-    assert_eq!(
-        tm.ok(&[
-            "show-environment",
-            "-F",
-            "#{environment_name}=#{environment_value}",
-            &name,
-        ]),
-        format!("{name}=from-tm\n")
-    );
+    tm.fail(&["show-environment", "-g", &name]);
     tm.ok(&[
         "new-window",
         "-d",
@@ -1791,7 +1793,7 @@ fn environment_commands_reach_subsequently_spawned_panes_headlessly() {
         tm.capture_until_contains("environment:1", "from-tm")
             .contains("from-tm")
     );
-    tm.ok(&["set-environment", "-r", &name]);
+    tm.ok(&["set-environment", "-u", &name]);
     tm.fail(&["show-environment", &name]);
 }
 

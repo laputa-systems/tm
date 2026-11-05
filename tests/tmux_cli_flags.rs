@@ -3304,3 +3304,742 @@ mod display {
         }
     }
 }
+
+mod options {
+    use super::*;
+
+    fn fixture(label: &str) -> Pair {
+        let pair = Pair::new(label);
+        pair.start("S");
+        pair.start("T");
+        pair
+    }
+
+    fn compare_all(test: &str, pair: &Pair, commands: &[&[&str]]) {
+        for arguments in commands {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+        }
+    }
+
+    fn assert_rejected_in_tm(pair: &Pair, command: &str, cases: &[(&str, &[&str])]) {
+        for (flag, arguments) in cases {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for {command}\n"),
+                "{arguments:?}"
+            );
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn options_show_options_flags_match_the_reference() {
+        let pair = fixture("optshow");
+        compare_all(
+            "options_show_options_flags_match_the_reference",
+            &pair,
+            &[
+            &["show-options", "-v", "mouse"],
+            &["show-options", "-g", "mouse"],
+            &["show-options", "-s", "mouse"],
+            &["show-options", "-w", "mouse"],
+            &["show-options", "-p", "mouse"],
+            &["show-options", "-gw", "mouse"],
+            &["show-options", "-gw", "mode-keys"],
+            &["show-options", "-gs", "mode-keys"],
+            &["show-options", "mode-keys"],
+            &["show-options", "-wv", "mode-keys"],
+            &["show-options", "-gp", "mode-keys"],
+            &["show-options", "-s", "buffer-limit"],
+            &["show-options", "-sv", "buffer-limit"],
+            &["show-options", "-sq", "buffer-limit"],
+            &["show-options", "-sv", "escape-time"],
+            &["show-options", "-A", "mouse"],
+            &["show-options", "-gA", "mode-keys"],
+            &["show-options", "-wA", "mode-keys"],
+            &["show-options", "-pA", "mode-keys"],
+            &["show-options", "-gv", "history-limit"],
+            &["show-options", "-gv", "status-left"],
+            &["show-options", "-gv", "status-right"],
+            &["show-options", "-g", "status-right"],
+            &["show-options", "-gqv", "nosuch"],
+            &["show-options", "-gq", "nosuch"],
+            &["show-options", "nosuch"],
+            &["show-options", "-sq", "nosuch"],
+            &["show-options", "-t", "nosuch", "mouse"],
+            &["show-options", "-t", "nosuch", "-g", "mouse"],
+            &["show-options", "-wt", "S:0", "mode-keys"],
+            &["show-options", "-wt", "S:1", "mode-keys"],
+            &["show-options", "-wAt", "S:1", "mode-keys"],
+            &["show-options", "-pt", "S:1.0", "-A", "mode-keys"],
+            &["show-options", "-gv", "synchronize-panes"],
+            &["show-options", "-wv", "synchronize-panes"],
+            &["show-options", "-gv", "remain-on-exit"],
+            &["show-options", "-gv", "word-separators"],
+            &["show-options", "-gv", "extended-keys"],
+            &["show-options", "-sv", "set-clipboard"],
+            &["show-options", "-sv", "focus-events"],
+            &["show-options", "a", "b"],
+            &["show-options", "--", "mouse"],
+            &["show-options", "-gv", "mou"],
+            &["show-options", "-gv", "@foo"],
+            &["show-options", "-gqv", "@foo"],
+            &["show-options", "-g", "@foo"],
+            &["show-options", "-t"],
+            &["show-options", "-gv", "base-index"],
+            &["show-options", "-v", "base-index"],
+            &["show-options", "-Av", "base-index"],
+            &["show-options", "-sv", "default-terminal"],
+            &["show-options", "-sv", "terminal-features"],
+            &["show-options", "-s", "terminal-features"],
+            &["show-options", "-gv", "renumber-windows"],
+            &["show-window-options", "-gv", "mode-keys"],
+            &["show-window-options", "-v", "mode-keys"],
+            &["show-window-options", "mode-keys"],
+            &["show-window-options", "-g", "mode-keys"],
+            &["show-window-options", "-t", "S:1", "mode-keys"],
+            &["show-window-options", "-t", "S:0", "mode-keys"],
+            &["show-window-options", "-gv", "mouse"],
+            ],
+        );
+    }
+
+    #[test]
+    fn options_set_option_flags_match_the_reference() {
+        let pair = fixture("optset");
+        compare_all(
+            "options_set_option_flags_match_the_reference",
+            &pair,
+            &[
+            &["set-option"],
+            &["set-option", "mouse"],
+            &["set-option", "-g", "mouse"],
+            &["show-options", "-g", "mouse"],
+            &["set-option", "-g", "mouse"],
+            &["show-options", "-g", "mouse"],
+            &["set-option", "-g", "mouse", "1"],
+            &["show-options", "-g", "mouse"],
+            &["set-option", "-g", "mouse", "YES"],
+            &["show-options", "-g", "mouse"],
+            &["set-option", "-g", "mouse", "No"],
+            &["show-options", "-g", "mouse"],
+            &["set-option", "-g", "mouse", "0"],
+            &["show-options", "-g", "mouse"],
+            &["set-option", "-g", "mouse", ""],
+            &["show-options", "-g", "mouse"],
+            &["set-option", "-g", "status-left"],
+            &["set-option", "-g", "history-limit"],
+            &["set-option", "-g", "mode-keys"],
+            &["show-options", "-gv", "mode-keys"],
+            &["set-option", "-gw", "mode-keys", "vi"],
+            &["show-options", "-gv", "mode-keys"],
+            &["set-option", "-g", "mode-keys", "emacs"],
+            &["set-option", "-u", "mouse"],
+            &["set-option", "-gu", "nosuch"],
+            &["set-option", "-gq", "nosuch", "on"],
+            &["set-option", "nosuch", "on"],
+            &["set-option", "-g", "mou", "off"],
+            &["set-option", "-g", "a", "x"],
+            &["set-option", "-g", "@foo", "bar"],
+            &["show-options", "-gv", "@foo"],
+            &["set-option", "@foo", "bar"],
+            &["show-options", "@foo"],
+            &["show-options", "-v", "@foo"],
+            &["set-option", "-w", "@foo", "bar"],
+            &["show-options", "-w", "@foo"],
+            &["set-option", "-s", "@foo", "bar"],
+            &["show-options", "-s", "@foo"],
+            &["set-option", "-p", "@foo", "bar"],
+            &["show-options", "-p", "@foo"],
+            &["set-option", "-gu", "@foo"],
+            &["show-options", "-gv", "@foo"],
+            &["set-option", "-g", "@foo"],
+            &["set-option", "-t", "nosuch", "mouse", "on"],
+            &["set-option", "-t", "nosuch", "-g", "mouse", "on"],
+            &["set-option", "-qt", "nosuch", "mouse", "on"],
+            &["set-option", "-s", "mouse", "on"],
+            &["set-option", "-w", "mouse", "on"],
+            &["show-options", "mouse"],
+            &["show-options", "-w", "mouse"],
+            &["set-option", "-s", "mode-keys", "vi"],
+            &["show-options", "-wv", "mode-keys"],
+            &["set-option", "-w", "buffer-limit", "5"],
+            &["show-options", "-sv", "buffer-limit"],
+            &["set-option", "-s", "buffer-limit", "7"],
+            &["show-options", "-sv", "buffer-limit"],
+            &["set-option", "buffer-limit", "9"],
+            &["show-options", "-gv", "buffer-limit"],
+            &["set-option", "-g", "mouse", "maybe"],
+            &["set-option", "-g", "mode-keys", "foo"],
+            &["set-option", "mouse", "on", "off"],
+            &["set-option", "-gt", "S:", "mouse", "on"],
+            &["set-option", "-t", "S:1", "mode-keys", "vi"],
+            &["show-options", "-wv", "-t", "S:1", "mode-keys"],
+            &["show-options", "-wv", "-t", "S:2", "mode-keys"],
+            &["set-option", "-t", "S:9", "mode-keys", "vi"],
+            &["set-option", "-t", "S:1", "-u", "mode-keys"],
+            &["show-options", "-wAv", "-t", "S:1", "mode-keys"],
+            &["set-option", "-p", "-t", "S:1.0", "mode-keys", "vi"],
+            &["set-option", "-p", "-t", "S:1.0", "synchronize-panes", "on"],
+            &["set-option", "-p", "-t", "S:1.9", "synchronize-panes", "on"],
+            &["set-option", "-pt", "S:1.0", "@pp", "x"],
+            &["show-options", "-pt", "S:1.0", "@pp"],
+            &["show-options", "-pt", "S:1.0", "-A", "mode-keys"],
+            &["set-option", "-t", "S", "mouse", "on"],
+            &["show-options", "-t", "S", "mouse"],
+            &["show-options", "-t", "T", "mouse"],
+            &["show-options", "-t", "S", "-A", "mouse"],
+            &["set-option", "-u", "-t", "S", "mouse"],
+            &["show-options", "-t", "S", "mouse"],
+            &["set-option", "-t", "S", "base-index", "3"],
+            &["show-options", "-t", "S", "-v", "base-index"],
+            &["show-options", "-t", "T", "-v", "base-index"],
+            &["set-option", "-t", "S", "renumber-windows", "off"],
+            &["show-options", "-t", "S", "renumber-windows"],
+            &["set-window-option"],
+            &["set-window-option", "mode-keys", "vi"],
+            &["show-window-options", "mode-keys"],
+            &["set-window-option", "-g", "mode-keys", "vi"],
+            &["show-window-options", "-g", "mode-keys"],
+            &["set-window-option", "-t", "S:9", "mode-keys", "vi"],
+            &["set-window-option", "-t", "S:1", "mode-keys", "emacs"],
+            &["set-window-option", "-t", "S:1.0", "mode-keys", "emacs"],
+            &["set-window-option", "mouse", "on"],
+            &["set-window-option", "-q", "nosuch", "vi"],
+            &["set-window-option", "mode-keys"],
+            &["set-window-option", "-u", "mode-keys"],
+            &["show-window-options", "mode-keys"],
+            &["set-option", "-gq", "mouse", "on"],
+            &["set-option", "-g", "status-left", "a b"],
+            &["show-options", "-g", "status-left"],
+            &["set-option", "-g", "@foo", "x y"],
+            &["show-options", "-g", "@foo"],
+            ],
+        );
+    }
+
+    #[test]
+    fn options_values_are_validated_and_normalized_like_the_reference() {
+        let pair = fixture("optvalue");
+        compare_all(
+            "options_values_are_validated_and_normalized_like_the_reference",
+            &pair,
+            &[
+                &["set-option", "-g", "history-limit", "abc"],
+                &["set-option", "-g", "history-limit", ""],
+                &["set-option", "-g", "history-limit", "-1"],
+                &["set-option", "-g", "history-limit", "2147483648"],
+                &["set-option", "-g", "history-limit", "99999999999999999999999999999999999999999"],
+                &["set-option", "-g", "history-limit", " 7"],
+                &["set-option", "-g", "history-limit", "+8"],
+                &["set-option", "-g", "history-limit", "007"],
+                &["show-options", "-gv", "history-limit"],
+                &["set-option", "-g", "history-limit", "12x"],
+                &["set-option", "-g", "status-left-length", "32768"],
+                &["set-option", "-g", "status-left-length", "32767"],
+                &["show-options", "-gv", "status-left-length"],
+                &["set-option", "-g", "display-panes-time", "0"],
+                &["set-option", "-g", "base-index", "-1"],
+                &["set-option", "-g", "status-position", "left"],
+                &["set-option", "-g", "status-position", "top"],
+                &["show-options", "-gv", "status-position"],
+                &["set-option", "-g", "status-position"],
+                &["show-options", "-gv", "status-position"],
+                &["set-option", "-g", "status", "2"],
+                &["set-option", "-g", "status", "3x"],
+                &["set-option", "-g", "mode-keys", "vi"],
+                &["set-option", "-g", "mode-keys"],
+                &["show-options", "-gv", "mode-keys"],
+                &["set-option", "-g", "mode-keys"],
+                &["show-options", "-gv", "mode-keys"],
+                &["set-option", "-g", "extended-keys", "always"],
+                &["set-option", "-g", "extended-keys"],
+                &["show-options", "-gv", "extended-keys"],
+                &["set-option", "-g", "mouse", "TRUE"],
+                &["set-option", "-g", "mouse", "On"],
+                &["set-option", "-g", "mouse", "OFF"],
+                &["show-options", "-gv", "mouse"],
+                &["set-option", "-g", "mouse"],
+                &["show-options", "-gv", "mouse"],
+                &["set-option", "-g", "mouse", ""],
+                &["show-options", "-gv", "mouse"],
+                &["set-option", "-g", "mouse", "2"],
+                &["set-option", "-g", "buffer-limit", "0"],
+                &["set-option", "-g", "buffer-limit", "9"],
+                &["show-options", "-gv", "buffer-limit"],
+                &["set-option", "-g", "@empty", ""],
+                &["show-options", "-g", "@empty"],
+                &["show-options", "-gv", "@empty"],
+            ],
+        );
+    }
+
+    #[test]
+    fn options_show_options_quotes_values_like_the_reference() {
+        let pair = fixture("optquote");
+        for value in [
+            "", "a b", "a\"b", "a'b", "a\\b", "a#b;c$d", "~x", " x", "{x}", "a=b,c", "\u{e9}",
+            "a\nb", "a\tb", "#{x}", "(x)*?[y]<>|&!", "100%", "%",
+        ] {
+            compare_all(
+                "options_show_options_quotes_values_like_the_reference",
+                &pair,
+                &[
+                    &["set-option", "-g", "@quoted", value],
+                    &["show-options", "-g", "@quoted"],
+                    &["show-options", "-gv", "@quoted"],
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn options_compiled_values_match_the_reference() {
+        let pair = fixture("optcompiled");
+        let profile = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/reference/tmux-3.8.conf"),
+        )
+        .expect("reference profile");
+        let mut checked = 0;
+        for line in profile.lines() {
+            let mut words = line.split_whitespace();
+            if words.next() != Some("set") {
+                continue;
+            }
+            let name = words.nth(1).expect("option name");
+            compare_all(
+                "options_compiled_values_match_the_reference",
+                &pair,
+                &[&["show-options", "-gv", name], &["show-options", "-g", name]],
+            );
+            checked += 1;
+        }
+        assert!(checked > 20, "{checked}");
+    }
+
+    #[test]
+    fn options_session_window_and_pane_tables_are_separate() {
+        let pair = fixture("opttables");
+        for mux in pair.both() {
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "two", "--", "sleep", "300"]);
+            mux.ok(&["split-window", "-d", "-t", "S:two", "--", "sleep", "300"]);
+        }
+        compare_all(
+            "options_session_window_and_pane_tables_are_separate",
+            &pair,
+            &[
+                &["set-option", "-t", "S", "status-left", "SESSION"],
+                &["show-options", "-t", "S", "-v", "status-left"],
+                &["show-options", "-t", "T", "-v", "status-left"],
+                &["show-options", "-t", "T", "-Av", "status-left"],
+                &["show-options", "-t", "T", "-A", "status-left"],
+                &["show-options", "-g", "-v", "status-left"],
+                &["set-option", "-u", "-t", "S", "status-left"],
+                &["show-options", "-t", "S", "-v", "status-left"],
+                &["set-option", "-w", "-t", "S:two", "mode-keys", "vi"],
+                &["show-options", "-w", "-t", "S:two", "mode-keys"],
+                &["show-options", "-w", "-t", "S:1", "mode-keys"],
+                &["show-options", "-wA", "-t", "S:1", "mode-keys"],
+                &["show-window-options", "-t", "S:two", "mode-keys"],
+                &["show-window-options", "-t", "S:two", "-v", "mode-keys"],
+                &["set-option", "-p", "-t", "S:two.1", "synchronize-panes", "on"],
+                &["set-option", "-w", "-t", "S:two", "synchronize-panes", "on"],
+                &["show-options", "-w", "-t", "S:two", "synchronize-panes"],
+                &["show-options", "-p", "-t", "S:two.1", "synchronize-panes"],
+                &["show-options", "-p", "-t", "S:two.0", "-A", "synchronize-panes"],
+                &["set-option", "-p", "-t", "S:two.1", "@pane-only", "yes"],
+                &["show-options", "-p", "-t", "S:two.1", "@pane-only"],
+                &["show-options", "-p", "-t", "S:two.0", "@pane-only"],
+                &["show-options", "-w", "-t", "S:two", "@pane-only"],
+                &["set-option", "-p", "-t", "S:two.1", "-u", "@pane-only"],
+                &["show-options", "-p", "-t", "S:two.1", "@pane-only"],
+                &["set-option", "-t", "S", "base-index", "3"],
+                &["show-options", "-t", "S", "-v", "base-index"],
+                &["show-options", "-t", "T", "-v", "base-index"],
+                &["list-windows", "-t", "S", "-F", "#{window_index}"],
+                &["set-option", "-u", "-t", "S", "base-index"],
+                &["set-option", "-t", "S", "renumber-windows", "off"],
+                &["show-options", "-t", "S", "renumber-windows"],
+                &["set-option", "-s", "-t", "S", "buffer-limit", "7"],
+                &["show-options", "-s", "-v", "buffer-limit"],
+                &["show-options", "-t", "S", "buffer-limit"],
+            ],
+        );
+    }
+
+    #[test]
+    fn options_set_window_option_flags_match_the_reference() {
+        let pair = fixture("optsetw");
+        compare_all(
+            "options_set_window_option_flags_match_the_reference",
+            &pair,
+            &[
+                &["set-window-option"],
+                &["set-window-option", "mode-keys", "vi"],
+                &["show-window-options", "mode-keys"],
+                &["show-window-options", "-v", "mode-keys"],
+                &["show-window-options", "-g", "mode-keys"],
+                &["set-window-option", "-g", "mode-keys", "vi"],
+                &["show-window-options", "-gv", "mode-keys"],
+                &["set-window-option", "-t", "S:9", "mode-keys", "vi"],
+                &["set-window-option", "-t", "S:1", "mode-keys", "emacs"],
+                &["set-window-option", "-t", "S:1.0", "mode-keys", "emacs"],
+                &["show-window-options", "-t", "S:1", "-v", "mode-keys"],
+                &["set-window-option", "mouse", "on"],
+                &["set-window-option", "-q", "nosuch", "vi"],
+                &["set-window-option", "nosuch", "vi"],
+                &["set-window-option", "mode-keys"],
+                &["show-window-options", "-gv", "mode-keys"],
+                &["set-window-option", "-u", "mode-keys"],
+                &["show-window-options", "mode-keys"],
+                &["show-window-options", "nosuch"],
+                &["show-window-options", "-t", "nosuch", "mode-keys"],
+                &["show-window-options", "a", "b"],
+                &["show-window-options", "-g", "@missing"],
+                &["set-window-option", "-g", "@wtag", "w"],
+                &["show-window-options", "-g", "@wtag"],
+                &["show-window-options", "-gv", "@wtag"],
+                &["set-window-option", "@local", "w"],
+                &["show-window-options", "@local"],
+            ],
+        );
+    }
+
+    #[test]
+    fn options_rejects_flags_it_does_not_implement() {
+        let pair = fixture("optrej");
+        assert_rejected_in_tm(
+            &pair,
+            "set-option",
+            &[
+                ("-a", &["set-option", "-a", "status-left", "x"][..]),
+                ("-o", &["set-option", "-o", "status-left", "x"]),
+                ("-F", &["set-option", "-F", "@x", "#{session_name}"]),
+                ("-U", &["set-option", "-U", "mode-keys"]),
+                ("-x", &["set-option", "-x", "mouse", "on"]),
+            ],
+        );
+        assert_rejected_in_tm(
+            &pair,
+            "set-window-option",
+            &[
+                ("-a", &["set-window-option", "-a", "mode-keys", "vi"][..]),
+                ("-o", &["set-window-option", "-o", "mode-keys", "vi"]),
+                ("-F", &["set-window-option", "-F", "mode-keys", "vi"]),
+                ("-w", &["set-window-option", "-w", "mode-keys", "vi"]),
+                ("-p", &["set-window-option", "-p", "mode-keys", "vi"]),
+                ("-s", &["set-window-option", "-s", "mode-keys", "vi"]),
+            ],
+        );
+        assert_rejected_in_tm(
+            &pair,
+            "show-options",
+            &[
+                ("-F", &["show-options", "-F", "x", "mouse"][..]),
+                ("-H", &["show-options", "-H", "-g"]),
+                ("-x", &["show-options", "-x"]),
+            ],
+        );
+        assert_rejected_in_tm(
+            &pair,
+            "show-window-options",
+            &[
+                ("-F", &["show-window-options", "-F", "x", "mode-keys"][..]),
+                ("-w", &["show-window-options", "-w", "mode-keys"]),
+                ("-A", &["show-window-options", "-A", "mode-keys"]),
+                ("-q", &["show-window-options", "-q", "mode-keys"]),
+                ("-p", &["show-window-options", "-p", "mode-keys"]),
+                ("-s", &["show-window-options", "-s", "mode-keys"]),
+            ],
+        );
+    }
+
+    #[test]
+    fn options_names_tm_does_not_implement_are_errors_in_tm() {
+        let pair = fixture("optunsupported");
+        for (arguments, message) in [
+            (
+                &["show-options", "-gv", "activity-action"][..],
+                "tm: unsupported option: activity-action\n",
+            ),
+            (
+                &["show-options", "-gqv", "activity-action"],
+                "tm: unsupported option: activity-action\n",
+            ),
+            (
+                &["show-options", "-gv", "display-panes-color"],
+                "tm: unsupported option: display-panes-colour\n",
+            ),
+            (
+                &["show-options", "-sv", "backspace"],
+                "tm: unsupported option: backspace\n",
+            ),
+            (
+                &["show-options", "-gqv", "terminal-features[0]"],
+                "tm: unsupported array element: terminal-features[0]\n",
+            ),
+            (
+                &["set-option", "-g", "terminal-features[0]", "x"],
+                "tm: unsupported array element: terminal-features[0]\n",
+            ),
+            (
+                &["set-option", "-gu", "mouse"],
+                "tm: unsupported reset of global option mouse\n",
+            ),
+            (
+                &["set-window-option", "-gu", "mode-keys"],
+                "tm: unsupported reset of global option mode-keys\n",
+            ),
+        ] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(String::from_utf8_lossy(&output.stderr), message, "{arguments:?}");
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+            assert!(pair.reference.run(arguments).status.success(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn options_listings_hold_only_values_the_reference_also_lists() {
+        let pair = fixture("optlist");
+        for arguments in [
+            &["show-options", "-g"][..],
+            &["show-options", "-s"],
+            &["show-options", "-gw"],
+            &["show-window-options", "-g"],
+            &["show-options", "-gA"],
+        ] {
+            let reference = pair.reference.body(arguments);
+            let reference = reference.lines().collect::<Vec<_>>();
+            let listing = pair.tm.body(arguments);
+            assert!(listing.lines().count() > 3, "{arguments:?}");
+            for line in listing.lines() {
+                assert!(reference.contains(&line), "{arguments:?}: {line}");
+            }
+        }
+        for arguments in [
+            &["show-options"][..],
+            &["show-options", "-w"],
+            &["show-window-options"],
+            &["show-options", "-p"],
+            &["show-options", "-t", "T"],
+        ] {
+            assert_eq!(
+                pair.tm.body(arguments),
+                pair.reference.body(arguments),
+                "{arguments:?}"
+            );
+        }
+    }
+}
+
+mod environment {
+    use super::*;
+
+    fn fixture(label: &str) -> Pair {
+        let pair = Pair::new(label);
+        pair.start("S");
+        pair.start("T");
+        pair
+    }
+
+    fn spawned_environment(mux: &Mux, session: &str, variables: &[&str]) -> String {
+        let marker = mux.root().join(format!("env-{session}"));
+        let marker = marker.to_string_lossy().into_owned();
+        let printer = variables
+            .iter()
+            .map(|name| format!("printf '%s=%s;' {name} \"${{{name}-unset}}\""))
+            .collect::<Vec<_>>()
+            .join("; ");
+        mux.ok(&[
+            "new-window", "-d", "-t", session, "--", "sh", "-c",
+            &format!("({printer}) > '{marker}.tmp'; mv '{marker}.tmp' '{marker}'; sleep 300"),
+        ]);
+        let deadline = Instant::now() + TIMEOUT;
+        while !std::path::Path::new(&marker).exists() {
+            assert!(Instant::now() < deadline, "spawned pane never wrote {marker}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::read_to_string(&marker).expect("read environment marker")
+    }
+
+    #[test]
+    fn environment_set_and_show_environment_flags_match_the_reference() {
+        let pair = fixture("envflags");
+        for arguments in [
+            &["set-environment", "FOO", "bar"][..],
+            &["show-environment", "FOO"],
+            &["show-environment", "-g", "FOO"],
+            &["set-environment", "-g", "GFOO", "gbar"],
+            &["show-environment", "-g", "GFOO"],
+            &["show-environment", "GFOO"],
+            &["show-environment", "-t", "S", "FOO"],
+            &["show-environment", "-t", "T", "FOO"],
+            &["show-environment", "-s", "FOO"],
+            &["show-environment", "-gs", "GFOO"],
+            &["show-environment", "HFOO"],
+            &["set-environment", "-r", "RFOO"],
+            &["show-environment", "-s", "RFOO"],
+            &["set-environment", "-u", "UFOO"],
+            &["show-environment", "UFOO"],
+            &["show-environment", "-s", "UFOO"],
+            &["show-environment", "-gs", "UFOO"],
+            &["set-environment", "-gu", "GFOO"],
+            &["show-environment", "-g", "GFOO"],
+            &["set-environment", "-gr", "GRFOO"],
+            &["show-environment", "-g", "GRFOO"],
+            &["show-environment", "-gs", "GRFOO"],
+            &["show-environment", "FFOO"],
+            &["set-environment", "-t", "T", "TFOO", "tbar"],
+            &["show-environment", "-t", "T", "TFOO"],
+            &["show-environment", "TFOO"],
+            &["set-environment", "-t", "nosuch", "XFOO", "x"],
+            &["set-environment"],
+            &["set-environment", "FOO"],
+            &["set-environment", "FOO", "bar", "baz"],
+            &["set-environment", "A=B", "x"],
+            &["set-environment", "", "x"],
+            &["set-environment", "-u", "A=B"],
+            &["set-environment", "-u", ""],
+            &["set-environment", "FOO", ""],
+            &["show-environment", "FOO"],
+            &["show-environment", "-s", "FOO"],
+            &["show-environment", "nosuch"],
+            &["show-environment", "-g", "nosuch"],
+            &["show-environment", "a", "b"],
+            &["show-environment", "-t", "nosuch"],
+            &["set-environment", "-g", "EQ", "a b\"c$d"],
+            &["show-environment", "-g", "EQ"],
+            &["show-environment", "-gs", "EQ"],
+            &["set-environment", "-gr", "EQ"],
+            &["show-environment", "-gs", "EQ"],
+            &["show-environment", "-g", "EQ"],
+            &["show-environment", "--", "FOO"],
+            &["show-environment", "-t"],
+            &["set-environment", "--", "FOO", "bar"],
+        ] {
+            compare_commands(
+                "environment_set_and_show_environment_flags_match_the_reference",
+                &pair.tm,
+                &pair.reference,
+                &[arguments],
+            );
+        }
+    }
+
+    fn listing_without_update_environment(
+        mux: &Mux,
+        skipped: &[String],
+        arguments: &[&str],
+    ) -> Vec<String> {
+        mux.body(arguments)
+            .lines()
+            .filter(|line| {
+                let name = match line.strip_prefix("unset ") {
+                    Some(rest) => rest.trim_end_matches(';'),
+                    None => line.trim_start_matches('-').split('=').next().unwrap_or_default(),
+                };
+                !skipped.iter().any(|skipped| skipped == name)
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn environment_session_listing_matches_the_reference_except_update_environment() {
+        let pair = fixture("envlist");
+        let skipped = pair
+            .reference
+            .body(&["show-options", "-gv", "update-environment"])
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(skipped.len() > 3, "{skipped:?}");
+        for arguments in [
+            &["set-environment", "-t", "S", "ZED", "z"][..],
+            &["set-environment", "-t", "S", "ALPHA", "a b"],
+            &["set-environment", "-t", "S", "MID", "q\"$`\\"],
+            &["set-environment", "-t", "S", "-r", "GONE"],
+            &["set-environment", "-t", "S", "-r", "ZED"],
+            &["set-environment", "-t", "S", "-u", "ZED", "v"],
+            &["set-environment", "-t", "S", "-r", "ZED", "v"],
+        ] {
+            compare_commands(
+                "environment_session_listing_matches_the_reference_except_update_environment",
+                &pair.tm,
+                &pair.reference,
+                &[arguments],
+            );
+        }
+        for arguments in [
+            &["show-environment", "-t", "S"][..],
+            &["show-environment", "-s", "-t", "S"],
+            &["show-environment", "-t", "T"],
+        ] {
+            assert_eq!(
+                listing_without_update_environment(&pair.tm, &skipped, arguments),
+                listing_without_update_environment(&pair.reference, &skipped, arguments),
+                "{arguments:?}"
+            );
+        }
+        for mux in pair.both() {
+            mux.ok(&["set-environment", "-t", "S", "-u", "ZED"]);
+        }
+        assert_eq!(
+            listing_without_update_environment(&pair.tm, &skipped, &["show-environment", "-t", "S"]),
+            listing_without_update_environment(
+                &pair.reference,
+                &skipped,
+                &["show-environment", "-t", "S"]
+            ),
+        );
+        pair.tm.ok(&["set-environment", "-g", "LISTED", "x"]);
+        assert!(pair.tm.body(&["show-environment", "-g"]).lines().any(|line| line == "LISTED=x"));
+    }
+
+    #[test]
+    fn environment_spawned_panes_see_global_and_session_variables_like_the_reference() {
+        let pair = fixture("envspawn");
+        for mux in pair.both() {
+            mux.ok(&["set-environment", "-g", "GLOBAL_ONLY", "g"]);
+            mux.ok(&["set-environment", "-g", "SHADOWED", "global"]);
+            mux.ok(&["set-environment", "-t", "S", "SHADOWED", "session"]);
+            mux.ok(&["set-environment", "-g", "CLEARED", "global"]);
+            mux.ok(&["set-environment", "-t", "S", "-r", "CLEARED"]);
+            mux.ok(&["set-environment", "-g", "REMOVED", "global"]);
+            mux.ok(&["set-environment", "-g", "-u", "REMOVED"]);
+        }
+        let variables = ["GLOBAL_ONLY", "SHADOWED", "CLEARED", "REMOVED"];
+        for session in ["S", "T"] {
+            assert_eq!(
+                spawned_environment(&pair.tm, session, &variables),
+                spawned_environment(&pair.reference, session, &variables),
+                "{session}"
+            );
+        }
+    }
+
+    #[test]
+    fn environment_rejects_flags_it_does_not_implement() {
+        let pair = fixture("envrej");
+        for (command, flag, arguments) in [
+            ("set-environment", "-h", &["set-environment", "-h", "A", "b"][..]),
+            ("set-environment", "-F", &["set-environment", "-F", "A", "#{session_name}"]),
+            ("set-environment", "-s", &["set-environment", "-s", "A", "b"]),
+            ("show-environment", "-h", &["show-environment", "-h"]),
+            ("show-environment", "-F", &["show-environment", "-F", "x", "A"]),
+            ("show-environment", "-x", &["show-environment", "-x"]),
+        ] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for {command}\n"),
+                "{arguments:?}"
+            );
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+        }
+    }
+}

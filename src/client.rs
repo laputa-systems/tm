@@ -71,6 +71,8 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         match &request {
             crate::protocol::Request::ShowBuffer { .. }
             | crate::protocol::Request::SaveBuffer { .. }
+            | crate::protocol::Request::ShowOptions { .. }
+            | crate::protocol::Request::ShowEnvironment { .. }
             | crate::protocol::Request::ListWindows { .. } => print!("{body}"),
             _ => println!("{body}"),
         }

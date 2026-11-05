@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use crate::model::Size;
-use crate::protocol::{OptionScope, PaneDirection, PaneListScope, Request, WindowStep};
+use crate::protocol::{OptionFlags, PaneDirection, PaneListScope, Request, WindowStep};
 use crate::server::socket_path;
 
 pub(crate) struct Invocation {
@@ -1253,121 +1253,46 @@ fn parse_save_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
     }))
 }
 
-fn parse_set_window_option(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut global = false;
-    let mut unset = false;
-    let mut positional = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-g" => global = true,
-            "-w" => {}
-            "-u" => unset = true,
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "--" => positional.extend_from_slice(&arguments[index + 1..]),
-            value if value.starts_with('-') => {
-                return Err(format!("unknown set-window-option option: {value}"));
-            }
-            value => positional.push(value.to_owned()),
-        }
-        if arguments.get(index).is_some_and(|value| value == "--") {
-            break;
-        }
-        index += 1;
+fn option_flags(flags: &ScannedFlags<'_>, window_command: bool) -> OptionFlags {
+    OptionFlags {
+        global: flags.has('g'),
+        server: flags.has('s'),
+        window: window_command || flags.has('w'),
+        pane: flags.has('p'),
     }
-    let key = positional
-        .first()
-        .cloned()
-        .ok_or_else(|| "set-window-option requires an option".to_owned())?;
-    let value = positional.get(1).cloned().unwrap_or_default();
-    if !unset && positional.get(1).is_none() {
-        return Err("set-window-option requires a value".to_owned());
-    }
-    if global {
-        return Ok(InvocationSpec::plain(Request::SetOption {
-            target: None,
-            scope: Some(OptionScope::Global),
-            key,
-            value,
-            unset,
-        }));
-    }
-    if unset {
-        return Ok(InvocationSpec::plain(Request::SetOption {
-            target,
-            scope: Some(OptionScope::Window),
-            key,
-            value,
-            unset,
-        }));
-    }
-    Ok(InvocationSpec::plain(Request::SetWindowOption {
-        target,
-        key,
-        value,
-    }))
 }
 
 fn parse_set_option(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut scope = None;
-    let mut unset = false;
-    let mut positional = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-g" => scope = Some(OptionScope::Global),
-            "-s" => scope = Some(OptionScope::Session),
-            "-w" => scope = Some(OptionScope::Window),
-            "-p" => scope = Some(OptionScope::Pane),
-            "-u" => unset = true,
-            "-q" => {}
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "--" => positional.extend_from_slice(&arguments[index + 1..]),
-            value if value.starts_with('-') && value.len() > 2 => {
-                for flag in value[1..].chars() {
-                    match flag {
-                        'g' => scope = Some(OptionScope::Global),
-                        's' => scope = Some(OptionScope::Session),
-                        'w' => scope = Some(OptionScope::Window),
-                        'p' => scope = Some(OptionScope::Pane),
-                        'u' => unset = true,
-                        'q' => {}
-                        other => return Err(format!("unknown set-option option: -{other}")),
-                    }
-                }
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown set-option option: {value}"));
-            }
-            value => positional.push(value.to_owned()),
+    parse_set_option_command("set-option", arguments, "aFgopqst:uUw", false)
+}
+
+fn parse_set_window_option(arguments: &[String]) -> Result<InvocationSpec, String> {
+    parse_set_option_command("set-window-option", arguments, "aFgoqt:u", true)
+}
+
+fn parse_set_option_command(
+    command: &str,
+    arguments: &[String],
+    accepted: &str,
+    window_command: bool,
+) -> Result<InvocationSpec, String> {
+    let flags = scan_flags(command, arguments, accepted, 2)?;
+    for flag in ['a', 'F', 'o', 'U'] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(&format!("-{flag}"), command));
         }
-        if arguments.get(index).is_some_and(|value| value == "--") {
-            break;
-        }
-        index += 1;
     }
-    let key = positional
+    let key = flags
+        .positional
         .first()
-        .cloned()
-        .ok_or_else(|| "set-option requires an option".to_owned())?;
-    let value = positional.get(1).cloned().unwrap_or_default();
-    if !unset && positional.get(1).is_none() {
-        return Err("set-option requires a value".to_owned());
-    }
+        .ok_or_else(|| format!("command {command}: too few arguments (need at least 1)"))?;
     Ok(InvocationSpec::plain(Request::SetOption {
-        target,
-        scope,
-        key,
-        value,
-        unset,
+        target: flags.value('t').map(str::to_owned),
+        flags: option_flags(&flags, window_command),
+        quiet: flags.has('q'),
+        key: key.clone(),
+        value: flags.positional.get(1).cloned(),
+        unset: flags.has('u'),
     }))
 }
 
@@ -1375,128 +1300,55 @@ fn parse_show_options(
     arguments: &[String],
     window_command: bool,
 ) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut global = false;
-    let mut window = window_command;
-    let mut pane = false;
-    let mut show_value = false;
-    let mut all = false;
-    let mut quiet = false;
-    let mut key = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        let option = arguments[index].as_str();
-        match option {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-g" => global = true,
-            "-w" => window = true,
-            "-p" => pane = true,
-            "-s" => {}
-            "-v" => show_value = true,
-            "-A" => all = true,
-            "-q" => quiet = true,
-            "--" => {
-                key = arguments.get(index + 1).cloned();
-                break;
-            }
-            value if value.starts_with('-') && value.len() > 2 => {
-                for flag in value[1..].chars() {
-                    match flag {
-                        'g' => global = true,
-                        'w' => window = true,
-                        'p' => pane = true,
-                        'v' => show_value = true,
-                        'A' => all = true,
-                        'q' => quiet = true,
-                        other => return Err(format!("unknown show-options option: -{other}")),
-                    }
-                }
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown show-options option: {value}"));
-            }
-            value => key = Some(value.to_owned()),
+    let command = if window_command { "show-window-options" } else { "show-options" };
+    let accepted = if window_command { "F:gvt:" } else { "AgF:Hpqst:vw" };
+    let flags = scan_flags(command, arguments, accepted, 1)?;
+    for flag in ['F', 'H'] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(&format!("-{flag}"), command));
         }
-        index += 1;
     }
     Ok(InvocationSpec::plain(Request::ShowOptions {
-        target,
-        global,
-        window,
-        pane,
-        value: show_value,
-        all,
-        quiet,
-        key,
+        target: flags.value('t').map(str::to_owned),
+        flags: option_flags(&flags, window_command),
+        value: flags.has('v'),
+        all: flags.has('A'),
+        quiet: flags.has('q'),
+        key: flags.positional.first().cloned(),
     }))
 }
 
 fn parse_set_environment(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut remove = false;
-    let mut positional = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-g" | "-s" => {}
-            "-r" | "-u" => remove = true,
-            "--" => positional.extend_from_slice(&arguments[index + 1..]),
-            value if value.starts_with('-') => {
-                return Err(format!("unknown set-environment option: {value}"));
-            }
-            value => positional.push(value.to_owned()),
+    let flags = scan_flags("set-environment", arguments, "Fhgrt:u", 2)?;
+    for flag in ['F', 'h'] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(&format!("-{flag}"), "set-environment"));
         }
-        if arguments.get(index).is_some_and(|value| value == "--") {
-            break;
-        }
-        index += 1;
     }
-    let name = positional
+    let name = flags
+        .positional
         .first()
-        .cloned()
-        .ok_or_else(|| "set-environment requires a variable name".to_owned())?;
-    let value = positional.get(1).cloned();
-    if !remove && value.is_none() {
-        return Err("set-environment requires a value".to_owned());
-    }
+        .ok_or_else(|| "command set-environment: too few arguments (need at least 1)".to_owned())?;
     Ok(InvocationSpec::plain(Request::SetEnvironment {
-        name,
-        value,
-        remove,
+        target: flags.value('t').map(str::to_owned),
+        global: flags.has('g'),
+        name: name.clone(),
+        value: flags.positional.get(1).cloned(),
+        unset: flags.has('u'),
+        clear: flags.has('r'),
     }))
 }
 
 fn parse_show_environment(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut format = None;
-    let mut name = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-g" | "-s" => {}
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                let _ = argument(arguments, index, "-t")?;
-            }
-            "--" => {
-                name = arguments.get(index + 1).cloned();
-                break;
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown show-environment option: {value}"));
-            }
-            value => name = Some(value.to_owned()),
-        }
-        index += 1;
+    let flags = scan_flags("show-environment", arguments, "hgst:", 1)?;
+    if flags.has('h') {
+        return Err(unsupported_flag("-h", "show-environment"));
     }
     Ok(InvocationSpec::plain(Request::ShowEnvironment {
-        format,
-        name,
+        target: flags.value('t').map(str::to_owned),
+        global: flags.has('g'),
+        shell: flags.has('s'),
+        name: flags.positional.first().cloned(),
     }))
 }
 

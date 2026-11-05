@@ -49,8 +49,8 @@ impl Pty {
             .iter()
             .map(|argument| CString::new(argument.as_bytes()).map_err(invalid_command))
             .collect::<io::Result<Vec<_>>>()?;
-        // Environment overrides (from `set-environment`) are converted before
-        // the fork so the child only touches already-built data before exec.
+        // The pane environment is converted before the fork so the child only
+        // touches already-built data before exec.
         let environment_c = environment
             .iter()
             .map(|(name, value)| {
@@ -291,12 +291,11 @@ fn child_setup(
             .filter(|value| !value.is_empty())
             .and_then(|value| CString::new(value).ok())
             .unwrap_or_else(|| CString::new("screen-256color").expect("static value is valid"));
-        libc::setenv(term.as_ptr(), terminal.as_ptr(), 1);
-        // Apply `set-environment` overrides on top of the inherited process
-        // environment so later panes observe them, matching tmux semantics.
+        libc::clearenv();
         for (name, value) in environment {
             libc::setenv(name.as_ptr(), value.as_ptr(), 1);
         }
+        libc::setenv(term.as_ptr(), terminal.as_ptr(), 1);
         libc::execvp(argv[0], argv.as_ptr());
         libc::_exit(127);
     }

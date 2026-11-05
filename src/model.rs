@@ -986,6 +986,7 @@ pub(crate) struct Session {
     pub next_window_index: u32,
     pub cwd: Option<String>,
     pub options: HashMap<String, String>,
+    pub environment: HashMap<String, Option<String>>,
     pub activity: u64,
     pub group: Option<u64>,
 }

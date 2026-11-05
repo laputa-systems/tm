@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_000a;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_000b;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -217,9 +217,10 @@ pub(crate) enum Request {
     },
     SetOption {
         target: Option<String>,
-        scope: Option<OptionScope>,
+        flags: OptionFlags,
+        quiet: bool,
         key: String,
-        value: String,
+        value: Option<String>,
         unset: bool,
     },
     ResizePane {
@@ -265,11 +266,6 @@ pub(crate) enum Request {
     ClearHistory {
         target: Option<String>,
     },
-    SetWindowOption {
-        target: Option<String>,
-        key: String,
-        value: String,
-    },
     RotateWindow {
         target: Option<String>,
         up: bool,
@@ -293,21 +289,24 @@ pub(crate) enum Request {
     },
     ShowOptions {
         target: Option<String>,
-        global: bool,
-        window: bool,
-        pane: bool,
+        flags: OptionFlags,
         value: bool,
         all: bool,
         quiet: bool,
         key: Option<String>,
     },
     SetEnvironment {
+        target: Option<String>,
+        global: bool,
         name: String,
         value: Option<String>,
-        remove: bool,
+        unset: bool,
+        clear: bool,
     },
     ShowEnvironment {
-        format: Option<String>,
+        target: Option<String>,
+        global: bool,
+        shell: bool,
         name: Option<String>,
     },
     PipePane {
@@ -354,11 +353,11 @@ pub(crate) enum WindowStep {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OptionScope {
-    Global,
-    Session,
-    Window,
-    Pane,
+pub(crate) struct OptionFlags {
+    pub global: bool,
+    pub server: bool,
+    pub window: bool,
+    pub pane: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,7 +541,7 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_optional_string(&mut payload, target);
         }
         Request::SelectLayout { target, layout } => {
-            payload.push(57);
+            payload.push(26);
             put_optional_string(&mut payload, target);
             put_string(&mut payload, layout);
         }
@@ -734,22 +733,18 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
         }
         Request::SetOption {
             target,
-            scope,
+            flags,
+            quiet,
             key,
             value,
             unset,
         } => {
             payload.push(32);
             put_optional_string(&mut payload, target);
-            match scope {
-                Some(scope) => {
-                    put_bool(&mut payload, true);
-                    payload.push(option_scope_code(*scope));
-                }
-                None => put_bool(&mut payload, false),
-            }
+            put_option_flags(&mut payload, *flags);
+            put_bool(&mut payload, *quiet);
             put_string(&mut payload, key);
-            put_string(&mut payload, value);
+            put_optional_string(&mut payload, value);
             put_bool(&mut payload, *unset);
         }
         Request::ResizePane {
@@ -842,12 +837,6 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             payload.push(38);
             put_optional_string(&mut payload, target);
         }
-        Request::SetWindowOption { target, key, value } => {
-            payload.push(26);
-            put_optional_string(&mut payload, target);
-            put_string(&mut payload, key);
-            put_string(&mut payload, value);
-        }
         Request::RotateWindow { target, up } => {
             payload.push(39);
             put_optional_string(&mut payload, target);
@@ -886,9 +875,7 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
         }
         Request::ShowOptions {
             target,
-            global,
-            window,
-            pane,
+            flags,
             value,
             all,
             quiet,
@@ -896,27 +883,38 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
         } => {
             payload.push(44);
             put_optional_string(&mut payload, target);
-            put_bool(&mut payload, *global);
-            put_bool(&mut payload, *window);
-            put_bool(&mut payload, *pane);
+            put_option_flags(&mut payload, *flags);
             put_bool(&mut payload, *value);
             put_bool(&mut payload, *all);
             put_bool(&mut payload, *quiet);
             put_optional_string(&mut payload, key);
         }
         Request::SetEnvironment {
+            target,
+            global,
             name,
             value,
-            remove,
+            unset,
+            clear,
         } => {
             payload.push(45);
+            put_optional_string(&mut payload, target);
+            put_bool(&mut payload, *global);
             put_string(&mut payload, name);
             put_optional_string(&mut payload, value);
-            put_bool(&mut payload, *remove);
+            put_bool(&mut payload, *unset);
+            put_bool(&mut payload, *clear);
         }
-        Request::ShowEnvironment { format, name } => {
+        Request::ShowEnvironment {
+            target,
+            global,
+            shell,
+            name,
+        } => {
             payload.push(46);
-            put_optional_string(&mut payload, format);
+            put_optional_string(&mut payload, target);
+            put_bool(&mut payload, *global);
+            put_bool(&mut payload, *shell);
             put_optional_string(&mut payload, name);
         }
         Request::PipePane {
@@ -1114,7 +1112,7 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         42 => Request::SendPrefix {
             target: decoder.optional_string()?,
         },
-        57 => Request::SelectLayout {
+        26 => Request::SelectLayout {
             target: decoder.optional_string()?,
             layout: decoder.string()?,
         },
@@ -1229,13 +1227,10 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         32 => Request::SetOption {
             target: decoder.optional_string()?,
-            scope: if decoder.bool()? {
-                Some(decode_option_scope(decoder.byte()?)?)
-            } else {
-                None
-            },
+            flags: decoder.option_flags()?,
+            quiet: decoder.bool()?,
             key: decoder.string()?,
-            value: decoder.string()?,
+            value: decoder.optional_string()?,
             unset: decoder.bool()?,
         },
         33 => Request::ResizePane {
@@ -1308,21 +1303,24 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         44 => Request::ShowOptions {
             target: decoder.optional_string()?,
-            global: decoder.bool()?,
-            window: decoder.bool()?,
-            pane: decoder.bool()?,
+            flags: decoder.option_flags()?,
             value: decoder.bool()?,
             all: decoder.bool()?,
             quiet: decoder.bool()?,
             key: decoder.optional_string()?,
         },
         45 => Request::SetEnvironment {
+            target: decoder.optional_string()?,
+            global: decoder.bool()?,
             name: decoder.string()?,
             value: decoder.optional_string()?,
-            remove: decoder.bool()?,
+            unset: decoder.bool()?,
+            clear: decoder.bool()?,
         },
         46 => Request::ShowEnvironment {
-            format: decoder.optional_string()?,
+            target: decoder.optional_string()?,
+            global: decoder.bool()?,
+            shell: decoder.bool()?,
             name: decoder.optional_string()?,
         },
         47 => Request::PipePane {
@@ -1389,11 +1387,6 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
             no_mode: decoder.bool()?,
             command: decoder.strings()?,
             kill_on_exit: decoder.bool()?,
-        },
-        26 => Request::SetWindowOption {
-            target: decoder.optional_string()?,
-            key: decoder.string()?,
-            value: decoder.string()?,
         },
         _ => return Err(invalid_data("unknown request tag")),
     };
@@ -1591,23 +1584,11 @@ fn decode_direction(code: u8) -> io::Result<PaneDirection> {
     }
 }
 
-fn option_scope_code(scope: OptionScope) -> u8 {
-    match scope {
-        OptionScope::Global => 1,
-        OptionScope::Session => 2,
-        OptionScope::Window => 3,
-        OptionScope::Pane => 4,
-    }
-}
-
-fn decode_option_scope(code: u8) -> io::Result<OptionScope> {
-    match code {
-        1 => Ok(OptionScope::Global),
-        2 => Ok(OptionScope::Session),
-        3 => Ok(OptionScope::Window),
-        4 => Ok(OptionScope::Pane),
-        _ => Err(invalid_data("unknown option scope")),
-    }
+fn put_option_flags(payload: &mut Vec<u8>, flags: OptionFlags) {
+    put_bool(payload, flags.global);
+    put_bool(payload, flags.server);
+    put_bool(payload, flags.window);
+    put_bool(payload, flags.pane);
 }
 
 struct Decoder<'a> {
@@ -1636,6 +1617,15 @@ impl<'a> Decoder<'a> {
             1 => Ok(true),
             _ => Err(invalid_data("invalid boolean")),
         }
+    }
+
+    fn option_flags(&mut self) -> io::Result<OptionFlags> {
+        Ok(OptionFlags {
+            global: self.bool()?,
+            server: self.bool()?,
+            window: self.bool()?,
+            pane: self.bool()?,
+        })
     }
 
     fn bytes(&mut self) -> io::Result<Vec<u8>> {
@@ -1950,7 +1940,7 @@ mod tests {
         read_request(&mut std::io::Cursor::new(framed))
     }
 
-    const REQUEST_VARIANTS: usize = 57;
+    const REQUEST_VARIANTS: usize = 56;
 
     trait Source {
         fn flag(&mut self) -> bool;
@@ -1965,7 +1955,7 @@ mod tests {
         fn size(&mut self) -> Size;
         fn direction(&mut self) -> PaneDirection;
         fn opt_direction(&mut self) -> Option<PaneDirection>;
-        fn opt_scope(&mut self) -> Option<OptionScope>;
+        fn option_flags(&mut self) -> OptionFlags;
         fn pane_list_scope(&mut self) -> PaneListScope;
         fn window_step(&mut self) -> WindowStep;
     }
@@ -1979,13 +1969,6 @@ mod tests {
         PaneDirection::Previous,
         PaneDirection::Last,
         PaneDirection::Target,
-    ];
-
-    const SCOPES: [OptionScope; 4] = [
-        OptionScope::Global,
-        OptionScope::Session,
-        OptionScope::Window,
-        OptionScope::Pane,
     ];
 
     const PANE_LIST_SCOPES: [PaneListScope; 3] = [
@@ -2055,9 +2038,14 @@ mod tests {
         fn opt_direction(&mut self) -> Option<PaneDirection> {
             self.toggle().then(|| self.direction())
         }
-        fn opt_scope(&mut self) -> Option<OptionScope> {
+        fn option_flags(&mut self) -> OptionFlags {
             self.calls += 1;
-            self.toggle().then(|| SCOPES[self.calls % SCOPES.len()])
+            OptionFlags {
+                global: self.toggle(),
+                server: self.toggle(),
+                window: self.toggle(),
+                pane: self.toggle(),
+            }
         }
         fn pane_list_scope(&mut self) -> PaneListScope {
             self.calls += 1;
@@ -2121,8 +2109,13 @@ mod tests {
         fn opt_direction(&mut self) -> Option<PaneDirection> {
             self.flag().then(|| self.direction())
         }
-        fn opt_scope(&mut self) -> Option<OptionScope> {
-            self.flag().then(|| SCOPES[self.below(SCOPES.len())])
+        fn option_flags(&mut self) -> OptionFlags {
+            OptionFlags {
+                global: self.flag(),
+                server: self.flag(),
+                window: self.flag(),
+                pane: self.flag(),
+            }
         }
         fn pane_list_scope(&mut self) -> PaneListScope {
             PANE_LIST_SCOPES[self.below(PANE_LIST_SCOPES.len())]
@@ -2343,9 +2336,10 @@ mod tests {
         },
         36 => Request::SetOption {
                 target: source.opt_text(),
-                scope: source.opt_scope(),
+                flags: source.option_flags(),
+                quiet: source.flag(),
                 key: source.text(),
-                value: source.text(),
+                value: source.opt_text(),
                 unset: source.flag(),
         },
         37 => Request::ResizePane {
@@ -2391,11 +2385,6 @@ mod tests {
         42 => Request::ClearHistory {
                 target: source.opt_text(),
         },
-        43 => Request::SetWindowOption {
-                target: source.opt_text(),
-                key: source.text(),
-                value: source.text(),
-        },
         44 => Request::RotateWindow {
                 target: source.opt_text(),
                 up: source.flag(),
@@ -2419,21 +2408,24 @@ mod tests {
         },
         49 => Request::ShowOptions {
                 target: source.opt_text(),
-                global: source.flag(),
-                window: source.flag(),
-                pane: source.flag(),
+                flags: source.option_flags(),
                 value: source.flag(),
                 all: source.flag(),
                 quiet: source.flag(),
                 key: source.opt_text(),
         },
         50 => Request::SetEnvironment {
+                target: source.opt_text(),
+                global: source.flag(),
                 name: source.text(),
                 value: source.opt_text(),
-                remove: source.flag(),
+                unset: source.flag(),
+                clear: source.flag(),
         },
         51 => Request::ShowEnvironment {
-                format: source.opt_text(),
+                target: source.opt_text(),
+                global: source.flag(),
+                shell: source.flag(),
                 name: source.opt_text(),
         },
         52 => Request::PipePane {
@@ -2452,7 +2444,7 @@ mod tests {
                 client: source.opt_text(),
                 session: source.text(),
         },
-        56 => Request::RefreshClient {
+        43 => Request::RefreshClient {
                 target: source.opt_text(),
         },
         47 => Request::RunShell {
@@ -2571,7 +2563,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_000a;
+    const GOLDEN_VERSION: u32 = 0x544d_000b;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2584,7 +2576,7 @@ mod tests {
         "110000000801020000007432000102000000743500",
         "110000000901020000007432000102000000743501",
         "080000000a02000000743103",
-        "0e0000003901020000007432020000007433",
+        "0e0000001a01020000007432020000007433",
         "080000000b01020000007432",
         "080000000c01020000007432",
         "0e0000000d01020000007432020000007433",
@@ -2610,27 +2602,26 @@ mod tests {
         "120000001d010200000074320001030000000005ff00",
         "0f0000001e01020000007432030000000003ff",
         "0f0000001f0102000000743202000000743301",
-        "170000002001020000007432010102000000743502000000743601",
+        "1c00000020010200000074320101000101020000007439010300000074313100",
         "2200000021010200000074320001020000007435000102000000743800010300000074313100",
         "0c000000220102000000743200010600",
         "18000000230102000000743200010200000074350001020000007438",
         "140000002401020000007432000101000102000000743800",
         "2300000025010200000074320200000002000000743303000000c3a90901020000007435000101",
         "080000002601020000007432",
-        "140000001a01020000007432020000007433020000007434",
+        "080000003301020000007432",
         "09000000270102000000743200",
         "0a00000028010200000074320001",
         "0d00000029010200000074320001010001",
         "1b000000340102000000743200010200000074350200000074360108000001",
         "090000002b0102000000743200",
-        "0f0000002c0102000000743200010100010100",
-        "0f0000002d0200000074310102000000743301",
-        "090000002e0102000000743200",
+        "170000002c01020000007432010100010100010103000000743132",
+        "180000002d0102000000743200020000007434010200000074360101",
+        "110000002e01020000007432000101020000007436",
         "0a0000002f010200000074320001",
         "080000003001020000007432",
         "09000000310102000000743200",
         "0e0000003201020000007432020000007433",
-        "080000003301020000007432",
     ];
 
     #[test]

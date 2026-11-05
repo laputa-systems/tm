@@ -26,9 +26,13 @@ use crate::copy_mode::{
 use crate::cells::display_column_to_char_index;
 use crate::model::{Axis, CopySource, EdgeMove, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
-    ClientMessage, OptionScope, PROTOCOL_VERSION, PaneDirection, PaneListScope, Request,
+    ClientMessage, OptionFlags, PROTOCOL_VERSION, PaneDirection, PaneListScope, Request,
     ServerMessage, WindowStep,
     read_client_message, read_request, read_version, write_server_message, write_version,
+};
+use crate::options::{
+    OptionNameError, OptionTable, level_of_global_table, match_option, option_spec,
+    option_value_from_text, table_for_flags, table_for_name,
 };
 use crate::pty::Pty;
 use crate::terminal;
@@ -494,6 +498,7 @@ fn run_shell_process(
         .arg0("sh")
         .arg("-c")
         .arg(command)
+        .env_clear()
         .envs(environment.iter())
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -544,7 +549,10 @@ fn run_foreground_shell(
             .as_deref()
             .map(|command| state.display_message(target, command))
             .transpose()?;
-        (expanded, state.environment.clone())
+        let session_index = target
+            .and_then(|target| state.resolve_pane_target(Some(target)).ok())
+            .map(|(session_index, _, _)| session_index);
+        (expanded, state.command_environment(session_index))
     };
     let Some(command) = expanded else {
         if let Some(delay_ms) = delay_ms {
@@ -818,7 +826,7 @@ struct ServerState {
     buffers: Vec<Buffer>,
     buffer_limit: usize,
     global_options: HashMap<String, String>,
-    environment: HashMap<String, String>,
+    environment: HashMap<String, Option<String>>,
     pane_pipes: HashMap<u64, PanePipe>,
     clients: HashMap<u64, AttachedClient>,
     next_client_id: u64,
@@ -1455,12 +1463,52 @@ struct MouseEvent {
 
 struct ShowOptionsQuery<'a> {
     target: Option<&'a str>,
-    global: bool,
-    window: bool,
-    pane: bool,
+    flags: OptionFlags,
     value_only: bool,
+    all: bool,
     quiet: bool,
     key: Option<&'a str>,
+}
+
+struct SetEnvironmentQuery<'a> {
+    target: Option<&'a str>,
+    global: bool,
+    name: &'a str,
+    value: Option<&'a str>,
+    unset: bool,
+    clear: bool,
+}
+
+struct ShowEnvironmentQuery<'a> {
+    target: Option<&'a str>,
+    global: bool,
+    shell: bool,
+    name: Option<&'a str>,
+}
+
+struct SetOptionQuery<'a> {
+    target: Option<&'a str>,
+    flags: OptionFlags,
+    quiet: bool,
+    key: &'a str,
+    value: Option<&'a str>,
+    unset: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OptionOwner {
+    Global,
+    Session(usize),
+    Window(usize, usize),
+    Pane(u64),
+}
+
+fn parent_table(table: OptionTable) -> OptionTable {
+    match table {
+        OptionTable::Session => OptionTable::GlobalSession,
+        OptionTable::Window | OptionTable::Pane => OptionTable::GlobalWindow,
+        global => global,
+    }
 }
 
 struct TreeEntriesOptions<'a> {
@@ -1539,6 +1587,7 @@ struct NewPaneOptions<'a> {
     command: &'a [String],
     cwd: Option<&'a str>,
     empty: bool,
+    session_index: Option<usize>,
 }
 
 impl ServerState {
@@ -1554,7 +1603,11 @@ impl ServerState {
             buffers: Vec::new(),
             buffer_limit: 50,
             global_options: HashMap::new(),
-            environment: HashMap::new(),
+            environment: std::env::vars_os()
+                .filter_map(|(name, value)| {
+                    Some((name.into_string().ok()?, Some(value.into_string().ok()?)))
+                })
+                .collect(),
             pane_pipes: HashMap::new(),
             clients: HashMap::new(),
             next_client_id: 0,
@@ -1642,7 +1695,7 @@ impl ServerState {
 
     fn apply_compiled_interactive_config(&mut self) {
         for &(key, value) in config::COMPILED_OPTIONS {
-            self.set_global_option(key, value, false)
+            self.set_global_option(key, value)
                 .expect("compiled option must be valid");
         }
         self.bindings
@@ -1723,6 +1776,7 @@ impl ServerState {
                 next_window_index: source.next_window_index,
                 cwd: source.cwd.clone(),
                 options: source.options.clone(),
+                environment: HashMap::new(),
                 activity,
                 group: Some(group),
             });
@@ -1746,6 +1800,7 @@ impl ServerState {
                 command,
                 cwd,
                 empty,
+                session_index: None,
             },
         )?;
         pane.focused = true;
@@ -1790,6 +1845,7 @@ impl ServerState {
             next_window_index: base_index.saturating_add(1),
             cwd: cwd.map(str::to_owned),
             options: HashMap::new(),
+            environment: HashMap::new(),
             activity,
             group: None,
         });
@@ -1912,6 +1968,7 @@ impl ServerState {
                 command,
                 cwd: cwd.or(session_cwd.as_deref()),
                 empty,
+                session_index: Some(session_index),
             },
         )?;
         let window_name = name
@@ -2007,6 +2064,7 @@ impl ServerState {
                 command,
                 cwd: cwd.or(session_cwd.as_deref()),
                 empty,
+                session_index: Some(session_index),
             },
         )?;
         let window = &mut self.sessions[session_index].windows[window_index];
@@ -2052,6 +2110,7 @@ impl ServerState {
             command,
             cwd,
             empty,
+            session_index,
         } = options;
         let start_path = cwd.map(str::to_owned).or_else(|| {
             std::env::current_dir()
@@ -2075,7 +2134,7 @@ impl ServerState {
             cwd.map(Path::new),
             size,
             terminal,
-            &self.environment,
+            &self.command_environment(session_index),
         )
         .map_err(|error| error.to_string())?;
         let reader = pty.reader().map_err(|error| error.to_string())?;
@@ -5115,9 +5174,9 @@ impl ServerState {
                 .get(key)
                 .map(|existing| format!("{existing},{}", value))
                 .unwrap_or(value);
-            return self.set_global_option(key, &value, false);
+            return self.set_global_option(key, &value);
         }
-        self.set_global_option(key, &value, false)
+        self.set_global_option(key, &value)
     }
 
     #[cfg(test)]
@@ -6148,7 +6207,7 @@ impl ServerState {
                     self.store_copy_buffer(buffer_prefix, data.clone());
                 }
                 if !command.is_empty() {
-                    run_copy_pipe(&command, &data, &self.environment)?;
+                    run_copy_pipe(&command, &data, &self.command_environment(None))?;
                 }
             } else if append {
                 self.append_buffer(data);
@@ -6475,240 +6534,195 @@ impl ServerState {
         }
     }
 
-    fn set_option(
+    fn set_option(&mut self, request: SetOptionQuery<'_>) -> CommandResult {
+        let SetOptionQuery {
+            target,
+            flags,
+            quiet,
+            key,
+            value,
+            unset,
+        } = request;
+        let name = match match_option(key) {
+            Ok(name) => name,
+            Err(OptionNameError::ArrayKey) => {
+                return Err(format!("unsupported array element: {key}"));
+            }
+            Err(_) if quiet => return Ok(String::new()),
+            Err(OptionNameError::Ambiguous) => return Err(format!("ambiguous option: {key}")),
+            Err(OptionNameError::Invalid) => return Err(format!("invalid option: {key}")),
+        };
+        let table = table_for_name(&name, flags);
+        let owner = match self.option_owner(table, target) {
+            Ok(owner) => owner,
+            Err(_) if quiet => return Ok(String::new()),
+            Err(error) => return Err(error),
+        };
+        let key = name.name();
+        if unset {
+            return match owner {
+                OptionOwner::Global if key.starts_with('@') => {
+                    self.global_options.remove(key);
+                    Ok(String::new())
+                }
+                OptionOwner::Global => Err(format!("unsupported reset of global option {key}")),
+                OptionOwner::Session(session_index) => {
+                    self.unset_session_option(session_index, key);
+                    Ok(String::new())
+                }
+                OptionOwner::Window(session_index, window_index) => {
+                    self.unset_window_option_at(session_index, window_index, key)
+                }
+                OptionOwner::Pane(pane_id) => {
+                    if let Some(pane) = self.find_pane_mut(pane_id) {
+                        pane.options.remove(key);
+                    }
+                    Ok(String::new())
+                }
+            };
+        }
+        let current = self.option_value(owner, key, true).map(|(value, _)| value);
+        let value = option_value_from_text(&name, current.as_deref(), value)?;
+        match owner {
+            OptionOwner::Global => self.set_global_option(key, &value),
+            OptionOwner::Session(session_index) => {
+                self.set_session_option(session_index, key, &value)
+            }
+            OptionOwner::Window(session_index, window_index) => {
+                self.set_window_option_at(session_index, window_index, key, &value)
+            }
+            OptionOwner::Pane(pane_id) => {
+                if let Some(pane) = self.find_pane_mut(pane_id) {
+                    pane.options.insert(key.to_owned(), value);
+                }
+                Ok(String::new())
+            }
+        }
+    }
+
+    fn option_owner(&self, table: OptionTable, target: Option<&str>) -> Result<OptionOwner, String> {
+        let missing = |kind: &str| match target {
+            Some(target) => format!("no such {kind}: {target}"),
+            None => format!("no current {kind}"),
+        };
+        match table {
+            OptionTable::Server | OptionTable::GlobalSession | OptionTable::GlobalWindow => {
+                Ok(OptionOwner::Global)
+            }
+            OptionTable::Session | OptionTable::Window => {
+                let located = self
+                    .resolve_pane_target(target)
+                    .map(|(session_index, window_index, _)| (session_index, window_index));
+                let (kind, owner): (_, fn(usize, usize) -> OptionOwner) =
+                    if table == OptionTable::Session {
+                        ("session", |session_index, _| OptionOwner::Session(session_index))
+                    } else {
+                        ("window", OptionOwner::Window)
+                    };
+                located
+                    .map(|(session_index, window_index)| owner(session_index, window_index))
+                    .map_err(|_| missing(kind))
+            }
+            OptionTable::Pane => self
+                .resolve_pane_target(target)
+                .map(|(_, _, pane_id)| OptionOwner::Pane(pane_id))
+                .map_err(|_| missing("pane")),
+        }
+    }
+
+    fn global_option_value(&self, key: &str) -> Option<String> {
+        match key {
+            "mode-keys" => Some(
+                match self.mode_keys {
+                    CopyModeKeys::Emacs => "emacs",
+                    CopyModeKeys::Vi => "vi",
+                }
+                .to_owned(),
+            ),
+            "word-separators" => Some(self.word_separators.clone()),
+            "buffer-limit" => Some(self.buffer_limit.to_string()),
+            "remain-on-exit" => Some(if self.remain_on_exit { "on" } else { "off" }.to_owned()),
+            "synchronize-panes" => {
+                Some(if self.synchronize_panes { "on" } else { "off" }.to_owned())
+            }
+            _ => self.global_options.get(key).cloned(),
+        }
+    }
+
+    fn option_value(&self, owner: OptionOwner, key: &str, inherit: bool) -> Option<(String, bool)> {
+        let own = match owner {
+            OptionOwner::Global => return self.global_option_value(key).map(|value| (value, false)),
+            OptionOwner::Session(session_index) => self.sessions[session_index].options.get(key),
+            OptionOwner::Window(session_index, window_index) => self.sessions[session_index]
+                .windows[window_index]
+                .options
+                .get(key),
+            OptionOwner::Pane(pane_id) => self.find_pane(pane_id)?.options.get(key),
+        };
+        if let Some(value) = own {
+            return Some((value.clone(), false));
+        }
+        if !inherit {
+            return None;
+        }
+        let parent = match owner {
+            OptionOwner::Pane(pane_id) => {
+                let (session_index, window_index, _) = self.find_pane_location(pane_id)?;
+                OptionOwner::Window(session_index, window_index)
+            }
+            _ => OptionOwner::Global,
+        };
+        self.option_value(parent, key, true).map(|(value, _)| (value, true))
+    }
+
+    fn set_session_option(&mut self, session_index: usize, key: &str, value: &str) -> CommandResult {
+        if key == "base-index" {
+            let base = value
+                .parse::<u32>()
+                .map_err(|_| "base-index requires an integer".to_owned())?;
+            self.sessions[session_index].base_index = base;
+            self.sessions[session_index].next_window_index = self.sessions[session_index]
+                .next_window_index
+                .max(base.saturating_add(1));
+        } else if key == "renumber-windows" {
+            self.sessions[session_index].renumber_windows = parse_on_off(value)?;
+            if self.sessions[session_index].renumber_windows {
+                renumber_session_windows(&mut self.sessions[session_index]);
+            }
+        }
+        self.sessions[session_index]
+            .options
+            .insert(key.to_owned(), value.to_owned());
+        Ok(String::new())
+    }
+
+    fn set_window_option_at(
         &mut self,
-        target: Option<&str>,
-        scope: Option<OptionScope>,
+        session_index: usize,
+        window_index: usize,
         key: &str,
         value: &str,
-        unset: bool,
     ) -> CommandResult {
-        if let Some(scope) = scope {
-            match scope {
-                OptionScope::Global => return self.set_global_option(key, value, unset),
-                OptionScope::Session => {
-                    if matches!(
-                        key,
-                        "default-terminal"
-                            | "terminal-features"
-                            | "set-clipboard"
-                            | "extended-keys"
-                            | "extended-keys-format"
-                            | "escape-time"
-                            | "focus-events"
-                    ) {
-                        return self.set_global_option(key, value, unset);
-                    }
-                    let session_index = self.resolve_session_index(target)?;
-                    if unset {
-                        self.unset_session_option(session_index, key);
-                    } else {
-                        if key == "base-index" {
-                            let base = value
-                                .parse::<u32>()
-                                .map_err(|_| "base-index requires an integer".to_owned())?;
-                            self.sessions[session_index].base_index = base;
-                            self.sessions[session_index].next_window_index = self.sessions
-                                [session_index]
-                                .next_window_index
-                                .max(base.saturating_add(1));
-                        } else if key == "renumber-windows" {
-                            self.sessions[session_index].renumber_windows = parse_on_off(value)?;
-                            if self.sessions[session_index].renumber_windows {
-                                renumber_session_windows(&mut self.sessions[session_index]);
-                            }
-                        }
-                        self.sessions[session_index]
-                            .options
-                            .insert(key.to_owned(), value.to_owned());
-                        if key == "mode-keys" || key == "word-separators" {
-                            self.apply_session_window_option(session_index, key, value)?;
-                        }
-                    }
-                    return Ok(String::new());
-                }
-                OptionScope::Window => {
-                    if unset {
-                        return self.unset_window_option(target, key);
-                    }
-                    let (session_index, window_index) = self.resolve_window_target(target)?;
-                    self.sessions[session_index].windows[window_index]
-                        .options
-                        .insert(key.to_owned(), value.to_owned());
-                    if key == "mode-keys" || key == "word-separators" {
-                        return self.set_window_option(target, key, value);
-                    }
-                    return Ok(String::new());
-                }
-                OptionScope::Pane => {
-                    let (_, _, pane_id) = self.resolve_pane_target(target)?;
-                    let pane = self
-                        .find_pane_mut(pane_id)
-                        .ok_or_else(|| "target pane no longer exists".to_owned())?;
-                    if unset {
-                        pane.options.remove(key);
-                    } else {
-                        pane.options.insert(key.to_owned(), value.to_owned());
-                    }
-                    return Ok(String::new());
-                }
-            }
-        }
-        // With no explicit scope, tmux infers the option's owning object.
-        // Window options are the small exception to the session default; this
-        // keeps `set mode-keys ...` and `set base-index ...` useful without a
-        // target while preserving explicit -g/-s/-w/-p requests above.
-        if target.is_none() {
-            if matches!(key, "mode-keys" | "word-separators") {
-                if unset {
-                    return self.unset_window_option(None, key);
-                }
-                return self.set_window_option(None, key, value);
-            }
-            let session_index = self.resolve_session_index(None)?;
-            if matches!(key, "base-index" | "renumber-windows") {
-                if unset {
-                    self.unset_session_option(session_index, key);
-                    return Ok(String::new());
-                }
-                if key == "base-index" {
-                    let base = value
-                        .parse::<u32>()
-                        .map_err(|_| "base-index requires an integer".to_owned())?;
-                    self.sessions[session_index].base_index = base;
-                    self.sessions[session_index].next_window_index = self.sessions[session_index]
-                        .next_window_index
-                        .max(base.saturating_add(1));
-                } else {
-                    self.sessions[session_index].renumber_windows = parse_on_off(value)?;
-                    if self.sessions[session_index].renumber_windows {
-                        renumber_session_windows(&mut self.sessions[session_index]);
-                    }
-                }
-                self.sessions[session_index]
-                    .options
-                    .insert(key.to_owned(), value.to_owned());
-                return Ok(String::new());
-            }
-            if unset {
-                self.sessions[session_index].options.remove(key);
-            } else {
-                self.sessions[session_index]
-                    .options
-                    .insert(key.to_owned(), value.to_owned());
-            }
-            return Ok(String::new());
-        }
-        if let Some(target) = target {
-            if unset {
-                if matches!(key, "mode-keys" | "word-separators") {
-                    return self.unset_window_option(Some(target), key);
-                }
-                let session_index = self.resolve_session_index(Some(target))?;
-                self.unset_session_option(session_index, key);
-                return Ok(String::new());
-            }
-            let (session_index, window_index) = self.resolve_window_target(Some(target))?;
-            if key == "mode-keys" {
-                let mode = match value {
+        let window = &mut self.sessions[session_index].windows[window_index];
+        match key {
+            "mode-keys" => {
+                window.mode_keys = match value {
                     "vi" => CopyModeKeys::Vi,
                     "emacs" => CopyModeKeys::Emacs,
                     _ => return Err(format!("unknown mode-keys value: {value}")),
                 };
-                self.sessions[session_index].windows[window_index].mode_keys = mode;
-                self.sessions[session_index].windows[window_index]
-                    .options
-                    .insert(key.to_owned(), value.to_owned());
-                return Ok(String::new());
             }
-            if key == "word-separators" {
-                self.sessions[session_index].windows[window_index].word_separators =
-                    value.to_owned();
-                self.sessions[session_index].windows[window_index]
-                    .options
-                    .insert(key.to_owned(), value.to_owned());
-                return Ok(String::new());
-            }
-            if key == "synchronize-panes" {
-                let enabled = parse_on_off(value)?;
-                self.sessions[session_index].windows[window_index].synchronize_panes = enabled;
-                self.sessions[session_index].windows[window_index]
-                    .options
-                    .insert(key.to_owned(), value.to_owned());
-                return Ok(String::new());
-            }
-            if key == "base-index" {
-                let base = value
-                    .parse::<u32>()
-                    .map_err(|_| "base-index requires an integer".to_owned())?;
-                self.sessions[session_index].base_index = base;
-                self.sessions[session_index].next_window_index = self.sessions[session_index]
-                    .next_window_index
-                    .max(base.saturating_add(1));
-                return Ok(String::new());
-            }
-            if key == "renumber-windows" {
-                self.sessions[session_index].renumber_windows = parse_on_off(value)?;
-                if self.sessions[session_index].renumber_windows {
-                    renumber_session_windows(&mut self.sessions[session_index]);
-                }
-                return Ok(String::new());
-            }
-            return Ok(String::new());
+            "word-separators" => window.word_separators = value.to_owned(),
+            "synchronize-panes" => window.synchronize_panes = parse_on_off(value)?,
+            _ => {}
         }
-        self.set_global_option(key, value, unset)
-    }
-
-    fn apply_session_window_option(
-        &mut self,
-        session_index: usize,
-        key: &str,
-        value: &str,
-    ) -> CommandResult {
-        if key == "mode-keys" {
-            let mode = match value {
-                "vi" => CopyModeKeys::Vi,
-                "emacs" => CopyModeKeys::Emacs,
-                _ => return Err(format!("unknown mode-keys value: {value}")),
-            };
-            for window in &mut self.sessions[session_index].windows {
-                window.mode_keys = mode;
-            }
-        } else if key == "word-separators" {
-            for window in &mut self.sessions[session_index].windows {
-                window.word_separators = value.to_owned();
-            }
-        }
+        window.options.insert(key.to_owned(), value.to_owned());
         Ok(String::new())
     }
 
     fn unset_session_option(&mut self, session_index: usize, key: &str) {
         self.sessions[session_index].options.remove(key);
         match key {
-            "mode-keys" => {
-                let mode = self.sessions[session_index]
-                    .options
-                    .get(key)
-                    .or_else(|| self.global_options.get(key))
-                    .map_or(CopyModeKeys::Emacs, |value| match value.as_str() {
-                        "vi" => CopyModeKeys::Vi,
-                        _ => CopyModeKeys::Emacs,
-                    });
-                for window in &mut self.sessions[session_index].windows {
-                    window.mode_keys = mode;
-                }
-            }
-            "word-separators" => {
-                let separators = self.sessions[session_index]
-                    .options
-                    .get(key)
-                    .or_else(|| self.global_options.get(key))
-                    .cloned()
-                    .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_owned());
-                for window in &mut self.sessions[session_index].windows {
-                    window.word_separators = separators.clone();
-                }
-            }
             "base-index" => {
                 let base = self.global_base_index();
                 self.sessions[session_index].base_index = base;
@@ -6730,100 +6744,26 @@ impl ServerState {
         }
     }
 
-    fn unset_window_option(&mut self, target: Option<&str>, key: &str) -> CommandResult {
-        let (session_index, window_index) = self.resolve_window_target(target)?;
+    fn unset_window_option_at(
+        &mut self,
+        session_index: usize,
+        window_index: usize,
+        key: &str,
+    ) -> CommandResult {
         self.sessions[session_index].windows[window_index]
             .options
             .remove(key);
-        if key == "mode-keys" {
-            let mode = self.sessions[session_index]
-                .options
-                .get(key)
-                .or_else(|| self.global_options.get(key))
-                .map_or(CopyModeKeys::Emacs, |value| match value.as_str() {
-                    "vi" => CopyModeKeys::Vi,
-                    _ => CopyModeKeys::Emacs,
-                });
-            self.sessions[session_index].windows[window_index].mode_keys = mode;
-        } else if key == "word-separators" {
-            let separators = self.sessions[session_index]
-                .options
-                .get(key)
-                .or_else(|| self.global_options.get(key))
-                .cloned()
-                .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_owned());
-            self.sessions[session_index].windows[window_index].word_separators = separators;
-        } else if key == "synchronize-panes" {
-            let enabled = self
-                .global_options
-                .get(key)
-                .is_some_and(|value| parse_on_off(value).unwrap_or(false));
-            self.sessions[session_index].windows[window_index].synchronize_panes = enabled;
+        let window = &mut self.sessions[session_index].windows[window_index];
+        match key {
+            "mode-keys" => window.mode_keys = self.mode_keys,
+            "word-separators" => window.word_separators = self.word_separators.clone(),
+            "synchronize-panes" => window.synchronize_panes = self.synchronize_panes,
+            _ => {}
         }
         Ok(String::new())
     }
 
-    fn set_global_option(&mut self, key: &str, value: &str, unset: bool) -> CommandResult {
-        if unset {
-            self.global_options.remove(key);
-            match key {
-                "mode-keys" => {
-                    self.mode_keys = CopyModeKeys::Emacs;
-                    for session in &mut self.sessions {
-                        let value = session
-                            .options
-                            .get(key)
-                            .map_or(CopyModeKeys::Emacs, |value| match value.as_str() {
-                                "vi" => CopyModeKeys::Vi,
-                                _ => CopyModeKeys::Emacs,
-                            });
-                        for window in &mut session.windows {
-                            window.mode_keys = value;
-                        }
-                    }
-                }
-                "word-separators" => {
-                    self.word_separators = DEFAULT_WORD_SEPARATORS.to_owned();
-                    for session in &mut self.sessions {
-                        let value = session
-                            .options
-                            .get(key)
-                            .cloned()
-                            .unwrap_or_else(|| DEFAULT_WORD_SEPARATORS.to_owned());
-                        for window in &mut session.windows {
-                            window.word_separators = value.clone();
-                        }
-                    }
-                }
-                "synchronize-panes" => {
-                    self.synchronize_panes = false;
-                    for session in &mut self.sessions {
-                        for window in &mut session.windows {
-                            window.synchronize_panes = false;
-                        }
-                    }
-                }
-                "base-index" => {
-                    for session in &mut self.sessions {
-                        session.base_index = 0;
-                    }
-                }
-                "renumber-windows" => {
-                    for session in &mut self.sessions {
-                        session.renumber_windows = false;
-                    }
-                }
-                "remain-on-exit" => self.remain_on_exit = false,
-                "buffer-limit" => self.buffer_limit = 50,
-                "history-limit" => self.history_limit = 10_000,
-                "prefix" => self.prefix = vec![2],
-                _ => {}
-            }
-            if matches!(key, "status" | "status-position") {
-                self.reflow_all_sessions();
-            }
-            return Ok(String::new());
-        }
+    fn set_global_option(&mut self, key: &str, value: &str) -> CommandResult {
         if key == "prefix" {
             self.prefix = config::key_bytes(value)
                 .ok_or_else(|| format!("unsupported prefix key: {value}"))?;
@@ -6929,144 +6869,241 @@ impl ServerState {
     fn show_options(&self, query: ShowOptionsQuery<'_>) -> CommandResult {
         let ShowOptionsQuery {
             target,
-            global,
-            window,
-            pane,
+            flags,
             value_only,
+            all,
             quiet,
             key,
         } = query;
-        let mut options = self.global_options.clone();
-        if key == Some("mode-keys") || (key.is_none() && global) {
-            options.insert(
-                "mode-keys".to_owned(),
-                match self.mode_keys {
-                    CopyModeKeys::Emacs => "emacs",
-                    CopyModeKeys::Vi => "vi",
-                }
-                .to_owned(),
-            );
-        }
-        if key == Some("word-separators") || (key.is_none() && global) {
-            options.insert("word-separators".to_owned(), self.word_separators.clone());
-        }
-        if key == Some("buffer-limit") || (key.is_none() && global) {
-            options.insert("buffer-limit".to_owned(), self.buffer_limit.to_string());
-        }
-        if key == Some("remain-on-exit") || (key.is_none() && global) {
-            options.insert(
-                "remain-on-exit".to_owned(),
-                if self.remain_on_exit { "on" } else { "off" }.to_owned(),
-            );
-        }
-        if key == Some("synchronize-panes") || (key.is_none() && global) {
-            options.insert(
-                "synchronize-panes".to_owned(),
-                if self.synchronize_panes { "on" } else { "off" }.to_owned(),
-            );
-        }
-
-        if !global && !window && !pane {
-            let session_index = self.resolve_session_index(target)?;
-            options.extend(self.sessions[session_index].options.clone());
-        }
-
-        if window || pane {
-            let (session_index, window_index, pane_id) = if pane {
-                self.resolve_pane_target(target)?
-            } else {
-                let (session_index, window_index) = self.resolve_window_target(target)?;
-                let pane_id = self.sessions[session_index].windows[window_index].active_pane;
-                (session_index, window_index, pane_id)
+        let Some(key) = key else {
+            let table = table_for_flags(flags);
+            let owner = match self.option_owner(table, target) {
+                Ok(owner) => owner,
+                Err(_) if quiet => return Ok(String::new()),
+                Err(error) => return Err(error),
             };
-            let session = &self.sessions[session_index];
-            let current_window = &session.windows[window_index];
-            let current_pane = current_window
-                .pane(pane_id)
-                .ok_or_else(|| "target pane no longer exists".to_owned())?;
-            options.extend(session.options.clone());
-            options.extend(current_window.options.clone());
-            if pane {
-                options.extend(current_pane.options.clone());
+            return Ok(self.list_options(table, owner, all, value_only));
+        };
+        let name = match match_option(key) {
+            Ok(name) => name,
+            Err(OptionNameError::ArrayKey) => {
+                return Err(format!("unsupported array element: {key}"));
             }
-            options.insert(
-                "mode-keys".to_owned(),
-                match current_window.mode_keys {
-                    CopyModeKeys::Emacs => "emacs",
-                    CopyModeKeys::Vi => "vi",
-                }
-                .to_owned(),
-            );
-            options.insert(
-                "word-separators".to_owned(),
-                current_window.word_separators.clone(),
-            );
-            options.insert(
-                "synchronize-panes".to_owned(),
-                if current_window.synchronize_panes {
-                    "on"
-                } else {
-                    "off"
-                }
-                .to_owned(),
-            );
-            if pane {
-                options.insert(
-                    "pane-enabled".to_owned(),
-                    if current_pane.enabled { "on" } else { "off" }.to_owned(),
-                );
-            }
-        }
-
-        if let Some(key) = key {
-            let Some(option_value) = options.get(key) else {
+            Err(_) if quiet => return Ok(String::new()),
+            Err(OptionNameError::Ambiguous) => return Err(format!("ambiguous option: {key}")),
+            Err(OptionNameError::Invalid) => return Err(format!("invalid option: {key}")),
+        };
+        let table = table_for_name(&name, flags);
+        let owner = match self.option_owner(table, target) {
+            Ok(owner) => owner,
+            Err(_) if quiet => return Ok(String::new()),
+            Err(error) => return Err(error),
+        };
+        let name = name.name();
+        match self.option_value(owner, name, all) {
+            Some((value, inherited)) => Ok(option_lines(name, &value, value_only, inherited)
+                .into_iter()
+                .map(|line| line + "\n")
+                .collect()),
+            None if name.starts_with('@') => {
                 if quiet {
-                    return Ok(String::new());
+                    Ok(String::new())
+                } else {
+                    Err(format!("invalid option: {key}"))
                 }
-                return Err(format!("invalid option: {key}"));
-            };
-            return Ok(option_lines(key, option_value, value_only));
+            }
+            None if owner == OptionOwner::Global => Err(format!("unsupported option: {name}")),
+            None => Ok(String::new()),
         }
-        let mut names = options.into_iter().collect::<Vec<_>>();
-        names.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(names
-            .into_iter()
-            .map(|(key, value)| option_lines(&key, &value, value_only))
-            .filter(|lines| !lines.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n"))
     }
 
-    fn set_environment(&mut self, name: &str, value: Option<&str>, remove: bool) -> CommandResult {
-        if name.is_empty() || name.contains('=') || name.contains('\0') {
-            return Err("invalid environment variable name".to_owned());
+    fn list_options(
+        &self,
+        table: OptionTable,
+        owner: OptionOwner,
+        all: bool,
+        value_only: bool,
+    ) -> String {
+        let mut names = std::collections::BTreeSet::new();
+        let mut owners = vec![owner];
+        if all {
+            match owner {
+                OptionOwner::Pane(pane_id) => {
+                    if let Some((session_index, window_index, _)) = self.find_pane_location(pane_id)
+                    {
+                        owners.push(OptionOwner::Window(session_index, window_index));
+                    }
+                    owners.push(OptionOwner::Global);
+                }
+                OptionOwner::Global => {}
+                _ => owners.push(OptionOwner::Global),
+            }
         }
-        // `std::env::set_var` is unsafe here: `setenv` races with `getenv` in
-        // other threads, and rustix does not wrap it. Spawned children receive
-        // `self.environment` instead.
-        if remove {
-            self.environment.remove(name);
+        for owner in owners {
+            let local = match owner {
+                OptionOwner::Global => {
+                    let levels = level_of_global_table(match table {
+                        OptionTable::Session | OptionTable::Window | OptionTable::Pane => {
+                            parent_table(table)
+                        }
+                        global => global,
+                    })
+                    .unwrap_or(&[]);
+                    let mut keys = self.global_options.keys().cloned().collect::<Vec<_>>();
+                    keys.extend(
+                        [
+                            "mode-keys",
+                            "word-separators",
+                            "buffer-limit",
+                            "remain-on-exit",
+                            "synchronize-panes",
+                        ]
+                        .map(str::to_owned),
+                    );
+                    keys.retain(|key| {
+                        key.starts_with('@') || option_spec(key).is_some_and(|spec| levels.contains(&spec.level))
+                    });
+                    keys
+                }
+                OptionOwner::Session(session_index) => {
+                    self.sessions[session_index].options.keys().cloned().collect()
+                }
+                OptionOwner::Window(session_index, window_index) => self.sessions[session_index]
+                    .windows[window_index]
+                    .options
+                    .keys()
+                    .cloned()
+                    .collect(),
+                OptionOwner::Pane(pane_id) => self
+                    .find_pane(pane_id)
+                    .map(|pane| pane.options.keys().cloned().collect())
+                    .unwrap_or_default(),
+            };
+            names.extend(local);
+        }
+        names
+            .into_iter()
+            .flat_map(|name| {
+                self.option_value(owner, &name, all)
+                    .map(|(value, inherited)| option_lines(&name, &value, value_only, inherited))
+                    .unwrap_or_default()
+            })
+            .map(|line| line + "\n")
+            .collect()
+    }
+
+    fn command_environment(&self, session_index: Option<usize>) -> HashMap<String, String> {
+        let session = session_index
+            .and_then(|index| self.sessions.get(index))
+            .map(|session| &session.environment);
+        self.environment
+            .iter()
+            .chain(session.into_iter().flatten())
+            .fold(HashMap::new(), |mut merged, (name, value)| {
+                match value {
+                    Some(value) => merged.insert(name.clone(), value.clone()),
+                    None => merged.remove(name),
+                };
+                merged
+            })
+    }
+
+    fn environment_scope(
+        &self,
+        target: Option<&str>,
+        global: bool,
+    ) -> Result<Option<usize>, String> {
+        if global {
+            return Ok(None);
+        }
+        self.resolve_session_target(target)
+            .map(Some)
+            .map_err(|_| match target {
+                Some(target) => format!("no such session: {target}"),
+                None => "no current session".to_owned(),
+            })
+    }
+
+    fn set_environment(&mut self, request: SetEnvironmentQuery<'_>) -> CommandResult {
+        let SetEnvironmentQuery {
+            target,
+            global,
+            name,
+            value,
+            unset,
+            clear,
+        } = request;
+        if name.is_empty() {
+            return Err("empty variable name".to_owned());
+        }
+        if name.contains('=') {
+            return Err("variable name contains =".to_owned());
+        }
+        let scope = self.environment_scope(target, global)?;
+        let environment = match scope {
+            Some(session_index) => &mut self.sessions[session_index].environment,
+            None => &mut self.environment,
+        };
+        if unset {
+            if value.is_some() {
+                return Err("can't specify a value with -u".to_owned());
+            }
+            environment.remove(name);
+        } else if clear {
+            if value.is_some() {
+                return Err("can't specify a value with -r".to_owned());
+            }
+            environment.insert(name.to_owned(), None);
         } else {
-            let value = value.ok_or_else(|| "set-environment requires a value".to_owned())?;
-            self.environment.insert(name.to_owned(), value.to_owned());
+            let value = value.ok_or_else(|| "no value specified".to_owned())?;
+            environment.insert(name.to_owned(), Some(value.to_owned()));
         }
         Ok(String::new())
     }
 
-    fn show_environment(&self, format: Option<&str>, name: Option<&str>) -> CommandResult {
-        if let Some(name) = name {
-            let Some(value) = self.environment.get(name) else {
-                return Err(format!("unknown environment variable: {name}"));
-            };
-            return Ok(format_environment(format, name, value));
+    fn show_environment(&self, request: ShowEnvironmentQuery<'_>) -> CommandResult {
+        let ShowEnvironmentQuery {
+            target,
+            global,
+            shell,
+            name,
+        } = request;
+        if target.is_some() {
+            self.resolve_session_target(target)
+                .map_err(|_| format!("no such session: {}", target.unwrap_or_default()))?;
         }
-        let mut entries = self.environment.iter().collect::<Vec<_>>();
+        let scope = self.environment_scope(target, global)?;
+        let environment = match scope {
+            Some(session_index) => &self.sessions[session_index].environment,
+            None => &self.environment,
+        };
+        let line = |name: &str, value: &Option<String>| match (value, shell) {
+            (Some(value), false) => format!("{name}={value}\n"),
+            (None, false) => format!("-{name}\n"),
+            (Some(value), true) => {
+                let mut escaped = String::new();
+                for character in value.chars() {
+                    if matches!(character, '$' | '`' | '"' | '\\') {
+                        escaped.push('\\');
+                    }
+                    escaped.push(character);
+                }
+                format!("{name}=\"{escaped}\"; export {name};\n")
+            }
+            (None, true) => format!("unset {name};\n"),
+        };
+        if let Some(name) = name {
+            let value = environment
+                .get(name)
+                .ok_or_else(|| format!("unknown variable: {name}"))?;
+            return Ok(line(name, value));
+        }
+        let mut entries = environment.iter().collect::<Vec<_>>();
         entries.sort_by(|left, right| left.0.cmp(right.0));
         Ok(entries
             .into_iter()
-            .map(|(name, value)| format_environment(format, name, value))
-            .collect::<Vec<_>>()
-            .join("\n"))
+            .map(|(name, value)| line(name, value))
+            .collect())
     }
 
     fn pipe_pane(
@@ -7093,7 +7130,8 @@ impl ServerState {
         let mut child = Command::new("/bin/sh")
             .arg("-c")
             .arg(&command)
-            .envs(self.environment.iter())
+            .env_clear()
+            .envs(self.command_environment(Some(session_index)))
             .stdin(Stdio::piped())
             .spawn()
             .map_err(|error| format!("pipe-pane: {error}"))?;
@@ -7189,40 +7227,10 @@ impl ServerState {
         }
     }
 
+    #[cfg(test)]
     fn set_window_option(&mut self, target: Option<&str>, key: &str, value: &str) -> CommandResult {
         let (session_index, window_index) = self.resolve_window_target(target)?;
-        if key == "mode-keys" {
-            let mode = match value {
-                "vi" => CopyModeKeys::Vi,
-                "emacs" => CopyModeKeys::Emacs,
-                _ => return Err(format!("unknown mode-keys value: {value}")),
-            };
-            self.sessions[session_index].windows[window_index].mode_keys = mode;
-            self.sessions[session_index].windows[window_index]
-                .options
-                .insert(key.to_owned(), value.to_owned());
-            Ok(String::new())
-        } else if key == "window-size" {
-            Ok(String::new())
-        } else if key == "word-separators" {
-            self.sessions[session_index].windows[window_index].word_separators = value.to_owned();
-            self.sessions[session_index].windows[window_index]
-                .options
-                .insert(key.to_owned(), value.to_owned());
-            Ok(String::new())
-        } else if key == "synchronize-panes" {
-            let enabled = parse_on_off(value)?;
-            self.sessions[session_index].windows[window_index].synchronize_panes = enabled;
-            self.sessions[session_index].windows[window_index]
-                .options
-                .insert(key.to_owned(), value.to_owned());
-            Ok(String::new())
-        } else {
-            self.sessions[session_index].windows[window_index]
-                .options
-                .insert(key.to_owned(), value.to_owned());
-            Ok(String::new())
-        }
+        self.set_window_option_at(session_index, window_index, key, value)
     }
 
     fn list_sessions(&self, format: Option<&str>) -> String {
@@ -7403,7 +7411,11 @@ impl ServerState {
         else {
             return Ok(String::new());
         };
-        let environment = self.environment.clone();
+        let environment = self.command_environment(
+            self.resolve_pane_target(target)
+                .ok()
+                .map(|(session_index, _, _)| session_index),
+        );
         if background {
             let cwd = cwd.to_owned();
             thread::Builder::new()
@@ -8769,6 +8781,7 @@ impl ServerState {
                     command: &effective_command,
                     cwd: cwd.or(session_cwd.as_deref()),
                     empty,
+                    session_index: Some(session_index),
                 },
             )?;
             let window = &mut self.sessions[session_index].windows[window_index];
@@ -8800,7 +8813,7 @@ impl ServerState {
                 self.global_options
                     .get("default-terminal")
                     .map(String::as_str),
-                &self.environment,
+                &self.command_environment(Some(session_index)),
             )
             .map_err(|error| error.to_string())?
         };
@@ -12408,40 +12421,60 @@ fn execute_request_inner(
         }
         Request::SetOption {
             target,
-            scope,
+            flags,
+            quiet,
             key,
             value,
             unset,
-        } => state.set_option(target.as_deref(), scope, &key, &value, unset),
-        Request::SetWindowOption { target, key, value } => {
-            state.set_window_option(target.as_deref(), &key, &value)
-        }
+        } => state.set_option(SetOptionQuery {
+            target: target.as_deref(),
+            flags,
+            quiet,
+            key: &key,
+            value: value.as_deref(),
+            unset,
+        }),
         Request::ShowOptions {
             target,
-            global,
-            window,
-            pane,
+            flags,
             value: value_only,
-            all: _,
+            all,
             quiet,
             key,
         } => state.show_options(ShowOptionsQuery {
             target: target.as_deref(),
-            global,
-            window,
-            pane,
+            flags,
             value_only,
+            all,
             quiet,
             key: key.as_deref(),
         }),
         Request::SetEnvironment {
+            target,
+            global,
             name,
             value,
-            remove,
-        } => state.set_environment(&name, value.as_deref(), remove),
-        Request::ShowEnvironment { format, name } => {
-            state.show_environment(format.as_deref(), name.as_deref())
-        }
+            unset,
+            clear,
+        } => state.set_environment(SetEnvironmentQuery {
+            target: target.as_deref(),
+            global,
+            name: &name,
+            value: value.as_deref(),
+            unset,
+            clear,
+        }),
+        Request::ShowEnvironment {
+            target,
+            global,
+            shell,
+            name,
+        } => state.show_environment(ShowEnvironmentQuery {
+            target: target.as_deref(),
+            global,
+            shell,
+            name: name.as_deref(),
+        }),
         Request::PipePane {
             target,
             command,
@@ -14459,8 +14492,16 @@ fn escape_argument(argument: &str) -> String {
         return format!("\\{only}");
     }
     let mut escaped = String::new();
-    for character in argument.chars() {
+    let mut characters = argument.chars().peekable();
+    while let Some(character) = characters.next() {
         match character {
+            '$' if quote == Some('"')
+                && characters
+                    .peek()
+                    .is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '_' | '{')) =>
+            {
+                escaped.push_str("\\$");
+            }
             '\\' => escaped.push_str("\\\\"),
             '"' if quote == Some('"') => escaped.push_str("\\\""),
             '\n' => escaped.push_str("\\n"),
@@ -14550,7 +14591,8 @@ fn format_session_result(session: &Session, format: Option<&str>) -> String {
 
 const ARRAY_OPTIONS: &[&str] = &["terminal-features"];
 
-fn option_lines(key: &str, value: &str, value_only: bool) -> String {
+fn option_lines(key: &str, value: &str, value_only: bool, inherited: bool) -> Vec<String> {
+    let star = if inherited { "*" } else { "" };
     if ARRAY_OPTIONS.contains(&key) {
         return value
             .split(',')
@@ -14560,24 +14602,15 @@ fn option_lines(key: &str, value: &str, value_only: bool) -> String {
                 if value_only {
                     element.to_owned()
                 } else {
-                    format!("{key}[{index}] {}", quote_option_value(element))
+                    format!("{key}[{index}]{star} {}", escape_argument(element))
                 }
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect();
     }
     if value_only {
-        value.to_owned()
+        vec![value.to_owned()]
     } else {
-        format!("{key} {}", quote_option_value(value))
-    }
-}
-
-fn quote_option_value(value: &str) -> String {
-    if value.is_empty() || value.chars().any(char::is_whitespace) {
-        format!("\"{}\"", value.replace('"', "\\\""))
-    } else {
-        value.to_owned()
+        vec![format!("{key}{star} {}", escape_argument(value))]
     }
 }
 
@@ -14587,21 +14620,6 @@ fn shell_quote_argument(value: &str) -> String {
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
-}
-
-fn format_environment(format: Option<&str>, name: &str, value: &str) -> String {
-    format.map_or_else(
-        || format!("{name}={value}"),
-        |format| {
-            render_format(
-                format,
-                &[
-                    ("environment_name", name.to_owned()),
-                    ("environment_value", value.to_owned()),
-                ],
-            )
-        },
-    )
 }
 
 struct FormatPaneOptions<'a> {
@@ -15680,6 +15698,7 @@ fn run_copy_pipe(
     let mut child = Command::new("/bin/sh")
         .arg("-c")
         .arg(command)
+        .env_clear()
         .envs(environment.iter())
         .stdin(Stdio::piped())
         .spawn()
@@ -16541,7 +16560,6 @@ mod tests {
             .set_global_option(
                 "display-panes-format",
                 "P#{pane_index}:#{pane_unzoomed_width}x#{pane_unzoomed_height}",
-                false,
             )
             .expect("set display panes format");
         let (_, client_id) = state
@@ -16588,7 +16606,7 @@ mod tests {
         assert!(state.clients[&client_id].panes_mode.is_none());
 
         state
-            .set_global_option("@picked", "none", false)
+            .set_global_option("@picked", "none")
             .expect("seed pane selection option");
         state
             .enter_panes_mode(
@@ -16669,7 +16687,7 @@ mod tests {
             )
             .expect("create render split session");
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide render test status");
         state
             .split_window(
@@ -16876,7 +16894,7 @@ mod tests {
             )
             .expect("split mouse resize session");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse resize events");
         let session_id = state.sessions[0].id;
         let (_, client_id) = state
@@ -16957,7 +16975,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("status-position", "top", false)
+            .set_global_option("status-position", "top")
             .expect("move status to top");
         state
             .create_session(
@@ -17048,7 +17066,7 @@ mod tests {
         assert_eq!(pane.parser.screen().size(), (5, 20));
 
         state
-            .set_global_option("status-position", "top", false)
+            .set_global_option("status-position", "top")
             .expect("move status to top");
         let pane = &state.sessions[0].windows[0].panes[0];
         assert_eq!(pane.rect.y, 1);
@@ -17056,7 +17074,7 @@ mod tests {
         assert_eq!(pane.parser.screen().size(), (5, 20));
 
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide status");
         let pane = &state.sessions[0].windows[0].panes[0];
         assert_eq!(pane.rect.y, 0);
@@ -17069,7 +17087,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide status for pane reflow");
         state
             .create_session(
@@ -17358,11 +17376,10 @@ mod tests {
             .set_global_option(
                 "copy-mode-position-format",
                 "#[align=right][23/100-LONGTAIL]",
-                false,
             )
             .expect("set copy position format");
         state
-            .set_global_option("copy-mode-line-numbers", "on", false)
+            .set_global_option("copy-mode-line-numbers", "on")
             .expect("enable copy line numbers");
         state
             .create_session(
@@ -17410,7 +17427,7 @@ mod tests {
                 .any(|window| window == b"\x1b[2m  1 \x1b[0m")
         );
         state
-            .set_global_option("copy-mode-position-format", "#[align=right][1/100]", false)
+            .set_global_option("copy-mode-position-format", "#[align=right][1/100]")
             .expect("shrink copy position format");
         let rendered = state
             .render_session(session_id, None)
@@ -17432,7 +17449,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide status for redraw test");
         state
             .create_session(
@@ -17651,7 +17668,7 @@ mod tests {
         pane.raw_output = b"zero\none\ntwo\nthree\n".to_vec();
 
         state
-            .set_global_option("copy-mode-line-numbers", "absolute", false)
+            .set_global_option("copy-mode-line-numbers", "absolute")
             .expect("set absolute line numbers");
         state
             .enter_copy_mode(Some("copy-lines"), None, false, false, false, false)
@@ -17669,7 +17686,7 @@ mod tests {
         );
 
         state
-            .set_global_option("copy-mode-line-numbers", "relative", false)
+            .set_global_option("copy-mode-line-numbers", "relative")
             .expect("set relative line numbers");
         state
             .enter_copy_mode(Some("copy-lines"), None, false, false, false, false)
@@ -17690,7 +17707,7 @@ mod tests {
         );
 
         state
-            .set_global_option("copy-mode-line-numbers", "hybrid", false)
+            .set_global_option("copy-mode-line-numbers", "hybrid")
             .expect("set hybrid line numbers");
         state
             .enter_copy_mode(Some("copy-lines"), None, false, false, false, false)
@@ -17761,7 +17778,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("set-clipboard", "external", false)
+            .set_global_option("set-clipboard", "external")
             .expect("enable external clipboard");
         state
             .create_session(
@@ -17821,7 +17838,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("set-clipboard", "external", false)
+            .set_global_option("set-clipboard", "external")
             .expect("enable external clipboard");
         state
             .create_session(
@@ -18457,7 +18474,7 @@ bind p command-prompt -P -p "pane: " "set -g @pane '%%'"
         assert_eq!(state.global_options.get("@key"), Some(&"z".to_owned()));
 
         state
-            .set_global_option("@bspace", "SENTINEL", false)
+            .set_global_option("@bspace", "SENTINEL")
             .expect("set bspace sentinel");
         state.handle_client_input(client_id, b"\x01e\x7f", &shared);
         assert!(state.clients[&client_id].prompt.is_none());
@@ -18915,7 +18932,7 @@ bind -T copy-mode C-a send -X end-of-line
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("extended-keys", "on", false)
+            .set_global_option("extended-keys", "on")
             .expect("enable extended keys");
         state.prefix = vec![1];
         state.bindings.insert(
@@ -18973,10 +18990,10 @@ bind -T copy-mode C-a send -X end-of-line
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("extended-keys", "on", false)
+            .set_global_option("extended-keys", "on")
             .expect("enable extended keys");
         state
-            .set_global_option("extended-keys-format", "csi-u", false)
+            .set_global_option("extended-keys-format", "csi-u")
             .expect("select CSI-u extended key format");
         state
             .create_session(
@@ -19112,7 +19129,7 @@ bind -T copy-mode C-a send -X end-of-line
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mode-keys", "vi", false)
+            .set_global_option("mode-keys", "vi")
             .expect("enable vi copy keys");
         state
             .create_session(
@@ -19172,7 +19189,7 @@ bind -T copy-mode C-a send -X end-of-line
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mode-keys", "vi", false)
+            .set_global_option("mode-keys", "vi")
             .expect("enable vi copy keys");
         state
             .create_session(
@@ -19325,13 +19342,13 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
-            .set_global_option("focus-events", "on", false)
+            .set_global_option("focus-events", "on")
             .expect("enable focus reporting");
         state
-            .set_global_option("extended-keys", "on", false)
+            .set_global_option("extended-keys", "on")
             .expect("enable extended keys");
         state
             .create_session(
@@ -19454,7 +19471,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(
@@ -19524,7 +19541,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(
@@ -19613,10 +19630,10 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide status for scrollbar geometry");
         state
             .create_session(
@@ -19712,7 +19729,7 @@ bind -r Right next-window
             )
             .expect("set rendered scrollbar style");
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide status for scrollbar render");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
         let output = (0..40)
@@ -19762,7 +19779,7 @@ bind -r Right next-window
             )
             .expect("set copy scrollbar style");
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide status for copy scrollbar");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
         let output = (0..40)
@@ -19859,7 +19876,7 @@ bind -r Right next-window
             )
             .expect("set left scrollbar style");
         state
-            .set_global_option("status", "off", false)
+            .set_global_option("status", "off")
             .expect("hide status for left scrollbar render");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
         let output = (0..40)
@@ -20054,7 +20071,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("copy-command", &command, false)
+            .set_global_option("copy-command", &command)
             .expect("set copy command");
         state
             .create_session(
@@ -20191,7 +20208,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(
@@ -20236,7 +20253,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(
@@ -20297,7 +20314,7 @@ bind -r Right next-window
         {
             let mut state = shared.lock().expect("server state lock");
             state
-                .set_global_option("mouse", "on", false)
+                .set_global_option("mouse", "on")
                 .expect("enable mouse");
             state
                 .create_session(
@@ -20338,7 +20355,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(
@@ -20384,7 +20401,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(
@@ -20461,7 +20478,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(
@@ -20551,7 +20568,7 @@ bind -r Right next-window
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = shared.lock().expect("server state lock");
         state
-            .set_global_option("mouse", "on", false)
+            .set_global_option("mouse", "on")
             .expect("enable mouse");
         state
             .create_session(

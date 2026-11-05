@@ -15,6 +15,8 @@ mod config;
 mod copy_mode;
 #[path = "../src/model.rs"]
 mod model;
+#[path = "../src/options.rs"]
+mod options;
 #[path = "../src/protocol.rs"]
 mod protocol;
 #[path = "../src/pty.rs"]

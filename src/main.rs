@@ -7,6 +7,7 @@ mod command;
 mod config;
 mod copy_mode;
 mod model;
+mod options;
 mod protocol;
 mod pty;
 mod server;
