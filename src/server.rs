@@ -8540,7 +8540,7 @@ impl ServerState {
                 },
             )?;
             let window = &mut self.sessions[session_index].windows[window_index];
-            let replaced = window.panes.drain(..).collect::<Vec<_>>();
+            let replaced = std::mem::take(&mut window.panes);
             for old in &replaced {
                 old.pty.kill();
             }
