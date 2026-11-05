@@ -6,4 +6,4 @@ modes: alternate-screen=true application-cursor=false application-keypad=false b
 02│SCROLL_17················│··············
 03│SCROLL_18················│··············
 04│SCROLL_19················│··············
-05│·0:tm-pty-fixture·······················
+05│0:tm-pty-fixture························

@@ -6,4 +6,4 @@ modes: alternate-screen=true application-cursor=false application-keypad=false b
 02│COLOR_FIXTURE·······│···················
 03│····················│···················
 04│····················│···················
-05│·0:tm-pty-fixture·······················
+05│0:tm-pty-fixture························
