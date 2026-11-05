@@ -8462,6 +8462,11 @@ impl ServerState {
             let lines = history.into_iter().chain(live).collect::<Vec<_>>();
             for index in 0..count {
                 let line = &lines[first + index];
+                let line = if preserve_trailing {
+                    line.as_str()
+                } else {
+                    line.trim_end_matches(' ')
+                };
                 output.extend_from_slice(line.as_bytes());
                 if preserve_trailing {
                     let padding =
@@ -8473,9 +8478,7 @@ impl ServerState {
                 }
             }
         }
-        Ok(String::from_utf8_lossy(&output)
-            .trim_end_matches('\n')
-            .to_owned())
+        Ok(String::from_utf8_lossy(&output).into_owned())
     }
 
     fn kill_session(&mut self, target: Option<&str>, all: bool) -> CommandResult {

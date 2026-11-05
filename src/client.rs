@@ -29,7 +29,12 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         return Err(body);
     }
     if !attach
-        && (!body.is_empty() || matches!(request, crate::protocol::Request::DisplayMessage { .. }))
+        && (!body.is_empty()
+            || matches!(
+                request,
+                crate::protocol::Request::DisplayMessage { .. }
+                    | crate::protocol::Request::CapturePane { .. }
+            ))
     {
         println!("{body}");
     }

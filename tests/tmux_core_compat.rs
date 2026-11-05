@@ -1638,7 +1638,10 @@ fn empty_panes_never_spawn_or_accept_pty_input_headlessly() {
         "0::\n"
     );
     tm.ok(&["send-keys", "-t", "empty:blank.0", "unexpected", "Enter"]);
-    assert_eq!(tm.ok(&["capture-pane", "-t", "empty:blank.0"]), "");
+    assert_eq!(
+        tm.ok(&["capture-pane", "-p", "-t", "empty:blank.0"]),
+        "\n".repeat(24)
+    );
 
     tm.ok(&["split-window", "-d", "-E", "-t", "empty:blank.0"]);
     assert_eq!(

@@ -85,10 +85,37 @@ fn history_limit_capture_matches_the_reference() {
     }
     let tm_capture = tm.ok(&["capture-pane", "-p", "-S", "-", "-t", "S"]);
     let reference_capture = reference.ok(&["capture-pane", "-p", "-S", "-", "-t", "S"]);
-    assert_eq!(
-        tm_capture.trim_end_matches('\n'),
-        reference_capture.trim_end_matches('\n')
-    );
+    assert_eq!(tm_capture, reference_capture);
     assert_eq!(tm_capture.lines().filter(|line| *line == "LINE_500").count(), 1);
     assert!(!tm_capture.lines().any(|line| line == "LINE_1"));
+}
+
+#[test]
+fn capture_keeps_trailing_blank_rows_like_the_reference() {
+    let scratch = Scratch::new("capture-rows");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        mux.ok(&[
+            "new-session", "-d", "-s", "S", "-x", "20", "-y", "6", "--", "sh", "-c",
+            "printf 'one\\n\\033[1mtwo\\033[0m\\n\\nfour\\nabcdefghijklmnopqrstuvwxy\\npad   x  \\n\\033[31mred\\033[0m   \\nEND\\n'; sleep 30",
+        ]);
+        mux.capture_until("S", "END", Duration::from_secs(10));
+    }
+    parity::compare_commands(
+        "capture_keeps_trailing_blank_rows",
+        &tm,
+        &reference,
+        &[
+            &["capture-pane", "-p", "-t", "S"],
+            &["capture-pane", "-p", "-t", "S", "-S", "0", "-E", "2"],
+            &["capture-pane", "-p", "-t", "S", "-S", "-3", "-E", "1"],
+            &["capture-pane", "-p", "-t", "S", "-S", "-", "-E", "-"],
+            &["capture-pane", "-p", "-t", "S", "-S", "5"],
+            &["capture-pane", "-p", "-t", "S", "-S", "3", "-E", "20"],
+            &["capture-pane", "-p", "-J", "-t", "S"],
+            &["capture-pane", "-p", "-e", "-t", "S"],
+            &["capture-pane", "-p", "-N", "-t", "S"],
+        ],
+    );
 }
