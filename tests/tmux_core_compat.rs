@@ -400,7 +400,7 @@ fn session_and_window_target_tokens_match_headless_tmux() {
 }
 
 #[test]
-fn linked_windows_share_headless_identity_and_unlink_cleanly() {
+fn grouped_windows_share_identity_and_unlink_cleanly() {
     let tm = Tm::new();
     tm.ok(&[
         "new-session",
@@ -412,36 +412,25 @@ fn linked_windows_share_headless_identity_and_unlink_cleanly() {
         "-c",
         "printf shared; sleep 30",
     ]);
-    tm.ok(&[
-        "new-session",
-        "-d",
-        "-s",
-        "destination",
-        "--",
-        "sh",
-        "-c",
-        "sleep 30",
-    ]);
-    tm.ok(&["link-window", "-d", "-s", "source:0", "-t", "destination:5"]);
-    assert!(tm.capture("destination:5.0").contains("shared"));
+    tm.ok(&["new-session", "-d", "-s", "destination", "-t", "source"]);
+    assert!(tm.capture("destination:0.0").contains("shared"));
     assert_eq!(
         tm.ok(&[
             "display-message",
             "-p",
             "-t",
-            "destination:5",
+            "destination:0",
             "#{window_linked}:#{window_linked_sessions}",
         ]),
-        "1:2\n"
+        "0:2\n"
     );
-    tm.ok(&["rename-window", "-t", "destination:5", "shared"]);
+    tm.ok(&["rename-window", "-t", "destination:0", "shared"]);
     assert_eq!(
         tm.ok(&["display-message", "-p", "-t", "source:0", "#{window_name}"]),
         "shared\n"
     );
-    tm.ok(&["unlink-window", "-t", "destination:5"]);
+    tm.fail(&["unlink-window", "-t", "destination:0"]);
     assert!(tm.ok(&["has-session", "-t", "source"]).is_empty());
-    tm.fail(&["unlink-window", "-t", "source:0"]);
     tm.ok(&["unlink-window", "-k", "-t", "source:0"]);
     tm.fail(&["has-session", "-t", "source"]);
 }

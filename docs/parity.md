@@ -246,14 +246,9 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `previous-window` | `-a` | rejected | move to the previous window with an alert | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_reject_flags_they_do_not_implement` | internal |
 | `previous-window` | `-t` | match | target session | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_flags_match_the_reference` | differential |
 | `last-window` | `-t` | match | target session | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_flags_match_the_reference` | differential |
-| `link-window` | `-a` | rejected | link after the target window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_reject_flags_they_do_not_implement` | internal |
-| `link-window` | `-b` | rejected | link before the target window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_reject_flags_they_do_not_implement` | internal |
-| `link-window` | `-d` | match | do not select the linked window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
-| `link-window` | `-k` | match | destroy an existing window at the target index | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
-| `link-window` | `-s` | match | source window; the default is the current window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
-| `link-window` | `-t` | match | target index or session | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
-| `unlink-window` | `-k` | match | unlink even when the window is linked only here | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
-| `unlink-window` | `-t` | match | target window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
+| `link-window` | `(any flag)` | rejected | link a window into another session; tm has no shared windows, and its linked copies diverged from the original | C4 `tests/tmux_cli_flags.rs::windows_link_window_is_rejected` | internal |
+| `unlink-window` | `-k` | match | unlink even when the window is linked only here | C4 `tests/tmux_cli_flags.rs::windows_unlink_window_flags_match_the_reference` | differential |
+| `unlink-window` | `-t` | match | target window | C4 `tests/tmux_cli_flags.rs::windows_unlink_window_flags_match_the_reference` | differential |
 | `move-window` | `-a` | match | move after the target window, shifting only the contiguous run of windows after it | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
 | `move-window` | `-b` | rejected | move before the target window | C4 `tests/tmux_cli_flags.rs::windows_move_window_rejects_flags_it_does_not_implement` | internal |
 | `move-window` | `-d` | match | do not select the moved window | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |

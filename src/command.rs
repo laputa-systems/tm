@@ -536,18 +536,8 @@ fn parse_move_window(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_link_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let flags = scan_flags("link-window", arguments, "abdks:t:", 0)?;
-    for (flag, name) in [('a', "-a"), ('b', "-b")] {
-        if flags.has(flag) {
-            return Err(unsupported_flag(name, "link-window"));
-        }
-    }
-    Ok(InvocationSpec::plain(Request::LinkWindow {
-        source: flags.value('s').map(str::to_owned),
-        target: flags.value('t').map(str::to_owned),
-        detached: flags.has('d'),
-        force: flags.has('k'),
-    }))
+    scan_flags("link-window", arguments, "", 0)?;
+    Err("unsupported command link-window".to_owned())
 }
 
 fn parse_unlink_window(arguments: &[String]) -> Result<InvocationSpec, String> {

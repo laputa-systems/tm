@@ -1046,26 +1046,18 @@ mod windows {
     }
 
     #[test]
-    fn windows_link_and_unlink_window_flags_match_the_reference() {
+    fn windows_unlink_window_flags_match_the_reference() {
         probes(
-            "windows_link_and_unlink_window_flags_match_the_reference",
+            "windows_unlink_window_flags_match_the_reference",
             &[
-                &[&["link-window", "-s", "S:3", "-t", "T:"]],
-                &[&["link-window", "-s", "S:3", "-t", "T:9"]],
-                &[&["link-window", "-s", "S:3", "-t", "T:1"]],
-                &[&["link-window", "-k", "-s", "S:3", "-t", "T:1"]],
-                &[&["link-window", "-d", "-s", "S:3", "-t", "T:"]],
-                &[&["link-window", "-dk", "-s", "S:3", "-t", "T:1"]],
-                &[&["link-window", "-s", "S:3", "-t", "S:9"]],
-                &[&["link-window", "-s", "S:3", "-t", "S:2"]],
-                &[&["link-window", "-s", "S:9", "-t", "T:"]],
-                &[&["link-window", "-s", "nosuch:1", "-t", "T:"]],
-                &[&["link-window", "-t", "T:"]],
-                &[&["link-window", "-s", "S:3"]],
-                &[&["link-window", "-s", "two", "-t", "T:"]],
-                &[&["link-window", "-s", "S:3", "-t", "T:"], &["unlink-window", "-t", "T:2"]],
-                &[&["link-window", "-s", "S:3", "-t", "T:"], &["unlink-window", "-t", "S:3"]],
-                &[&["link-window", "-s", "S:3", "-t", "T:"], &["unlink-window", "-k", "-t", "S:3"]],
+                &[&["new-session", "-d", "-s", "G", "-t", "S"], &["unlink-window", "-t", "G:3"]],
+                &[&["new-session", "-d", "-s", "G", "-t", "S"], &["unlink-window", "-t", "S:3"]],
+                &[
+                    &["new-session", "-d", "-s", "G", "-t", "S"],
+                    &["rename-window", "-t", "G:3", "renamed"],
+                    &["unlink-window", "-t", "S:3"],
+                ],
+                &[&["new-session", "-d", "-s", "G", "-t", "S"], &["unlink-window", "-k", "-t", "G:3"]],
                 &[&["unlink-window", "-t", "S:3"]],
                 &[&["unlink-window", "-k", "-t", "S:3"]],
                 &[&["unlink-window", "-k", "-t", "T:1"]],
@@ -1077,9 +1069,10 @@ mod windows {
     }
 
     #[test]
-    fn windows_link_and_unlink_window_reject_flags_they_do_not_implement() {
-        assert_window_rejected("link-window", "-a", &["link-window", "-a", "-s", "S:3", "-t", "T:"]);
-        assert_window_rejected("link-window", "-b", &["link-window", "-b", "-s", "S:3", "-t", "T:"]);
+    fn windows_link_window_is_rejected() {
+        assert_window_rejected("link-window", "-s", &["link-window", "-s", "S:3", "-t", "T:"]);
+        assert_window_rejected("link-window", "-d", &["link-window", "-d", "-s", "S:3", "-t", "T:"]);
+        assert_window_rejected("link-window", "-a", &["linkw", "-a", "-s", "S:3", "-t", "T:"]);
     }
 
     #[test]

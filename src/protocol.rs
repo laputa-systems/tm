@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0001;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0002;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -276,12 +276,6 @@ pub(crate) enum Request {
         force: bool,
         renumber: bool,
     },
-    LinkWindow {
-        source: Option<String>,
-        target: Option<String>,
-        detached: bool,
-        force: bool,
-    },
     UnlinkWindow {
         target: Option<String>,
         force: bool,
@@ -491,7 +485,7 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_string(&mut payload, target);
         }
         Request::SendPrefix { target } => {
-            payload.push(58);
+            payload.push(42);
             put_optional_string(&mut payload, target);
         }
         Request::SelectLayout { target, layout } => {
@@ -823,18 +817,6 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_bool(&mut payload, *force);
             put_bool(&mut payload, *renumber);
         }
-        Request::LinkWindow {
-            source,
-            target,
-            detached,
-            force,
-        } => {
-            payload.push(42);
-            put_optional_string(&mut payload, source);
-            put_optional_string(&mut payload, target);
-            put_bool(&mut payload, *detached);
-            put_bool(&mut payload, *force);
-        }
         Request::UnlinkWindow { target, force } => {
             payload.push(43);
             put_optional_string(&mut payload, target);
@@ -1046,7 +1028,7 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         10 => Request::SelectWindow {
             target: decoder.string()?,
         },
-        58 => Request::SendPrefix {
+        42 => Request::SendPrefix {
             target: decoder.optional_string()?,
         },
         57 => Request::SelectLayout {
@@ -1239,12 +1221,6 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
             detached: decoder.bool()?,
             force: decoder.bool()?,
             renumber: decoder.bool()?,
-        },
-        42 => Request::LinkWindow {
-            source: decoder.optional_string()?,
-            target: decoder.optional_string()?,
-            detached: decoder.bool()?,
-            force: decoder.bool()?,
         },
         43 => Request::UnlinkWindow {
             target: decoder.optional_string()?,
@@ -1909,7 +1885,7 @@ mod tests {
         read_request(&mut std::io::Cursor::new(framed))
     }
 
-    const REQUEST_VARIANTS: usize = 58;
+    const REQUEST_VARIANTS: usize = 57;
 
     trait Source {
         fn flag(&mut self) -> bool;
@@ -2354,12 +2330,6 @@ mod tests {
                 force: source.flag(),
                 renumber: source.flag(),
         },
-        47 => Request::LinkWindow {
-                source: source.opt_text(),
-                target: source.opt_text(),
-                detached: source.flag(),
-                force: source.flag(),
-        },
         48 => Request::UnlinkWindow {
                 target: source.opt_text(),
                 force: source.flag(),
@@ -2402,7 +2372,7 @@ mod tests {
         56 => Request::RefreshClient {
                 target: source.opt_text(),
         },
-        57 => Request::RunShell {
+        47 => Request::RunShell {
                 command: source.text(),
                 background: source.flag(),
                 target: source.opt_text(),
@@ -2517,7 +2487,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0001;
+    const GOLDEN_VERSION: u32 = 0x544d_0002;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2539,7 +2509,7 @@ mod tests {
         "0e0000001001020000007432040101000101",
         "1000000011010200000074320001020000007435",
         "100000001201020000007432030000000003ff01",
-        "080000003a01020000007432",
+        "080000002a01020000007432",
         "1100000013010200000074320001fbffffff000101",
         "0100000014",
         "110000001501020000007432000101000101000101",
@@ -2567,7 +2537,7 @@ mod tests {
         "09000000270102000000743200",
         "0a00000028010200000074320001",
         "0d00000029010200000074320001010001",
-        "0b0000002a01020000007432000101",
+        "09000000340200000074310100",
         "090000002b0102000000743200",
         "0f0000002c0102000000743200010100010100",
         "0f0000002d0200000074310102000000743301",
@@ -2577,7 +2547,6 @@ mod tests {
         "09000000310102000000743200",
         "0e0000003201020000007432020000007433",
         "080000003301020000007432",
-        "09000000340200000074310100",
     ];
 
     #[test]

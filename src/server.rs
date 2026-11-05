@@ -222,12 +222,6 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
     result
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum WindowRelink {
-    Link,
-    Move,
-}
-
 fn default_window_name(command: &[String]) -> String {
     let source = if command.is_empty() {
         crate::pty::default_shell()
@@ -7580,15 +7574,7 @@ impl ServerState {
                                 ("window_id", format!("@{}", window.id)),
                                 ("window_name", window.name.clone()),
                                 ("window_panes", window.panes.len().to_string()),
-                                (
-                                    "window_linked",
-                                    if self.window_link_count(window.id) > 1 {
-                                        "1"
-                                    } else {
-                                        "0"
-                                    }
-                                    .to_owned(),
-                                ),
+                                ("window_linked", "0".to_owned()),
                                 (
                                     "window_linked_sessions",
                                     self.window_link_count(window.id).to_string(),
@@ -7830,21 +7816,10 @@ impl ServerState {
         }
     }
 
-    fn link_window(
-        &mut self,
-        source: Option<&str>,
-        target: Option<&str>,
-        detached: bool,
-        force: bool,
-    ) -> CommandResult {
-        self.relink_window(source, target, WindowRelink::Link, detached, force, false)
-    }
-
     fn relink_window(
         &mut self,
         source: Option<&str>,
         target: Option<&str>,
-        mode: WindowRelink,
         detached: bool,
         force: bool,
         after: bool,
@@ -7933,20 +7908,18 @@ impl ServerState {
         }
         let destination_id = destination.id;
         let source_session_id = self.sessions[source_session].id;
-        if mode == WindowRelink::Move {
-            let source_position = self.sessions[source_session]
-                .windows
-                .iter()
-                .position(|window| window.index == source_number && window.id == source_id)
-                .expect("source link survives linking");
-            let window = self.sessions[source_session].windows.remove(source_position);
-            if self.sessions[source_session].windows.is_empty() {
-                self.sessions.remove(source_session);
-            } else {
-                self.sessions[source_session].select_after_removing(window.index);
-                if source.is_none() && self.sessions[source_session].renumber_windows {
-                    renumber_session_windows(&mut self.sessions[source_session]);
-                }
+        let source_position = self.sessions[source_session]
+            .windows
+            .iter()
+            .position(|window| window.index == source_number && window.id == source_id)
+            .expect("source link survives linking");
+        let window = self.sessions[source_session].windows.remove(source_position);
+        if self.sessions[source_session].windows.is_empty() {
+            self.sessions.remove(source_session);
+        } else {
+            self.sessions[source_session].select_after_removing(window.index);
+            if source.is_none() && self.sessions[source_session].renumber_windows {
+                renumber_session_windows(&mut self.sessions[source_session]);
             }
         }
         for session_id in [source_session_id, destination_id] {
@@ -7962,7 +7935,7 @@ impl ServerState {
         let (session_index, window_index) = self.resolve_window_target(target)?;
         let window_id = self.sessions[session_index].windows[window_index].id;
         let links = self.window_link_count(window_id);
-        if links <= 1 && !force {
+        if !force {
             return Err("window only linked to one session".to_owned());
         }
         let window = self.sessions[session_index].windows.remove(window_index);
@@ -7975,6 +7948,7 @@ impl ServerState {
             self.sessions.remove(session_index);
         } else {
             self.sessions[session_index].select_after_removing(window.index);
+            self.sync_group_windows(session_index);
             let session_id = self.sessions[session_index].id;
             self.reflow_session(session_id);
         }
@@ -8008,7 +7982,7 @@ impl ServerState {
             self.reflow_session(session_id);
             return Ok(String::new());
         }
-        self.relink_window(source, target, WindowRelink::Move, detached, force, after)
+        self.relink_window(source, target, detached, force, after)
     }
 
     fn rename_session(&mut self, target: Option<&str>, name: &str) -> CommandResult {
@@ -11699,12 +11673,6 @@ fn execute_request_inner(
             force,
             renumber,
         ),
-        Request::LinkWindow {
-            source,
-            target,
-            detached,
-            force,
-        } => state.link_window(source.as_deref(), target.as_deref(), detached, force),
         Request::UnlinkWindow { target, force } => state.unlink_window(target.as_deref(), force),
         Request::NextWindow { target } => state.next_window(target.as_deref()),
         Request::PreviousWindow { target } => state.previous_window(target.as_deref()),
@@ -14324,10 +14292,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
             }
             .to_owned(),
         ),
-        (
-            "window_linked",
-            if linked_sessions > 1 { "1" } else { "0" }.to_owned(),
-        ),
+        ("window_linked", "0".to_owned()),
         ("window_linked_sessions", linked_sessions.to_string()),
         ("window_width", window.size.cols.to_string()),
         ("window_height", window.size.rows.to_string()),
