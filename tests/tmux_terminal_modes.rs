@@ -422,3 +422,25 @@ fn redraw_frames_are_bracketed_when_sync_is_present_like_the_reference() {
         );
     }
 }
+
+#[test]
+fn terminal_features_lists_as_an_indexed_array_like_the_reference() {
+    let scratch = Scratch::new("modes-array-option");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let listings: [&[&str]; 5] = [
+        &["show-options", "-s", "terminal-features"],
+        &["show-options", "-s", "-v", "terminal-features"],
+        &["show-options", "-g", "terminal-features"],
+        &["show-options", "-s", "-q", "terminal-features"],
+        &["show-options", "-g", "-v", "terminal-features"],
+    ];
+    for mux in [&tm, &reference] {
+        mux.ok(&["new-session", "-d", "-s", "S", "--", "sleep", "30"]);
+    }
+    parity::compare_commands("terminal_features_lists_as_an_indexed_array", &tm, &reference, &listings);
+    for mux in [&tm, &reference] {
+        mux.ok(&["set-option", "-s", "terminal-features", "xterm*:clipboard,foo:RGB"]);
+    }
+    parity::compare_commands("terminal_features_lists_as_an_indexed_array", &tm, &reference, &listings);
+}

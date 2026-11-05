@@ -6571,23 +6571,14 @@ impl ServerState {
                 }
                 return Err(format!("invalid option: {key}"));
             };
-            return Ok(if value_only {
-                option_value.clone()
-            } else {
-                format!("{key} {}", quote_option_value(option_value))
-            });
+            return Ok(option_lines(key, option_value, value_only));
         }
         let mut names = options.into_iter().collect::<Vec<_>>();
         names.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(names
             .into_iter()
-            .map(|(key, value)| {
-                if value_only {
-                    value
-                } else {
-                    format!("{key} {}", quote_option_value(&value))
-                }
-            })
+            .map(|(key, value)| option_lines(&key, &value, value_only))
+            .filter(|lines| !lines.is_empty())
             .collect::<Vec<_>>()
             .join("\n"))
     }
@@ -13723,6 +13714,31 @@ fn format_session_result(session: &Session, format: Option<&str>) -> String {
             )
         },
     )
+}
+
+const ARRAY_OPTIONS: &[&str] = &["terminal-features"];
+
+fn option_lines(key: &str, value: &str, value_only: bool) -> String {
+    if ARRAY_OPTIONS.contains(&key) {
+        return value
+            .split(',')
+            .filter(|element| !element.is_empty())
+            .enumerate()
+            .map(|(index, element)| {
+                if value_only {
+                    element.to_owned()
+                } else {
+                    format!("{key}[{index}] {}", quote_option_value(element))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    if value_only {
+        value.to_owned()
+    } else {
+        format!("{key} {}", quote_option_value(value))
+    }
 }
 
 fn quote_option_value(value: &str) -> String {
