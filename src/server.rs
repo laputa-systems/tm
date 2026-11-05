@@ -411,6 +411,7 @@ fn attach_client(
     let mut previous_screen = None;
     let mut last_size = None;
     let mut observed_revision = None;
+    let mut observed_chrome_revision = None;
     let mut last_render_at = Instant::now()
         .checked_sub(Duration::from_millis(16))
         .unwrap_or_else(Instant::now);
@@ -454,11 +455,12 @@ fn attach_client(
                 else {
                     break None;
                 };
-                break Some((full_render, render_size, revision));
+                break Some((full_render, render_size, revision, state.chrome_revision));
             },
             Err(_) => None,
         };
-        let Some((full_render, render_size, render_revision)) = next_render else {
+        let Some((full_render, render_size, render_revision, chrome_revision)) = next_render
+        else {
             break;
         };
         // Keep the revision observed before rendering. Rendering consumes
@@ -466,6 +468,8 @@ fn attach_client(
         // mutations intentionally make the next loop produce a follow-up
         // frame.
         observed_revision = Some(render_revision);
+        let chrome_redrawn = observed_chrome_revision != Some(chrome_revision);
+        observed_chrome_revision = Some(chrome_revision);
         last_render_at = Instant::now();
         if last_size != Some(render_size) {
             terminal = vt100::Parser::new(render_size.rows.max(1), render_size.cols.max(1), 10_000);
@@ -495,6 +499,12 @@ fn attach_client(
             };
             previous_screen = Some(after);
             match delta {
+                Ok(Some(delta)) if chrome_redrawn && full_render.starts_with(terminal::SYNC_BEGIN) => {
+                    let mut bracketed = terminal::SYNC_BEGIN.to_vec();
+                    bracketed.extend_from_slice(&delta);
+                    bracketed.extend_from_slice(terminal::SYNC_END);
+                    bracketed
+                }
                 Ok(Some(delta)) => delta,
                 Ok(None) => Vec::new(),
                 Err(()) => full_render,
@@ -534,6 +544,7 @@ struct ServerState {
     // Monotonic generation for screen-affecting state. Attach clients wait
     // for this to change instead of rebuilding an unchanged frame on a timer.
     render_revision: u64,
+    chrome_revision: u64,
     sessions: Vec<Session>,
     next_session_id: u64,
     next_window_id: u64,
@@ -1224,6 +1235,7 @@ impl ServerState {
     fn new() -> Self {
         Self {
             render_revision: 0,
+            chrome_revision: 0,
             sessions: Vec::new(),
             next_session_id: 0,
             next_window_id: 0,
@@ -1259,6 +1271,11 @@ impl ServerState {
     }
 
     fn mark_render_dirty(&mut self) {
+        self.chrome_revision = self.render_revision.wrapping_add(1);
+        self.mark_pane_output_dirty();
+    }
+
+    fn mark_pane_output_dirty(&mut self) {
         self.render_revision = self.render_revision.wrapping_add(1);
         RENDER_WAKE.notify_all();
     }
@@ -11790,6 +11807,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                         if let Ok(mut state) = shared.lock() {
                             let mut updated = false;
                             let mut audible_bell = false;
+                            let mut redraws_chrome = false;
                             let pipe = state
                                 .pane_pipes
                                 .get(&pane_id)
@@ -11822,6 +11840,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                 }
                                 let title = terminal_title(metadata);
                                 audible_bell |= pane.output_state.take_audible_bell();
+                                redraws_chrome |= title.is_some() || pane.copy_mode.is_some();
                                 let replies = pane.output_state.take_query_replies();
                                 if !replies.is_empty() {
                                     let _ = pane.pty.write(&replies);
@@ -11882,7 +11901,11 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                 }
                             }
                             if updated {
-                                state.mark_render_dirty();
+                                if audible_bell || redraws_chrome {
+                                    state.mark_render_dirty();
+                                } else {
+                                    state.mark_pane_output_dirty();
+                                }
                                 if let Some(pipe) = pipe {
                                     pipe_payload =
                                         Some((pipe, buffer[..length].to_vec()));

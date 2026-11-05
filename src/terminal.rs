@@ -441,8 +441,8 @@ const PASTE_ENABLE: &[u8] = b"\x1b[?2004h";
 const PASTE_DISABLE: &[u8] = b"\x1b[?2004l";
 const FOCUS_ENABLE: &[u8] = b"\x1b[?1004h";
 const FOCUS_DISABLE: &[u8] = b"\x1b[?1004l";
-const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
-const SYNC_END: &[u8] = b"\x1b[?2026l";
+pub(crate) const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+pub(crate) const SYNC_END: &[u8] = b"\x1b[?2026l";
 const EXTKEYS_ENABLE: &[u8] = b"\x1b[>4;2m";
 const EXTKEYS_DISABLE: &[u8] = b"\x1b[>4m";
 

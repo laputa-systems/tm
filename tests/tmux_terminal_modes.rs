@@ -306,3 +306,119 @@ fn terminal_features_sync_and_clipboard_select_for_the_term_like_the_reference()
         );
     }
 }
+
+const UPDATE_PANE: &str = "echo READY; read line; echo UPDATE_ONE; read line; echo UPDATE_TWO; sleep 30";
+
+#[derive(Debug, PartialEq)]
+struct FrameObservation {
+    pane_output_inside_bracket: bool,
+    chrome: Vec<FrameBrackets>,
+}
+
+#[derive(Debug, PartialEq)]
+struct FrameBrackets {
+    bracket_pairs: usize,
+    balanced: bool,
+    fully_bracketed: bool,
+    updates_inside: Vec<bool>,
+}
+
+fn frame_brackets(stream: &[u8], updates: &[&[u8]]) -> FrameBrackets {
+    let mut depth = 0usize;
+    let mut pairs = 0;
+    let mut balanced = true;
+    let mut outside = 0;
+    let mut inside_at = vec![false; stream.len()];
+    let mut index = 0;
+    while index < stream.len() {
+        if stream[index..].starts_with(SYNC_BEGIN) {
+            balanced &= depth == 0;
+            depth = 1;
+            index += SYNC_BEGIN.len();
+        } else if stream[index..].starts_with(SYNC_END) {
+            balanced &= depth == 1;
+            pairs += usize::from(depth == 1);
+            depth = 0;
+            index += SYNC_END.len();
+        } else {
+            inside_at[index] = depth == 1;
+            outside += usize::from(depth == 0);
+            index += 1;
+        }
+    }
+    let updates_inside = updates
+        .iter()
+        .map(|update| {
+            raw_pty::find(stream, update).is_some_and(|at| inside_at[at..at + update.len()].iter().all(|inside| *inside))
+        })
+        .collect();
+    FrameBrackets {
+        bracket_pairs: pairs,
+        balanced: balanced && depth == 0,
+        fully_bracketed: pairs > 0 && outside == 0,
+        updates_inside,
+    }
+}
+
+fn observe_frame_brackets(mux: &Mux, sync: bool) -> FrameObservation {
+    mux.ok(&[
+        "new-session", "-d", "-s", "S", "-x", "40", "-y", "6", "--", "sh", "-c", UPDATE_PANE,
+    ]);
+    let mut client = RawClient::spawn(mux, "frames", &["attach-session", "-t", "S"], 6, 40);
+    client.wait_for_text("READY", TIMEOUT);
+    client.wait_for_text("(S)", TIMEOUT);
+    if sync {
+        client.wait_for_bytes(raw_pty::Mark::default(), SYNC_END, TIMEOUT);
+    }
+    let actions: [(&[&str], &str); 4] = [
+        (&["send-keys", "-t", "S", "go", "Enter"], "UPDATE_ONE"),
+        (&["rename-window", "-t", "S", "RENAMED"], "RENAMED"),
+        (&["new-window", "-d", "-t", "S", "-n", "W2", "sleep", "30"], "2:W2"),
+        (&["set-option", "-g", "status-left", "LEFT "], "LEFT"),
+    ];
+    let mut pane_output_inside_bracket = None;
+    let mut chrome = Vec::new();
+    for (action, text) in actions {
+        let mark = client.mark();
+        mux.ok(action);
+        client.wait_for_text(text, TIMEOUT);
+        let stream = client.bytes_since(mark);
+        let frame = frame_brackets(&stream, &[text.as_bytes()]);
+        if pane_output_inside_bracket.is_none() {
+            pane_output_inside_bracket = Some(frame.updates_inside[0]);
+        } else {
+            chrome.push(frame);
+        }
+    }
+    assert_eq!(client.detach(), Some(0));
+    FrameObservation {
+        pane_output_inside_bracket: pane_output_inside_bracket.expect("pane output action ran"),
+        chrome,
+    }
+}
+
+#[test]
+fn redraw_frames_are_bracketed_when_sync_is_present_like_the_reference() {
+    for (term, bracketed) in [("tmux-256color", true), ("xterm-256color", false)] {
+        let scratch = Scratch::new("modes-frames");
+        let tm = Mux::tm(&scratch, "tm").with_term(term);
+        let reference = Mux::reference(&scratch, "reference").with_term(term);
+        let tm_frames = observe_frame_brackets(&tm, bracketed);
+        let reference_frames = observe_frame_brackets(&reference, bracketed);
+        assert!(!reference_frames.pane_output_inside_bracket, "{term}");
+        for frame in &reference_frames.chrome {
+            assert!(frame.balanced, "{term}");
+            assert_eq!(frame.bracket_pairs, usize::from(bracketed), "{term}");
+            assert_eq!(frame.fully_bracketed, bracketed, "{term}");
+            assert_eq!(frame.updates_inside, [bracketed], "{term}");
+        }
+        assert_eq!(
+            parity::observation_difference(
+                &format!("frame sync brackets for {term}"),
+                &tm_frames,
+                &reference_frames
+            ),
+            None
+        );
+    }
+}
