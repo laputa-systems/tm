@@ -13,11 +13,23 @@ const COLS: u16 = 40;
 
 struct TestServer {
     socket: String,
+    _scratch: TestEnv,
 }
 
 impl TestServer {
-    fn new(socket: String) -> Self {
-        Self { socket }
+    fn new(label: &str) -> Self {
+        let scratch = TestEnv::hermetic().expect("create hermetic server environment");
+        let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+        let socket = scratch
+            .paths()
+            .root()
+            .join(format!("tm-attached-{label}-{number}.sock"))
+            .to_string_lossy()
+            .into_owned();
+        Self {
+            socket,
+            _scratch: scratch,
+        }
     }
 
     fn create_fixture_session(&self) {
@@ -69,19 +81,9 @@ fn run_tm<const N: usize>(socket: &str, args: [&str; N]) -> Output {
 
 #[test]
 fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
-    let environment = TestEnv::hermetic().expect("create hermetic test environment");
-    let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
-    let socket = environment
-        .paths()
-        .root()
-        .join(format!("tm-attached-{number}.sock"))
-        .to_string_lossy()
-        .into_owned();
+    let server = TestServer::new("client");
+    let socket = server.socket.clone();
 
-    // Declare the terminal first so the server is cleaned up before the
-    // hermetic scratch root is removed if this test unwinds.
-    let mut terminal: PtyTest;
-    let server = TestServer::new(socket.clone());
     server.create_fixture_session();
 
     let scenario = Scenario::new("tm attached client")
@@ -92,9 +94,9 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
         .size(Size::new(COLS, ROWS).expect("constant PTY size"))
-        .environment(environment)
+        .environment(TestEnv::hermetic().expect("create hermetic client environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());
-    terminal = PtyTest::spawn(scenario).expect("spawn attached client PTY");
+    let mut terminal = PtyTest::spawn(scenario).expect("spawn attached client PTY");
     let baseline = terminal.terminal_baseline();
 
     terminal
@@ -166,15 +168,8 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
 
 #[test]
 fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
-    let environment = TestEnv::hermetic().expect("create hermetic test environment");
-    let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
-    let socket = environment
-        .paths()
-        .root()
-        .join(format!("tm-attached-panes-{number}.sock"))
-        .to_string_lossy()
-        .into_owned();
-    let server = TestServer::new(socket.clone());
+    let server = TestServer::new("panes");
+    let socket = server.socket.clone();
     server.create_fixture_session();
     let fixture = env!("CARGO_BIN_EXE_tm-pty-fixture");
     let mouse = run_tm(&socket, ["set-option", "-g", "mouse", "on"]);
@@ -201,7 +196,7 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
         .size(Size::new(COLS, ROWS).expect("constant PTY size"))
-        .environment(environment)
+        .environment(TestEnv::hermetic().expect("create hermetic client environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());
     let mut terminal = PtyTest::spawn(scenario).expect("spawn attached panes PTY");
     let baseline = terminal.terminal_baseline();
@@ -402,15 +397,8 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
 
 #[test]
 fn attached_client_forwards_application_mouse_events_without_entering_copy_mode() {
-    let environment = TestEnv::hermetic().expect("create hermetic test environment");
-    let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
-    let socket = environment
-        .paths()
-        .root()
-        .join(format!("tm-attached-app-mouse-{number}.sock"))
-        .to_string_lossy()
-        .into_owned();
-    let server = TestServer::new(socket.clone());
+    let server = TestServer::new("app-mouse");
+    let socket = server.socket.clone();
     server.create_fixture_session();
     let mouse = run_tm(&socket, ["set-option", "-g", "mouse", "on"]);
     assert!(
@@ -427,7 +415,7 @@ fn attached_client_forwards_application_mouse_events_without_entering_copy_mode(
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
         .size(Size::new(COLS, ROWS).expect("constant PTY size"))
-        .environment(environment)
+        .environment(TestEnv::hermetic().expect("create hermetic client environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());
     let mut terminal = PtyTest::spawn(scenario).expect("spawn attached client PTY");
     let baseline = terminal.terminal_baseline();
@@ -503,15 +491,8 @@ fn attached_client_forwards_application_mouse_events_without_entering_copy_mode(
 
 #[test]
 fn opening_pane_from_attached_client_preserves_existing_pane_contents() {
-    let environment = TestEnv::hermetic().expect("create hermetic test environment");
-    let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
-    let socket = environment
-        .paths()
-        .root()
-        .join(format!("tm-attached-split-{number}.sock"))
-        .to_string_lossy()
-        .into_owned();
-    let server = TestServer::new(socket.clone());
+    let server = TestServer::new("split");
+    let socket = server.socket.clone();
     server.create_fixture_session();
 
     let scenario = Scenario::new("tm attached split preserves content")
@@ -522,7 +503,7 @@ fn opening_pane_from_attached_client_preserves_existing_pane_contents() {
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
         .size(Size::new(COLS, ROWS).expect("constant PTY size"))
-        .environment(environment)
+        .environment(TestEnv::hermetic().expect("create hermetic client environment"))
         .protocol_profile(ProtocolProfile::xterm_minimal_v1());
     let mut terminal = PtyTest::spawn(scenario).expect("spawn attached split PTY");
     let baseline = terminal.terminal_baseline();
