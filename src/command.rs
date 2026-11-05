@@ -264,7 +264,6 @@ fn parse_new_window(arguments: &[String]) -> Result<InvocationSpec, String> {
         name: flags.value('n').map(str::to_owned),
         detached,
         empty,
-        index: None,
         force: flags.has('k'),
         format,
         after: flags.has('a'),

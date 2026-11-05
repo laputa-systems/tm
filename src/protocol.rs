@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0003;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0004;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -39,7 +39,6 @@ pub(crate) enum Request {
         name: Option<String>,
         detached: bool,
         empty: bool,
-        index: Option<u32>,
         force: bool,
         format: Option<String>,
         after: bool,
@@ -424,7 +423,6 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             name,
             detached,
             empty,
-            index,
             force,
             format,
             after,
@@ -438,7 +436,6 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_optional_string(&mut payload, name);
             put_bool(&mut payload, *detached);
             put_bool(&mut payload, *empty);
-            put_optional_u32(&mut payload, *index);
             put_bool(&mut payload, *force);
             put_optional_string(&mut payload, format);
             put_bool(&mut payload, *after);
@@ -998,7 +995,6 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
             name: decoder.optional_string()?,
             detached: decoder.bool()?,
             empty: decoder.bool()?,
-            index: decoder.optional_u32()?,
             force: decoder.bool()?,
             format: decoder.optional_string()?,
             after: decoder.bool()?,
@@ -1473,16 +1469,6 @@ fn put_optional_u16(output: &mut Vec<u8>, value: Option<u16>) {
     }
 }
 
-fn put_optional_u32(output: &mut Vec<u8>, value: Option<u32>) {
-    match value {
-        Some(value) => {
-            put_bool(output, true);
-            output.extend_from_slice(&value.to_le_bytes());
-        }
-        None => put_bool(output, false),
-    }
-}
-
 fn put_size(output: &mut Vec<u8>, size: Size) {
     output.extend_from_slice(&size.cols.to_le_bytes());
     output.extend_from_slice(&size.rows.to_le_bytes());
@@ -1648,13 +1634,6 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         }
         Ok(Some(self.u16()?))
-    }
-
-    fn optional_u32(&mut self) -> io::Result<Option<u32>> {
-        if !self.bool()? {
-            return Ok(None);
-        }
-        Ok(Some(self.u32()?))
     }
 
     fn finish(&self) -> io::Result<()> {
@@ -1899,7 +1878,6 @@ mod tests {
         fn blob(&mut self) -> Vec<u8>;
         fn opt_blob(&mut self) -> Option<Vec<u8>>;
         fn number(&mut self) -> u32;
-        fn opt_number(&mut self) -> Option<u32>;
         fn signed(&mut self) -> i32;
         fn opt_signed(&mut self) -> Option<i32>;
         fn opt_small(&mut self) -> Option<u16>;
@@ -1966,9 +1944,6 @@ mod tests {
         fn number(&mut self) -> u32 {
             self.calls += 1;
             0x0100_0000 + self.calls as u32
-        }
-        fn opt_number(&mut self) -> Option<u32> {
-            self.toggle().then(|| self.number())
         }
         fn signed(&mut self) -> i32 {
             self.calls += 1;
@@ -2037,9 +2012,6 @@ mod tests {
         fn number(&mut self) -> u32 {
             self.next() as u32
         }
-        fn opt_number(&mut self) -> Option<u32> {
-            self.flag().then(|| self.number())
-        }
         fn signed(&mut self) -> i32 {
             self.next() as i32
         }
@@ -2096,7 +2068,6 @@ mod tests {
                 name: source.opt_text(),
                 detached: source.flag(),
                 empty: source.flag(),
-                index: source.opt_number(),
                 force: source.flag(),
                 format: source.opt_text(),
                 after: source.flag(),
@@ -2444,7 +2415,6 @@ mod tests {
             name: None,
             detached: false,
             empty: false,
-            index: None,
             force: false,
             format: None,
             after: false,
@@ -2491,7 +2461,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0003;
+    const GOLDEN_VERSION: u32 = 0x544d_0004;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2499,7 +2469,7 @@ mod tests {
         "080000000301020000007432",
         "0700000004020000007431",
         "09000000050102000000743200",
-        "310000000601020000007432000101000101020000007439010100020000000300000074313303000000c3a9090103000000743135",
+        "3000000006010200000074320001010001020000007438000101020000000300000074313203000000c3a9090103000000743134",
         "29000000070102000000743200010100010100020000000300000074313003000000c3a9090103000000743132",
         "09000000080102000000743200",
         "09000000090102000000743200",

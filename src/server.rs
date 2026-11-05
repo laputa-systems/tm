@@ -1436,7 +1436,6 @@ struct NewWindowOptions<'a> {
     target: Option<&'a str>,
     name: Option<&'a str>,
     detached: bool,
-    requested_index: Option<u32>,
     force: bool,
     format: Option<&'a str>,
     after: bool,
@@ -1746,7 +1745,6 @@ impl ServerState {
             target,
             name,
             detached,
-            requested_index,
             force,
             format,
             after,
@@ -1757,18 +1755,15 @@ impl ServerState {
             cwd,
         } = options;
         let session_index = self.resolve_session_index(target)?;
-        let requested_index = match requested_index {
-            Some(index) => Some(index),
-            None => {
-                let window_part = target.and_then(|target| match target.split_once(':') {
-                    Some((_, window)) => Some(window),
-                    None if self.find_session(target).is_some() => None,
-                    None => Some(target),
-                });
-                match window_part {
-                    Some(part) => self.window_index_for_creation(session_index, part)?,
-                    None => None,
-                }
+        let requested_index = {
+            let window_part = target.and_then(|target| match target.split_once(':') {
+                Some((_, window)) => Some(window),
+                None if self.find_session(target).is_some() => None,
+                None => Some(target),
+            });
+            match window_part {
+                Some(part) => self.window_index_for_creation(session_index, part)?,
+                None => None,
             }
         };
         if select_existing {
@@ -11612,7 +11607,6 @@ fn execute_request_inner(
             after,
             before,
             select_existing,
-            index,
             force,
             format,
             command,
@@ -11623,7 +11617,6 @@ fn execute_request_inner(
                 target: target.as_deref(),
                 name: name.as_deref(),
                 detached,
-                requested_index: index,
                 force,
                 format: format.as_deref(),
                 after,
@@ -15830,7 +15823,6 @@ mod tests {
                     target: Some("zzz"),
                     name: None,
                     detached: true,
-                    requested_index: None,
                     force: false,
                     format: None,
                     after: false,
@@ -17665,7 +17657,6 @@ bind -r Right swap-window -t +1\; select-window -t +1
                     target: Some("pane-bindings"),
                     name: Some("destination"),
                     detached: false,
-                    requested_index: None,
                     force: false,
                     format: None,
                     after: false,
@@ -17778,7 +17769,6 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
                     target: Some("prefix-digits"),
                     name: Some("second"),
                     detached: false,
-                    requested_index: None,
                     force: false,
                     format: None,
                     after: false,
@@ -18812,7 +18802,6 @@ bind -r Right next-window
                     target: Some("repeat:"),
                     name: Some("second"),
                     detached: true,
-                    requested_index: None,
                     force: false,
                     format: None,
                     after: false,
@@ -20133,7 +20122,6 @@ bind -r Right next-window
                     target: Some("swap-config:"),
                     name: Some("second"),
                     detached: true,
-                    requested_index: None,
                     force: false,
                     format: None,
                     after: false,
