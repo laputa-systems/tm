@@ -4376,7 +4376,16 @@ impl ServerState {
                 return Ok(String::new());
             }
             if command[0] == "send-prefix" {
-                self.write_active(session_id, &self.prefix.clone());
+                if let Some(pane_id) = self
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .and_then(|session| session.active_window())
+                    .and_then(|window| window.active())
+                    .map(|pane| pane.id)
+                {
+                    self.send_prefix(pane_id);
+                }
                 continue;
             }
             if command[0] == "command-prompt" {
@@ -4816,6 +4825,22 @@ impl ServerState {
         };
         for pane_id in pane_ids {
             self.write_pane(pane_id, bytes);
+        }
+    }
+
+    fn send_prefix(&mut self, pane_id: u64) {
+        let Some((session_index, window_index, _)) = self.find_pane_location(pane_id) else {
+            return;
+        };
+        let window = &self.sessions[session_index].windows[window_index];
+        let pane_ids = if window.synchronize_panes {
+            window.panes.iter().map(|pane| pane.id).collect::<Vec<_>>()
+        } else {
+            vec![pane_id]
+        };
+        let prefix = self.prefix.clone();
+        for pane_id in pane_ids {
+            self.write_pane(pane_id, &prefix);
         }
     }
 
@@ -11358,6 +11383,11 @@ fn execute_request_inner(
                 pane.parser.process(b"\x1bc");
             }
             state.write_pane(pane_id, &bytes);
+            Ok(String::new())
+        }
+        Request::SendPrefix { target } => {
+            let (_, _, pane_id) = state.resolve_pane_target(target.as_deref())?;
+            state.send_prefix(pane_id);
             Ok(String::new())
         }
         Request::CapturePane {

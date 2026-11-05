@@ -150,6 +150,54 @@ fn literal_prefix_bindings_match_reference_bytes() {
 }
 
 #[test]
+fn cli_send_prefix_writes_the_configured_prefix_like_the_reference() {
+    let scratch = Scratch::new("input-cli-send-prefix");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        create_byte_session(mux, "S", 3);
+        mux.capture_until("S", "", Duration::from_secs(3));
+    }
+    parity::compare_commands(
+        "cli_send_prefix_writes_the_configured_prefix_like_the_reference",
+        &tm,
+        &reference,
+        &[
+            &["send-prefix", "-t", "S"],
+            &["set-option", "-g", "prefix", "C-b"],
+            &["send-prefix", "-t", "S"],
+            &["send-keys", "-t", "S", "x"],
+        ],
+    );
+    for mux in [&tm, &reference] {
+        wait_hex(mux, "S", "01 02 78");
+    }
+}
+
+#[test]
+fn cli_send_prefix_rejects_the_secondary_prefix_it_cannot_send() {
+    let scratch = Scratch::new("input-cli-send-prefix-2");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        create_byte_session(mux, "S", 1);
+    }
+    assert_eq!(reference.body(&["show-options", "-g", "prefix2"]), "prefix2 None");
+    let accepted = reference.run(&["send-prefix", "-2", "-t", "S"]);
+    assert!(accepted.status.success());
+    let rejected = tm.run(&["send-prefix", "-2", "-t", "S"]);
+    assert!(!rejected.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&rejected.stderr).trim_end(),
+        "tm: unsupported flag -2 for send-prefix"
+    );
+    for mux in [&tm, &reference] {
+        mux.ok(&["send-keys", "-t", "S", "x"]);
+        wait_hex(mux, "S", "78");
+    }
+}
+
+#[test]
 fn alt_and_incomplete_sequences_are_forwarded_once() {
     let scratch = Scratch::new("input-alt");
     let tm = Mux::tm(&scratch, "tm");

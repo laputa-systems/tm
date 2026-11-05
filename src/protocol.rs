@@ -109,6 +109,9 @@ pub(crate) enum Request {
         bytes: Vec<u8>,
         reset: bool,
     },
+    SendPrefix {
+        target: Option<String>,
+    },
     CapturePane {
         target: Option<String>,
         start: Option<i32>,
@@ -473,6 +476,10 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
         Request::SelectWindow { target } => {
             payload.push(10);
             put_string(&mut payload, target);
+        }
+        Request::SendPrefix { target } => {
+            payload.push(58);
+            put_optional_string(&mut payload, target);
         }
         Request::SelectLayout { target, layout } => {
             payload.push(57);
@@ -1026,6 +1033,9 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         10 => Request::SelectWindow {
             target: decoder.string()?,
+        },
+        58 => Request::SendPrefix {
+            target: decoder.optional_string()?,
         },
         57 => Request::SelectLayout {
             target: decoder.optional_string()?,

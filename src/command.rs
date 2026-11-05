@@ -97,11 +97,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("select-pane" | "selectp") => parse_select_pane(&arguments[index + 1..])?,
         Some("kill-pane" | "killp") => parse_kill_pane(&arguments[index + 1..])?,
         Some("send-keys" | "send") => parse_send_keys(&arguments[index + 1..])?,
-        Some("send-prefix") => InvocationSpec::plain(Request::SendKeys {
-            target: optional_target(&arguments[index + 1..])?,
-            bytes: vec![2],
-            reset: false,
-        }),
+        Some("send-prefix") => parse_send_prefix(&arguments[index + 1..])?,
         Some("capture-pane" | "capturep") => parse_capture_pane(&arguments[index + 1..])?,
         Some("copy-mode") => parse_copy_mode(&arguments[index + 1..], false)?,
         Some("copy-mode-and-page") => parse_copy_mode(&arguments[index + 1..], true)?,
@@ -2231,6 +2227,22 @@ fn target_and_name(arguments: &[String]) -> Result<(Option<String>, String), Str
         .cloned()
         .ok_or_else(|| "a name is required".to_owned())?;
     Ok((target, name))
+}
+
+fn parse_send_prefix(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let mut target = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "-t" => {
+                index += 1;
+                target = Some(argument(arguments, index, "-t")?.to_owned());
+            }
+            flag => return Err(format!("unsupported flag {flag} for send-prefix")),
+        }
+        index += 1;
+    }
+    Ok(InvocationSpec::plain(Request::SendPrefix { target }))
 }
 
 fn optional_target(arguments: &[String]) -> Result<Option<String>, String> {
