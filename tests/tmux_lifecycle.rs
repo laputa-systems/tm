@@ -223,3 +223,95 @@ fn request_sent_after_kill_server_replied_gets_an_explicit_error() {
     let text = String::from_utf8_lossy(&response);
     assert!(text.contains("server is shutting down"), "{text:?}");
 }
+
+fn process_table() -> Vec<(u32, u32, String)> {
+    let output = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,stat="])
+        .output()
+        .expect("run ps");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+                fields.next()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn defunct_children(server: u32) -> Vec<u32> {
+    process_table()
+        .into_iter()
+        .filter(|(_, parent, state)| *parent == server && state.starts_with('Z'))
+        .map(|(pid, _, _)| pid)
+        .collect()
+}
+
+fn server_pid(mux: &Mux) -> u32 {
+    let pane: u32 = mux
+        .body(&["display-message", "-p", "-t", "S", "#{pane_pid}"])
+        .parse()
+        .expect("pane pid");
+    process_table()
+        .into_iter()
+        .find(|(pid, _, _)| *pid == pane)
+        .map(|(_, parent, _)| parent)
+        .expect("pane process has a parent")
+}
+
+fn wait_pane_pipe(mux: &Mux, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let value = mux.body(&["display-message", "-p", "-t", "S", "#{pane_pipe}"]);
+        if value == expected || Instant::now() >= deadline {
+            assert_eq!(value, expected, "{:?} pane_pipe", mux.implementation());
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn exited_pipe_helper_is_reaped_and_pane_pipe_follows_the_reference() {
+    let scratch = Scratch::new("lc-pipe");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "ref");
+    for mux in [&tm, &reference] {
+        mux.ok(&["new-session", "-d", "-s", "S", "-x", "80", "-y", "8", "--", "cat"]);
+        let server = server_pid(mux);
+        mux.ok(&["pipe-pane", "-t", "S", "--", "true"]);
+        let reaped_by = Instant::now() + Duration::from_secs(1);
+        loop {
+            let defunct = defunct_children(server);
+            if defunct.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < reaped_by,
+                "{:?} left exited pipe helpers {defunct:?} unreaped",
+                mux.implementation()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    parity::compare_commands(
+        "exited_pipe_helper_is_reaped_and_pane_pipe_follows_the_reference",
+        &tm,
+        &reference,
+        &[&["display-message", "-p", "-t", "S", "#{pane_pipe}"]],
+    );
+    for mux in [&tm, &reference] {
+        wait_pane_pipe(mux, "1");
+        mux.ok(&["send-keys", "-t", "S", "hello", "Enter"]);
+        wait_pane_pipe(mux, "0");
+    }
+    for mux in [&tm, &reference] {
+        mux.ok(&["pipe-pane", "-t", "S", "--", "cat > /dev/null"]);
+        wait_pane_pipe(mux, "1");
+        mux.ok(&["pipe-pane", "-t", "S"]);
+        wait_pane_pipe(mux, "0");
+    }
+}

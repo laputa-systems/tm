@@ -856,14 +856,55 @@ struct Buffer {
     created: i64,
 }
 
-enum PipeMessage {
-    Data(Vec<u8>),
-    Close,
+struct PanePipe {
+    sender: std::sync::mpsc::SyncSender<Vec<u8>>,
+    open: Arc<AtomicBool>,
 }
 
-struct PanePipe {
-    sender: std::sync::mpsc::SyncSender<PipeMessage>,
+impl PanePipe {
+    fn is_open(&self) -> bool {
+        self.open.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+struct PipeHelper {
     pid: libc::pid_t,
+    reaped: Mutex<bool>,
+}
+
+impl PipeHelper {
+    fn wait_and_reap(&self, mut child: std::process::Child) {
+        loop {
+            let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+            // SAFETY: info is a valid siginfo_t, and WNOWAIT leaves the helper
+            // unreaped so its pid cannot be reused before `reaped` is set.
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.pid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            };
+            if result == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+        let mut reaped = self.reaped.lock().unwrap_or_else(|error| error.into_inner());
+        let _ = child.wait();
+        *reaped = true;
+    }
+
+    fn terminate(&self) {
+        let reaped = self.reaped.lock().unwrap_or_else(|error| error.into_inner());
+        if !*reaped {
+            // SAFETY: the helper is not reaped while `reaped` is false and the
+            // lock is held, so pid still names the helper.
+            unsafe {
+                libc::kill(self.pid, libc::SIGTERM);
+            }
+        }
+    }
 }
 
 struct AttachedClient {
@@ -1279,16 +1320,6 @@ impl AttachedPrompt {
     }
 }
 
-impl Drop for PanePipe {
-    fn drop(&mut self) {
-        let _ = self.sender.try_send(PipeMessage::Close);
-        // SAFETY: pid is the pipe helper spawned for this pipe and is not
-        // reaped by another owner.
-        unsafe {
-            libc::kill(self.pid, libc::SIGTERM);
-        }
-    }
-}
 
 struct MouseEvent {
     button: u16,
@@ -5967,6 +5998,7 @@ impl ServerState {
             pane,
             marked: self.marked_pane == Some(pane.id),
             marked_set: self.marked_pane.is_some(),
+            piped: self.pane_pipes.get(&pane.id).is_some_and(PanePipe::is_open),
             mode: pane.copy_mode.as_ref(),
             linked_sessions: self.window_link_count(window.id),
             group_info: self.session_group_info(session_index),
@@ -6815,28 +6847,35 @@ impl ServerState {
             .stdin
             .take()
             .ok_or_else(|| "pipe-pane could not open command stdin".to_owned())?;
-        let pid = libc::pid_t::try_from(child.id()).unwrap_or_default();
-        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        let pid = libc::pid_t::try_from(child.id())
+            .map_err(|_| "pipe-pane: helper pid out of range".to_owned())?;
+        let helper = Arc::new(PipeHelper {
+            pid,
+            reaped: Mutex::new(false),
+        });
+        let reaper = Arc::clone(&helper);
+        thread::Builder::new()
+            .name(format!("tm-pipe-reap-{pane_id}"))
+            .spawn(move || reaper.wait_and_reap(child))
+            .map_err(|error| format!("pipe-pane: {error}"))?;
+        let open = Arc::new(AtomicBool::new(true));
+        let writer_open = Arc::clone(&open);
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
         thread::Builder::new()
             .name(format!("tm-pipe-{pane_id}"))
             .spawn(move || {
                 let mut stdin = stdin;
-                let mut child = child;
-                while let Ok(message) = receiver.recv() {
-                    match message {
-                        PipeMessage::Data(bytes) => {
-                            if stdin.write_all(&bytes).is_err() {
-                                break;
-                            }
-                        }
-                        PipeMessage::Close => break,
+                while let Ok(bytes) = receiver.recv() {
+                    if stdin.write_all(&bytes).is_err() {
+                        break;
                     }
                 }
-                let _ = child.kill();
-                let _ = child.wait();
+                writer_open.store(false, std::sync::atomic::Ordering::Release);
+                drop(stdin);
+                helper.terminate();
             })
             .map_err(|error| format!("pipe-pane: {error}"))?;
-        self.pane_pipes.insert(pane_id, PanePipe { sender, pid });
+        self.pane_pipes.insert(pane_id, PanePipe { sender, open });
         Ok(String::new())
     }
 
@@ -7465,6 +7504,7 @@ impl ServerState {
                             pane,
                             marked: self.marked_pane == Some(pane.id),
                             marked_set: self.marked_pane.is_some(),
+                            piped: self.pane_pipes.get(&pane.id).is_some_and(PanePipe::is_open),
                             mode: pane.copy_mode.as_ref(),
                             linked_sessions: self.window_link_count(window.id),
                             group_info: self.session_group_info(session_index),
@@ -12077,7 +12117,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                             break;
                         }
                         if let Some((pipe, bytes)) = pipe_payload {
-                            let _ = pipe.send(PipeMessage::Data(bytes));
+                            let _ = pipe.send(bytes);
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -13946,6 +13986,7 @@ struct FormatPaneOptions<'a> {
     pane: &'a Pane,
     marked: bool,
     marked_set: bool,
+    piped: bool,
     mode: Option<&'a CopyModeState>,
     linked_sessions: usize,
     group_info: (bool, usize, String),
@@ -13969,6 +14010,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         pane,
         marked,
         marked_set,
+        piped,
         mode,
         linked_sessions,
         group_info,
@@ -14184,6 +14226,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
                 pane.pty.pid().to_string()
             },
         ),
+        ("pane_pipe", if piped { "1" } else { "0" }.to_owned()),
         ("pane_title", pane.title.clone()),
         (
             "pane_synchronized",
