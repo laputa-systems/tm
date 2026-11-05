@@ -5,11 +5,15 @@
 mod parity;
 #[path = "support/pty_harness.rs"]
 mod pty_harness;
+#[path = "support/raw_pty.rs"]
+#[allow(dead_code)]
+mod raw_pty;
 
 use std::time::{Duration, Instant};
 
 use parity::{Mux, Scratch};
 use ptytest::{PtyTest, Size};
+use raw_pty::RawClient;
 
 fn create_session(mux: &Mux, session: &str, windows: usize) {
     mux.ok(&[
@@ -130,23 +134,29 @@ fn unknown_key_after_prefix_drops_the_prefix() {
     pty_harness::detach(&mut client, &baseline);
 }
 
+fn prefix_bytes_reach_the_pane(mux: &Mux, label: &str, keys: &[u8], count: usize, expected: &str) {
+    create_byte_session(mux, "S", count);
+    let mut client = RawClient::spawn(mux, label, &["attach-session", "-t", "S"], 24, 80);
+    client.wait_for_text("(S)", Duration::from_secs(3));
+    client.write(keys);
+    wait_hex(mux, "S", expected);
+    assert_eq!(client.detach(), Some(0));
+}
+
 #[test]
 fn literal_prefix_bindings_match_reference_bytes() {
-    let scratch = Scratch::new("input-prefix-bytes");
+    let scratch = Scratch::new("in-pfx");
     let tm = Mux::tm(&scratch, "tm");
-    create_byte_session(&tm, "S", 2);
-    let (mut client, baseline) = attach(&tm, "S", "prefix-bytes");
-    send(&mut client, b"\x01\x13");
-    wait_hex(&tm, "S", "01 01");
-    pty_harness::detach(&mut client, &baseline);
-
-    let scratch = Scratch::new("input-send-prefix");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        prefix_bytes_reach_the_pane(mux, "prefix-bytes", b"\x01\x13", 2, "01 01");
+    }
+    let scratch = Scratch::new("in-sp");
     let tm = Mux::tm(&scratch, "tm");
-    create_byte_session(&tm, "S", 1);
-    let (mut client, baseline) = attach(&tm, "S", "send-prefix");
-    send(&mut client, b"\x01b");
-    wait_hex(&tm, "S", "01");
-    pty_harness::detach(&mut client, &baseline);
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        prefix_bytes_reach_the_pane(mux, "send-prefix", b"\x01b", 1, "01");
+    }
 }
 
 #[test]
