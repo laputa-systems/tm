@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 38
+Next: 39
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -243,3 +243,11 @@ suites do not cover.
 - **Recommendation:** Redistribute the change over siblings as tmux's `layout_resize` does (see TMUX-15), and drop the `ResizeOfSplitWindow` exclusion.
 - **Fix with:** reference-parity
 - **Effort:** M
+
+### TMUX-38 · P2 · Commands run inside a pane do not default to that pane
+
+- **Area:** Targeting
+- **Where:** `src/client.rs` request context, `src/server.rs` target resolution and pane environment
+- **Problem:** tmux 3.8 sets `TMUX` and `TMUX_PANE` in each pane, and a command run from that pane with an omitted target resolves to that pane's session, window and pane. tm sets neither and resolves an omitted target from the most recently active session, so `tm split-window` typed in a pane of a second session can split a pane in another session.
+- **Recommendation:** Export the pane id and socket path into each pane's environment, send the caller's pane id with each request, resolve omitted targets from it first, and add an H2-style differential history that runs commands from inside panes of two sessions.
+- **Fix with:** reference-parity
