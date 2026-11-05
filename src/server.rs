@@ -3409,7 +3409,7 @@ impl ServerState {
         if !release && !motion && base_button == 1 && !pane_in_copy_mode {
             let target = format!("%{pane_id}");
             let _ = self.select_pane(Some(&target), PaneDirection::Target, None, None, None);
-            let _ = self.paste_buffer(Some(&target), None, false, true, None, false);
+            let _ = self.paste_buffer(Some(&target), None, true, b"\r", false);
             return;
         }
         if base_button != 0 {
@@ -4122,8 +4122,7 @@ impl ServerState {
             Some(&format!("%{pane_id}")),
             Some(&name),
             false,
-            false,
-            None,
+            b"\r",
             false,
         );
         if let Some(client) = self.clients.get_mut(&client_id) {
@@ -6151,38 +6150,65 @@ impl ServerState {
         }))
     }
 
-    fn store_buffer(&mut self, name: Option<String>, data: Vec<u8>, append: bool) {
-        let automatic = name.is_none();
-        let name = name.unwrap_or_else(|| {
-            let name = format!("buffer{}", self.next_buffer_id);
-            self.next_buffer_id += 1;
-            name
-        });
-        if let Some(buffer) = self.buffers.iter_mut().find(|buffer| buffer.name == name) {
-            if append {
-                buffer.data.extend_from_slice(&data);
-            } else {
-                buffer.data = data;
-            }
-            return;
+    fn set_paste_buffer(
+        &mut self,
+        name: Option<String>,
+        data: Vec<u8>,
+        append: bool,
+    ) -> Result<(), String> {
+        if data.is_empty() {
+            return Ok(());
         }
+        let Some(name) = name else {
+            self.add_automatic_buffer(data);
+            return Ok(());
+        };
+        if name.is_empty() {
+            return Err("empty buffer name".to_owned());
+        }
+        let mut data = data;
+        if append && let Some(existing) = self.buffers.iter().find(|buffer| buffer.name == name) {
+            let mut combined = existing.data.clone();
+            combined.extend_from_slice(&data);
+            data = combined;
+        }
+        let name = clean_buffer_name(&name)?;
+        self.buffers.retain(|buffer| buffer.name != name);
         self.buffers.insert(
             0,
             Buffer {
                 name,
                 data,
-                automatic,
+                automatic: false,
                 created: unix_time(),
             },
         );
-        let mut automatic_count = 0;
-        self.buffers.retain(|buffer| {
-            if !buffer.automatic {
-                return true;
+        Ok(())
+    }
+
+    fn add_automatic_buffer(&mut self, data: Vec<u8>) {
+        while self.buffers.iter().filter(|buffer| buffer.automatic).count() >= self.buffer_limit {
+            let Some(oldest) = self.buffers.iter().rposition(|buffer| buffer.automatic) else {
+                break;
+            };
+            self.buffers.remove(oldest);
+        }
+        let name = loop {
+            let name = format!("buffer{}", self.next_buffer_id);
+            self.next_buffer_id += 1;
+            if !self.buffers.iter().any(|buffer| buffer.name == name) {
+                break name;
             }
-            automatic_count += 1;
-            automatic_count <= self.buffer_limit
-        });
+        };
+        self.buffers.insert(
+            0,
+            Buffer {
+                name,
+                data,
+                automatic: true,
+                created: unix_time(),
+            },
+        );
     }
 
     fn store_copy_buffer(&mut self, prefix: Option<String>, data: Vec<u8>) {
@@ -6212,7 +6238,7 @@ impl ServerState {
                 automatic_count <= self.buffer_limit
             });
         } else {
-            self.store_buffer(None, data, false);
+            self.add_automatic_buffer(data);
         }
     }
 
@@ -6222,7 +6248,7 @@ impl ServerState {
             combined.extend_from_slice(&buffer.data);
             buffer.data = combined;
         } else {
-            self.store_buffer(None, data, false);
+            self.add_automatic_buffer(data);
         }
     }
 
@@ -6241,18 +6267,40 @@ impl ServerState {
     }
 
     fn rename_buffer(&mut self, name: Option<&str>, rename: &str) -> CommandResult {
-        let name = name.ok_or_else(|| "set-buffer -n requires a buffer".to_owned())?;
+        let old = match name {
+            Some(name) => {
+                if !self.buffers.iter().any(|buffer| buffer.name == name) {
+                    return Err(format!("unknown buffer: {name}"));
+                }
+                name.to_owned()
+            }
+            None => self
+                .buffers
+                .iter()
+                .find(|buffer| buffer.automatic)
+                .map(|buffer| buffer.name.clone())
+                .ok_or_else(|| "no buffer".to_owned())?,
+        };
+        if rename.is_empty() {
+            return Err("new name is empty".to_owned());
+        }
+        let renamed = clean_buffer_name(rename)?;
+        if renamed == old {
+            return Ok(String::new());
+        }
+        self.buffers.retain(|buffer| buffer.name != renamed);
         let buffer = self
             .buffers
             .iter_mut()
-            .find(|buffer| buffer.name == name)
-            .ok_or_else(|| format!("unknown buffer: {name}"))?;
-        buffer.name = rename.to_owned();
+            .find(|buffer| buffer.name == old)
+            .ok_or_else(|| format!("no buffer {old}"))?;
+        buffer.name = renamed;
+        buffer.automatic = false;
         Ok(String::new())
     }
 
     fn list_buffers(&self, format: Option<&str>, filter: Option<&str>) -> CommandResult {
-        let format = format.unwrap_or("#{buffer_name}: #{buffer_size} bytes: #{buffer_sample}");
+        let format = format.unwrap_or("#{buffer_name}: #{buffer_size} bytes: \"#{buffer_sample}\"");
         let lines = self
             .buffers
             .iter()
@@ -6282,39 +6330,35 @@ impl ServerState {
         &mut self,
         target: Option<&str>,
         name: Option<&str>,
-        raw: bool,
         bracketed: bool,
-        separator: Option<&[u8]>,
+        separator: &[u8],
         delete: bool,
     ) -> CommandResult {
-        let buffer_data = self
-            .buffers
-            .iter()
-            .find(|buffer| match name {
-                Some(name) => buffer.name == name,
-                None => buffer.automatic,
-            })
-            .map(|buffer| buffer.data.clone())
-            .ok_or_else(|| match name {
-                Some(name) => format!("no buffer {name}"),
-                None => "no buffer paste".to_owned(),
-            })?;
-        let mut data = Vec::with_capacity(buffer_data.len());
-        if raw {
-            data.extend_from_slice(&buffer_data);
-        } else {
-            let separator = separator.unwrap_or(b"\r");
-            let mut start = 0;
-            for (index, byte) in buffer_data.iter().enumerate() {
-                if *byte == b'\n' {
-                    data.extend_from_slice(&buffer_data[start..index]);
-                    data.extend_from_slice(separator);
-                    start = index + 1;
-                }
-            }
-            data.extend_from_slice(&buffer_data[start..]);
-        }
         let (_, _, pane_id) = self.resolve_pane_target(target)?;
+        let buffer = match name {
+            Some(name) => Some(
+                self.buffers
+                    .iter()
+                    .find(|buffer| buffer.name == name)
+                    .ok_or_else(|| format!("no buffer {name}"))?,
+            ),
+            None => self.buffers.iter().find(|buffer| buffer.automatic),
+        };
+        let Some(buffer) = buffer else {
+            return Ok(String::new());
+        };
+        let buffer_name = buffer.name.clone();
+        let mut data = Vec::with_capacity(buffer.data.len());
+        let mut lines = buffer.data.split(|byte| *byte == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            let last = lines.peek().is_none();
+            if !(last && line.is_empty()) {
+                data.extend_from_slice(&vis_paste(line));
+            }
+            if !last {
+                data.extend_from_slice(separator);
+            }
+        }
         let pane_paste = self
             .find_pane(pane_id)
             .is_some_and(|pane| pane.parser.screen().bracketed_paste());
@@ -6330,17 +6374,17 @@ impl ServerState {
             .ok_or_else(|| "target pane no longer exists".to_owned())?;
         pane.pty.write(&data).map_err(|error| error.to_string())?;
         if delete {
-            self.delete_buffer(name)?;
+            self.buffers.retain(|buffer| buffer.name != buffer_name);
         }
         Ok(String::new())
     }
 
     fn load_buffer(&mut self, name: Option<String>, data: Vec<u8>) -> CommandResult {
-        self.store_buffer(name, data, false);
-        Ok(String::new())
+        self.set_paste_buffer(name, data, false)
+            .map(|()| String::new())
     }
 
-    fn save_buffer(&self, name: Option<&str>, path: Option<&str>, append: bool) -> CommandResult {
+    fn save_buffer(&self, name: Option<&str>, path: &str, append: bool) -> CommandResult {
         let buffer = self
             .buffers
             .iter()
@@ -6352,7 +6396,7 @@ impl ServerState {
                 Some(name) => format!("no buffer {name}"),
                 None => "no buffers".to_owned(),
             })?;
-        if let Some(path) = path.filter(|path| *path != "-") {
+        if path != "-" {
             let mut options = fs::OpenOptions::new();
             options.create(true).write(true);
             if append {
@@ -6360,9 +6404,11 @@ impl ServerState {
             } else {
                 options.truncate(true);
             }
-            let mut file = options.open(path).map_err(|error| error.to_string())?;
+            let mut file = options
+                .open(path)
+                .map_err(|error| crate::command::io_error_text(&error, path))?;
             file.write_all(&buffer.data)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| crate::command::io_error_text(&error, path))?;
             Ok(String::new())
         } else {
             Ok(String::from_utf8_lossy(&buffer.data).into_owned())
@@ -12014,11 +12060,10 @@ fn execute_request_inner(
             )?;
             if print {
                 Ok(text)
-            } else if buffer.as_deref() == Some("") {
-                Err("empty buffer name".to_owned())
             } else {
-                state.store_buffer(buffer, format!("{text}\n").into_bytes(), false);
-                Ok(String::new())
+                state
+                    .set_paste_buffer(buffer, format!("{text}\n").into_bytes(), false)
+                    .map(|()| String::new())
             }
         }
         Request::CopyMode {
@@ -12234,15 +12279,10 @@ fn execute_request_inner(
         } => {
             if let Some(rename) = rename {
                 state.rename_buffer(name.as_deref(), &rename)
-            } else if data.is_empty() {
-                if name.is_some() {
-                    Err("no data specified".to_owned())
-                } else {
-                    Ok(String::new())
-                }
             } else {
-                state.store_buffer(name, data, append);
-                Ok(String::new())
+                state
+                    .set_paste_buffer(name, data, append)
+                    .map(|()| String::new())
             }
         }
         Request::ShowBuffer { name } => state.show_buffer(name.as_deref()),
@@ -12253,21 +12293,19 @@ fn execute_request_inner(
         Request::PasteBuffer {
             target,
             name,
-            raw,
             bracketed,
             separator,
             delete,
         } => state.paste_buffer(
             target.as_deref(),
             name.as_deref(),
-            raw,
             bracketed,
-            separator.as_deref(),
+            &separator,
             delete,
         ),
         Request::LoadBuffer { name, data } => state.load_buffer(name, data),
         Request::SaveBuffer { name, path, append } => {
-            state.save_buffer(name.as_deref(), path.as_deref(), append)
+            state.save_buffer(name.as_deref(), &path, append)
         }
         Request::SetOption {
             target,
@@ -14809,19 +14847,86 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
 }
 
 fn buffer_values(buffer: &Buffer) -> Vec<(&'static str, String)> {
-    let sample = buffer
-        .data
-        .split(|byte| *byte == b'\n')
-        .next()
-        .map(String::from_utf8_lossy)
-        .unwrap_or_default();
     vec![
         ("buffer_name", buffer.name.clone()),
         ("buffer_size", buffer.data.len().to_string()),
-        ("buffer_sample", sample.into_owned()),
+        ("buffer_sample", buffer_sample(&buffer.data)),
         ("buffer_created", buffer.created.to_string()),
         ("buffer_full", "0".to_owned()),
     ]
+}
+
+const BUFFER_SAMPLE_WIDTH: usize = 200;
+
+fn buffer_sample(data: &[u8]) -> String {
+    let mut sample = vis_bytes(&data[..data.len().min(BUFFER_SAMPLE_WIDTH)]);
+    if data.len() > BUFFER_SAMPLE_WIDTH || sample.len() > BUFFER_SAMPLE_WIDTH {
+        sample.truncate(BUFFER_SAMPLE_WIDTH);
+        sample.push_str("...");
+    }
+    sample
+}
+
+fn clean_buffer_name(name: &str) -> Result<String, String> {
+    if name.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
+        return Err(format!("invalid buffer name: {name}"));
+    }
+    Ok(name.replace('\\', "\\\\"))
+}
+
+fn vis_bytes(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let (valid, invalid) = match std::str::from_utf8(rest) {
+            Ok(text) => (text, 0),
+            Err(error) => {
+                let valid = error.valid_up_to();
+                let invalid = error.error_len().unwrap_or(rest.len() - valid);
+                (std::str::from_utf8(&rest[..valid]).unwrap_or_default(), invalid)
+            }
+        };
+        let mut characters = valid.chars().peekable();
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => encoded.push_str("\\\\"),
+                '\n' => encoded.push_str("\\n"),
+                '\r' => encoded.push_str("\\r"),
+                '\t' => encoded.push_str("\\t"),
+                '\u{7}' => encoded.push_str("\\a"),
+                '\u{8}' => encoded.push_str("\\b"),
+                '\u{b}' => encoded.push_str("\\v"),
+                '\u{c}' => encoded.push_str("\\f"),
+                '\0' if !characters.peek().is_some_and(|next| ('0'..='7').contains(next)) => {
+                    encoded.push_str("\\0");
+                }
+                character if character.is_ascii_control() => {
+                    encoded.push_str(&format!("\\{:03o}", character as u8));
+                }
+                character => encoded.push(character),
+            }
+        }
+        for byte in &rest[valid.len()..valid.len() + invalid] {
+            encoded.push_str(&format!("\\{byte:03o}"));
+        }
+        rest = &rest[valid.len() + invalid..];
+    }
+    encoded
+}
+
+fn vis_paste(line: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(line.len());
+    for &byte in line {
+        match byte {
+            0x07 | 0x08 | b'\t' | b'\r' => encoded.push(byte),
+            0x00..=0x1f | 0x7f => {
+                encoded.push(b'^');
+                encoded.push(byte ^ 0x40);
+            }
+            _ => encoded.push(byte),
+        }
+    }
+    encoded
 }
 
 fn buffer_filter(buffer: &Buffer, filter: Option<&str>) -> bool {
@@ -14829,7 +14934,7 @@ fn buffer_filter(buffer: &Buffer, filter: Option<&str>) -> bool {
         return true;
     };
     let value = render_format(filter, &buffer_values(buffer));
-    !value.is_empty() && value != "0" && value != "false"
+    !value.is_empty() && value != "0"
 }
 
 fn format_buffer(buffer: &Buffer, format: &str, options: &HashMap<String, String>) -> String {
@@ -16190,8 +16295,12 @@ mod tests {
         let (_, client_b) = state
             .register_client(Some("bbb"), Size::new(40, 8))
             .expect("register bbb client");
-        state.store_buffer(Some("bufa".to_owned()), b"hello log".to_vec(), false);
-        state.store_buffer(Some("bufz".to_owned()), b"other".to_vec(), false);
+        state
+            .set_paste_buffer(Some("bufa".to_owned()), b"hello log".to_vec(), false)
+            .expect("buffer");
+        state
+            .set_paste_buffer(Some("bufz".to_owned()), b"other".to_vec(), false)
+            .expect("buffer");
 
         state
             .enter_buffer_mode(
@@ -16247,7 +16356,9 @@ mod tests {
         assert!(state.buffers.is_empty());
         state.handle_client_input(client_a, b"q", &shared);
 
-        state.store_buffer(Some("bufa".to_owned()), b"paste".to_vec(), false);
+        state
+            .set_paste_buffer(Some("bufa".to_owned()), b"paste".to_vec(), false)
+            .expect("buffer");
         state
             .enter_buffer_mode(
                 client_a,
@@ -16923,7 +17034,9 @@ mod tests {
                 },
             )
             .expect("create mode-kill session");
-        state.store_buffer(Some("kill-buffer".to_owned()), b"buffer".to_vec(), false);
+        state
+            .set_paste_buffer(Some("kill-buffer".to_owned()), b"buffer".to_vec(), false)
+            .expect("buffer");
         let (_, client_id) = state
             .register_client(Some("mode-kill"), Size::new(40, 8))
             .expect("register mode-kill client");
@@ -20102,7 +20215,7 @@ bind -r Right next-window
                     },
                 )
                 .expect("create mouse paste session");
-            state.store_buffer(None, b"middle paste".to_vec(), false);
+            state.add_automatic_buffer(b"middle paste".to_vec());
             (_, client_id) = state
                 .register_client(Some("mouse-paste"), Size::new(30, 6))
                 .expect("register mouse paste client");

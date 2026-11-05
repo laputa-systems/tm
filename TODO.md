@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 20
+Next: 22
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -56,15 +56,6 @@ suites do not cover.
 - **Fix with:** reference-parity
 - **Effort:** M
 
-### TMUX-16 · P3 · show-buffer and list-buffers differ from tmux
-
-- **Area:** Buffers
-- **Where:** `src/command.rs` buffer commands, `src/server.rs` `show_buffer`, `list_buffers`
-- **Problem:** `show-buffer` prints the buffer and then a newline of its own; tmux prints the bytes unchanged. The default `list-buffers` format prints the sample unescaped and unquoted; tmux prints `name: N bytes: "escaped sample"`.
-- **Recommendation:** Write the buffer bytes unchanged and port the default format with a differential probe.
-- **Fix with:** reference-parity
-- **Effort:** S
-
 ### TMUX-17 · P3 · history_size and history_limit formats expand to nothing
 
 - **Area:** Formats
@@ -91,3 +82,21 @@ suites do not cover.
 - **Recommendation:** Read the helper's stdout into the pane and expand time escapes, with differential probes.
 - **Fix with:** reference-parity
 - **Effort:** M
+
+### TMUX-20 · P3 · The format comparison operators compare numbers, tmux compares strings
+
+- **Area:** Formats
+- **Where:** `src/server.rs` `compare_format_values`
+- **Problem:** `#{<:a,b}`, `#{>:a,b}`, `#{<=:a,b}`, and `#{>=:a,b}` compare numerically when both sides parse as numbers; tmux 3.8 uses `strcmp`, so `#{>:5,10}` is true there. `list-buffers -f '#{>:#{buffer_size},10}'` lists a 5-byte buffer in tmux and not in tm.
+- **Recommendation:** Compare as strings and check `#{==:}`, `#{!=:}`, and the four orderings with a differential `display-message -p` probe.
+- **Fix with:** reference-parity
+- **Effort:** S
+
+### TMUX-21 · P4 · Choose modes treat the filter result "false" as false
+
+- **Area:** Buffers
+- **Where:** `src/server.rs` `build_buffer_entries` and the two other filter checks
+- **Problem:** The choose-buffer, choose-tree, and choose-client filters treat an expanded filter of `false` as false; tmux 3.8 treats only an empty string and `0` as false. `list-buffers -f` now follows tmux.
+- **Recommendation:** Share one `format_true` helper between the filters and add a differential probe with a filter that expands to `false`.
+- **Fix with:** reference-parity
+- **Effort:** S

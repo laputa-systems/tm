@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0006;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0007;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -198,9 +198,8 @@ pub(crate) enum Request {
     PasteBuffer {
         target: Option<String>,
         name: Option<String>,
-        raw: bool,
         bracketed: bool,
-        separator: Option<Vec<u8>>,
+        separator: Vec<u8>,
         delete: bool,
     },
     LoadBuffer {
@@ -209,7 +208,7 @@ pub(crate) enum Request {
     },
     SaveBuffer {
         name: Option<String>,
-        path: Option<String>,
+        path: String,
         append: bool,
     },
     SetOption {
@@ -690,7 +689,6 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
         Request::PasteBuffer {
             target,
             name,
-            raw,
             bracketed,
             separator,
             delete,
@@ -698,15 +696,8 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             payload.push(29);
             put_optional_string(&mut payload, target);
             put_optional_string(&mut payload, name);
-            put_bool(&mut payload, *raw);
             put_bool(&mut payload, *bracketed);
-            match separator {
-                Some(separator) => {
-                    put_bool(&mut payload, true);
-                    put_bytes(&mut payload, separator);
-                }
-                None => put_bool(&mut payload, false),
-            }
+            put_bytes(&mut payload, separator);
             put_bool(&mut payload, *delete);
         }
         Request::LoadBuffer { name, data } => {
@@ -717,7 +708,7 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
         Request::SaveBuffer { name, path, append } => {
             payload.push(31);
             put_optional_string(&mut payload, name);
-            put_optional_string(&mut payload, path);
+            put_string(&mut payload, path);
             put_bool(&mut payload, *append);
         }
         Request::SetOption {
@@ -1193,13 +1184,8 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         29 => Request::PasteBuffer {
             target: decoder.optional_string()?,
             name: decoder.optional_string()?,
-            raw: decoder.bool()?,
             bracketed: decoder.bool()?,
-            separator: if decoder.bool()? {
-                Some(decoder.bytes()?)
-            } else {
-                None
-            },
+            separator: decoder.bytes()?,
             delete: decoder.bool()?,
         },
         30 => Request::LoadBuffer {
@@ -1208,7 +1194,7 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         31 => Request::SaveBuffer {
             name: decoder.optional_string()?,
-            path: decoder.optional_string()?,
+            path: decoder.string()?,
             append: decoder.bool()?,
         },
         32 => Request::SetOption {
@@ -1793,9 +1779,8 @@ mod tests {
         let request = Request::PasteBuffer {
             target: Some("work:0.1".to_owned()),
             name: Some("paste".to_owned()),
-            raw: false,
             bracketed: true,
-            separator: Some(b"|".to_vec()),
+            separator: b"|".to_vec(),
             delete: true,
         };
         let bytes = encode_request(&request).expect("encode");
@@ -1807,7 +1792,7 @@ mod tests {
                 target: Some(target),
                 name: Some(name),
                 bracketed: true,
-                separator: Some(separator),
+                separator,
                 delete: true,
                 ..
             } if target == "work:0.1" && name == "paste" && separator == b"|"
@@ -1925,7 +1910,6 @@ mod tests {
         fn opt_text(&mut self) -> Option<String>;
         fn texts(&mut self) -> Vec<String>;
         fn blob(&mut self) -> Vec<u8>;
-        fn opt_blob(&mut self) -> Option<Vec<u8>>;
         fn number(&mut self) -> u32;
         fn signed(&mut self) -> i32;
         fn opt_signed(&mut self) -> Option<i32>;
@@ -2001,9 +1985,6 @@ mod tests {
             self.calls += 1;
             vec![0, self.calls as u8, 255]
         }
-        fn opt_blob(&mut self) -> Option<Vec<u8>> {
-            self.toggle().then(|| self.blob())
-        }
         fn number(&mut self) -> u32 {
             self.calls += 1;
             0x0100_0000 + self.calls as u32
@@ -2072,9 +2053,6 @@ mod tests {
         }
         fn blob(&mut self) -> Vec<u8> {
             (0..self.below(64)).map(|_| self.next() as u8).collect()
-        }
-        fn opt_blob(&mut self) -> Option<Vec<u8>> {
-            self.flag().then(|| self.blob())
         }
         fn number(&mut self) -> u32 {
             self.next() as u32
@@ -2297,9 +2275,8 @@ mod tests {
         33 => Request::PasteBuffer {
                 target: source.opt_text(),
                 name: source.opt_text(),
-                raw: source.flag(),
                 bracketed: source.flag(),
-                separator: source.opt_blob(),
+                separator: source.blob(),
                 delete: source.flag(),
         },
         34 => Request::LoadBuffer {
@@ -2308,7 +2285,7 @@ mod tests {
         },
         35 => Request::SaveBuffer {
                 name: source.opt_text(),
-                path: source.opt_text(),
+                path: source.text(),
                 append: source.flag(),
         },
         36 => Request::SetOption {
@@ -2539,7 +2516,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0006;
+    const GOLDEN_VERSION: u32 = 0x544d_0007;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2575,9 +2552,9 @@ mod tests {
         "080000001901020000007432",
         "090000001b0102000000743200",
         "080000001c01020000007432",
-        "0d0000001d010200000074320001010001",
+        "120000001d010200000074320001030000000005ff00",
         "0f0000001e01020000007432030000000003ff",
-        "0a0000001f010200000074320001",
+        "0f0000001f0102000000743202000000743301",
         "170000002001020000007432010102000000743502000000743601",
         "2200000021010200000074320001020000007435000102000000743800010300000074313100",
         "0c000000220102000000743200010600",

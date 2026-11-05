@@ -56,7 +56,11 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         _ => !body.is_empty(),
     };
     if !attach && prints_body {
-        println!("{body}");
+        match &request {
+            crate::protocol::Request::ShowBuffer { .. }
+            | crate::protocol::Request::SaveBuffer { .. } => print!("{body}"),
+            _ => println!("{body}"),
+        }
     }
     if !attach {
         return Ok(());

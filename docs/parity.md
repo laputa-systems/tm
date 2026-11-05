@@ -435,6 +435,42 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `capture-pane` | `-T` | rejected | stop at the last used cell, which tm cannot know after an erase | C5b `tests/tmux_cli_flags.rs::panes_capture_pane_rejects_flags_it_does_not_implement` | internal |
 | `clear-history` | `-t` | match | target pane; the capture keeps only the visible screen afterwards | C5b `tests/tmux_cli_flags.rs::panes_clear_history_flags_match_the_reference` | differential |
 | `clear-history` | `-H` | rejected | also reset hyperlinks | C5b `tests/tmux_cli_flags.rs::panes_clear_history_rejects_flags_it_does_not_implement` | internal |
+| `set-buffer` | `(data)` | match | store the argument as a new automatic buffer; empty data stores nothing and no data is an error; buffer names with control characters are invalid and backslashes are doubled | C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_flags_match_the_reference`; C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_without_buffers_matches_the_reference` | differential |
+| `set-buffer` | `-a` | match | append to the buffer named by `-b`; without `-b` or an existing buffer it creates one | C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_flags_match_the_reference` | differential |
+| `set-buffer` | `-b` | match | buffer name; replaces a buffer of that name | C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_flags_match_the_reference` | differential |
+| `set-buffer` | `-n` | match | rename the `-b` buffer, or the newest automatic buffer, and make it a named buffer | C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_flags_match_the_reference`; C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_without_buffers_matches_the_reference` | differential |
+| `set-buffer` | `-t` | rejected | target client for `-w` | C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_rejects_flags_it_does_not_implement` | internal |
+| `set-buffer` | `-w` | rejected | also set the client clipboard | C6a `tests/tmux_cli_flags.rs::buffers_set_buffer_rejects_flags_it_does_not_implement` | internal |
+| `set-buffer` | `(any other flag)` | rejected | tmux 3.8 defines only `-a`, `-b`, `-n`, `-t`, and `-w` | C6a `tests/tmux_cli_flags.rs::buffers_commands_reject_flags_tmux_does_not_define` | internal |
+| `show-buffer` | `-b` | match | buffer name; the default is the newest automatic buffer; the data is written without a trailing newline | C6a `tests/tmux_cli_flags.rs::buffers_show_buffer_flags_match_the_reference` | differential |
+| `show-buffer` | `(non-UTF-8 data)` | tm-only | tm replaces bytes that are not UTF-8 with U+FFFD; tmux writes the bytes unchanged | C6a `tests/tmux_cli_flags.rs::buffers_show_buffer_replaces_non_utf8_bytes_in_tm` | internal |
+| `show-buffer` | `(any other flag)` | rejected | tmux 3.8 defines only `-b` | C6a `tests/tmux_cli_flags.rs::buffers_commands_reject_flags_tmux_does_not_define` | internal |
+| `list-buffers` | `-F` | match | output format; the default is `#{buffer_name}: #{buffer_size} bytes: "#{buffer_sample}"` with control bytes shown as escapes and samples cut at 200 bytes | C6a `tests/tmux_cli_flags.rs::buffers_list_buffers_flags_match_the_reference` | differential |
+| `list-buffers` | `-f` | match | format filter; every value except an empty string and `0` is true | C6a `tests/tmux_cli_flags.rs::buffers_list_buffers_flags_match_the_reference` | differential |
+| `list-buffers` | `-O` | rejected | sort order | C6a `tests/tmux_cli_flags.rs::buffers_list_buffers_rejects_flags_it_does_not_implement` | internal |
+| `list-buffers` | `-r` | rejected | reverse the sort order | C6a `tests/tmux_cli_flags.rs::buffers_list_buffers_rejects_flags_it_does_not_implement` | internal |
+| `list-buffers` | `-q` | rejected | not a tmux 3.8 flag (tm formerly ignored it) | C6a `tests/tmux_cli_flags.rs::buffers_list_buffers_rejects_flags_it_does_not_implement` | internal |
+| `list-buffers` | `(any other flag)` | rejected | tmux 3.8 defines only `-F`, `-f`, `-O`, and `-r` | C6a `tests/tmux_cli_flags.rs::buffers_commands_reject_flags_tmux_does_not_define` | internal |
+| `delete-buffer` | `-b` | match | buffer name; the default is the newest automatic buffer | C6a `tests/tmux_cli_flags.rs::buffers_delete_buffer_flags_match_the_reference` | differential |
+| `delete-buffer` | `(any other flag)` | rejected | tmux 3.8 defines only `-b` | C6a `tests/tmux_cli_flags.rs::buffers_commands_reject_flags_tmux_does_not_define` | internal |
+| `load-buffer` | `-b` | match | buffer name; an empty file stores nothing | C6a `tests/tmux_cli_flags.rs::buffers_load_buffer_flags_match_the_reference` | differential |
+| `load-buffer` | `-t` | rejected | target client for `-w` | C6a `tests/tmux_cli_flags.rs::buffers_load_buffer_rejects_flags_it_does_not_implement` | internal |
+| `load-buffer` | `-w` | rejected | also set the client clipboard | C6a `tests/tmux_cli_flags.rs::buffers_load_buffer_rejects_flags_it_does_not_implement` | internal |
+| `load-buffer` | `(path)` | tm-only | tmux expands formats in the path; tm uses the path as written | C6a `tests/tmux_cli_flags.rs::buffers_load_and_save_paths_are_not_format_expanded_in_tm` | internal |
+| `load-buffer` | `(any other flag)` | rejected | tmux 3.8 defines only `-b`, `-t`, and `-w` | C6a `tests/tmux_cli_flags.rs::buffers_commands_reject_flags_tmux_does_not_define` | internal |
+| `save-buffer` | `-a` | match | append to the file | C6a `tests/tmux_cli_flags.rs::buffers_save_buffer_flags_match_the_reference` | differential |
+| `save-buffer` | `-b` | match | buffer name; the default is the newest automatic buffer | C6a `tests/tmux_cli_flags.rs::buffers_save_buffer_flags_match_the_reference` | differential |
+| `save-buffer` | `(path)` | tm-only | tmux expands formats in the path; tm uses the path as written | C6a `tests/tmux_cli_flags.rs::buffers_load_and_save_paths_are_not_format_expanded_in_tm` | internal |
+| `save-buffer` | `(any other flag)` | rejected | tmux 3.8 defines only `-a` and `-b` | C6a `tests/tmux_cli_flags.rs::buffers_save_buffer_rejects_flags_it_does_not_implement` | internal |
+| `paste-buffer` | `-b` | match | buffer name; a missing buffer is an error and no buffer at all pastes nothing | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_flags_match_the_reference`; C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_without_buffers_matches_the_reference` | differential |
+| `paste-buffer` | `-d` | match | delete the buffer after pasting | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_flags_match_the_reference` | differential |
+| `paste-buffer` | `-p` | match | bracketed paste when the pane enabled it | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_flags_match_the_reference` | differential |
+| `paste-buffer` | `-r` | match | separate lines with a line feed instead of a carriage return | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_flags_match_the_reference` | differential |
+| `paste-buffer` | `-s` | match | line separator; wins over `-r` | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_flags_match_the_reference` | differential |
+| `paste-buffer` | `-t` | match | target pane | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_flags_match_the_reference` | differential |
+| `paste-buffer` | `(control bytes)` | match | control characters other than bell, backspace, tab, and carriage return are pasted as `^X` | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_escapes_control_bytes_like_the_reference` | differential |
+| `paste-buffer` | `-S` | rejected | paste without escaping control characters | C6a `tests/tmux_cli_flags.rs::buffers_paste_buffer_rejects_flags_it_does_not_implement` | internal |
+| `paste-buffer` | `(any other flag)` | rejected | tmux 3.8 defines only `-d`, `-b`, `-p`, `-r`, `-S`, `-s`, and `-t` | C6a `tests/tmux_cli_flags.rs::buffers_commands_reject_flags_tmux_does_not_define` | internal |
 
 ## Baseline
 

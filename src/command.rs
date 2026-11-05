@@ -99,7 +99,9 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("display-message" | "display") => parse_display_message(&arguments[index + 1..])?,
         Some("set-buffer" | "setb") => parse_set_buffer(&arguments[index + 1..])?,
         Some("show-buffer" | "showb") => InvocationSpec::plain(Request::ShowBuffer {
-            name: parse_buffer_name(&arguments[index + 1..])?,
+            name: scan_flags("show-buffer", &arguments[index + 1..], "b:", 0)?
+                .value('b')
+                .map(str::to_owned),
         }),
         Some("list-buffers" | "lsb") => parse_list_buffers(&arguments[index + 1..])?,
         Some("delete-buffer" | "deleteb") => parse_delete_buffer(&arguments[index + 1..])?,
@@ -1158,192 +1160,125 @@ fn parse_display_message(arguments: &[String]) -> Result<InvocationSpec, String>
 }
 
 fn parse_set_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut name = None;
-    let mut rename = None;
-    let mut append = false;
-    let mut data = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-b" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-b")?.to_owned());
-            }
-            "-n" => {
-                index += 1;
-                rename = Some(argument(arguments, index, "-n")?.to_owned());
-            }
-            "-a" => append = true,
-            "--" => data.extend_from_slice(&arguments[index + 1..]),
-            value if value.starts_with('-') => {
-                return Err(format!("unknown set-buffer option: {value}"));
-            }
-            value => data.push(value.to_owned()),
+    let flags = scan_flags("set-buffer", arguments, "ab:t:n:w", 1)?;
+    for (flag, name) in [('t', "-t"), ('w', "-w")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "set-buffer"));
         }
-        if arguments.get(index).is_some_and(|value| value == "--") {
-            break;
-        }
-        index += 1;
+    }
+    let rename = flags.value('n').map(str::to_owned);
+    if rename.is_none() && flags.positional.is_empty() {
+        return Err("no data specified".to_owned());
     }
     Ok(InvocationSpec::plain(Request::SetBuffer {
-        name,
-        append,
-        data: data.join(" ").into_bytes(),
+        name: flags.value('b').map(str::to_owned),
+        append: flags.has('a'),
+        data: flags
+            .positional
+            .first()
+            .map(|data| data.clone().into_bytes())
+            .unwrap_or_default(),
         rename,
     }))
 }
 
 fn parse_list_buffers(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut format = None;
-    let mut filter = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-f" => {
-                index += 1;
-                filter = Some(argument(arguments, index, "-f")?.to_owned());
-            }
-            "-q" => {}
-            value => return Err(format!("unknown list-buffers option: {value}")),
+    let flags = scan_flags("list-buffers", arguments, "F:f:O:r", 0)?;
+    for (flag, name) in [('O', "-O"), ('r', "-r")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "list-buffers"));
         }
-        index += 1;
     }
     Ok(InvocationSpec::plain(Request::ListBuffers {
-        format,
-        filter,
+        format: flags.value('F').map(str::to_owned),
+        filter: flags.value('f').map(str::to_owned),
     }))
 }
 
 fn parse_delete_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut name = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-b" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-b")?.to_owned());
-            }
-            value => return Err(format!("unknown delete-buffer option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(InvocationSpec::plain(Request::DeleteBuffer { name }))
+    let flags = scan_flags("delete-buffer", arguments, "b:", 0)?;
+    Ok(InvocationSpec::plain(Request::DeleteBuffer {
+        name: flags.value('b').map(str::to_owned),
+    }))
 }
 
 fn parse_paste_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut name = None;
-    let mut raw = false;
-    let mut bracketed = false;
-    let mut separator = None;
-    let mut delete = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-b" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-b")?.to_owned());
-            }
-            "-r" => raw = true,
-            "-p" => bracketed = true,
-            "-d" => delete = true,
-            "-s" => {
-                index += 1;
-                separator = Some(argument(arguments, index, "-s")?.as_bytes().to_vec());
-            }
-            value => return Err(format!("unknown paste-buffer option: {value}")),
-        }
-        index += 1;
+    let flags = scan_flags("paste-buffer", arguments, "db:prSs:t:", 0)?;
+    if flags.has('S') {
+        return Err(unsupported_flag("-S", "paste-buffer"));
     }
+    let separator = match flags.value('s') {
+        Some(separator) => separator.as_bytes().to_vec(),
+        None if flags.has('r') => b"\n".to_vec(),
+        None => b"\r".to_vec(),
+    };
     Ok(InvocationSpec::plain(Request::PasteBuffer {
-        target,
-        name,
-        raw,
-        bracketed,
+        target: flags.value('t').map(str::to_owned),
+        name: flags.value('b').map(str::to_owned),
+        bracketed: flags.has('p'),
         separator,
-        delete,
+        delete: flags.has('d'),
     }))
 }
 
 fn parse_load_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut name = None;
-    let mut path = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-b" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-b")?.to_owned());
-            }
-            value if value.starts_with('-') && value != "-" => {
-                return Err(format!("unknown load-buffer option: {value}"));
-            }
-            value => path = Some(value.to_owned()),
+    let flags = scan_flags("load-buffer", arguments, "b:t:w", 1)?;
+    for (flag, name) in [('t', "-t"), ('w', "-w")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "load-buffer"));
         }
-        index += 1;
     }
-    let path = path.ok_or_else(|| "load-buffer requires a file".to_owned())?;
+    let path = flags
+        .positional
+        .first()
+        .ok_or_else(|| "command load-buffer: too few arguments (need at least 1)".to_owned())?;
     let data = if path == "-" {
         let mut data = Vec::new();
         std::io::stdin()
             .read_to_end(&mut data)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| io_error_text(&error, path))?;
         data
     } else {
-        std::fs::read(&path).map_err(|error| format!("{}: {error}", path))?
+        std::fs::read(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::IsADirectory {
+                format!("I/O error: {path}")
+            } else {
+                io_error_text(&error, path)
+            }
+        })?
     };
-    Ok(InvocationSpec::plain(Request::LoadBuffer { name, data }))
-}
-
-fn parse_save_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut name = None;
-    let mut path = None;
-    let mut append = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-b" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-b")?.to_owned());
-            }
-            "-a" => append = true,
-            value if value.starts_with('-') && value != "-" => {
-                return Err(format!("unknown save-buffer option: {value}"));
-            }
-            value => path = Some(value.to_owned()),
-        }
-        index += 1;
-    }
-    Ok(InvocationSpec::plain(Request::SaveBuffer {
-        name,
-        path,
-        append,
+    Ok(InvocationSpec::plain(Request::LoadBuffer {
+        name: flags.value('b').map(str::to_owned),
+        data,
     }))
 }
 
-fn parse_buffer_name(arguments: &[String]) -> Result<Option<String>, String> {
-    let mut name = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-b" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-b")?.to_owned());
-            }
-            "--" => break,
-            value => return Err(format!("unknown show-buffer option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(name)
+pub(crate) fn io_error_text(error: &std::io::Error, path: &str) -> String {
+    let text = error.to_string();
+    let reason = text
+        .strip_suffix(&format!(" (os error {})", error.raw_os_error().unwrap_or_default()))
+        .unwrap_or(&text);
+    format!("{reason}: {path}")
+}
+
+fn parse_save_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("save-buffer", arguments, "ab:", 1)?;
+    let path = flags
+        .positional
+        .first()
+        .ok_or_else(|| "command save-buffer: too few arguments (need at least 1)".to_owned())?;
+    let path = if path == "-" || std::path::Path::new(path).is_absolute() {
+        path.clone()
+    } else {
+        current_dir()
+            .map(|directory| format!("{directory}/{path}"))
+            .unwrap_or_else(|| path.clone())
+    };
+    Ok(InvocationSpec::plain(Request::SaveBuffer {
+        name: flags.value('b').map(str::to_owned),
+        path,
+        append: flags.has('a'),
+    }))
 }
 
 fn parse_set_window_option(arguments: &[String]) -> Result<InvocationSpec, String> {

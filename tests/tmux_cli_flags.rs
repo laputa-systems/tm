@@ -166,6 +166,20 @@ fn assert_rejected(mux: &Mux, command: &str, arguments: &[&str], flag: &str) {
     assert_eq!(topology(mux), before, "{arguments:?} changed the topology");
 }
 
+fn buffer_observation(mux: &Mux) -> Vec<String> {
+    let listing = mux.body(&["list-buffers", "-F", "#{buffer_name} #{buffer_size}"]);
+    let mut observed = vec![listing.clone()];
+    for name in listing.lines().filter_map(|line| line.split(' ').next()) {
+        let path = mux.root().join(format!("saved-{name}"));
+        mux.ok(&["save-buffer", "-b", name, &path.to_string_lossy()]);
+        observed.push(format!(
+            "{name}: {:?}",
+            String::from_utf8_lossy(&std::fs::read(&path).expect("saved buffer"))
+        ));
+    }
+    observed
+}
+
 mod sessions {
     use super::*;
 
@@ -1946,20 +1960,6 @@ mod panes {
         pair
     }
 
-    fn buffer_observation(mux: &Mux) -> Vec<String> {
-        let listing = mux.body(&["list-buffers", "-F", "#{buffer_name} #{buffer_size}"]);
-        let mut observed = vec![listing.clone()];
-        for name in listing.lines().filter_map(|line| line.split(' ').next()) {
-            let path = mux.root().join(format!("saved-{name}"));
-            mux.ok(&["save-buffer", "-b", name, &path.to_string_lossy()]);
-            observed.push(format!(
-                "{name}: {:?}",
-                String::from_utf8_lossy(&std::fs::read(&path).expect("saved buffer"))
-            ));
-        }
-        observed
-    }
-
     #[test]
     fn panes_capture_pane_flags_match_the_reference() {
         let test = "panes_capture_pane_flags_match_the_reference";
@@ -2287,5 +2287,491 @@ mod panes {
     fn panes_pipe_pane_rejects_flags_it_does_not_implement() {
         assert_pane_rejected("pipe-pane", "-I", &["pipe-pane", "-I", "-t", "S:1.1", "cat"]);
         assert_pane_rejected("pipe-pane", "-I", &["pipe-pane", "-IO", "-t", "S:1.1", "cat"]);
+    }
+}
+
+mod buffers {
+    use super::*;
+
+    fn buffer_pair(label: &str) -> Pair {
+        let pair = Pair::new(label);
+        for mux in pair.both() {
+            mux.ok(&["new-session", "-d", "-s", "S", "-x", "40", "-y", "6", "--", "sleep", "300"]);
+        }
+        pair
+    }
+
+    fn assert_same_buffers(test: &str, pair: &Pair, after: &[&str]) {
+        assert_eq!(
+            observation_difference(
+                &format!("{test}: buffers after {after:?}"),
+                &buffer_observation(&pair.tm),
+                &buffer_observation(&pair.reference)
+            ),
+            None
+        );
+    }
+
+    fn run_steps(test: &str, pair: &Pair, steps: &[&[&str]]) {
+        for arguments in steps {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+            assert_same_buffers(test, pair, arguments);
+        }
+    }
+
+    fn write_both(pair: &Pair, name: &str, bytes: &[u8]) {
+        for mux in pair.both() {
+            std::fs::write(mux.root().join(name), bytes).expect("write fixture file");
+        }
+    }
+
+    fn assert_rejected_everywhere(command: &str, cases: &[(&str, &[&str])]) {
+        let pair = buffer_pair("bufrej");
+        pair.tm.ok(&["set-buffer", "-b", "keep", "data"]);
+        let before = buffer_observation(&pair.tm);
+        for (flag, arguments) in cases {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?} succeeded");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for {command}\n"),
+                "{arguments:?}"
+            );
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+            assert_eq!(buffer_observation(&pair.tm), before, "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn buffers_set_buffer_flags_match_the_reference() {
+        let test = "buffers_set_buffer_flags_match_the_reference";
+        let pair = buffer_pair("setb");
+        run_steps(
+            test,
+            &pair,
+            &[
+                &["set-buffer"],
+                &["set-buffer", ""],
+                &["set-buffer", "-b", "named", ""],
+                &["set-buffer", "-a", "first"],
+                &["set-buffer", "second"],
+                &["setb", "-b", "named", "gamma"],
+                &["set-buffer", "-b", "named", "-a", "++"],
+                &["set-buffer", "-a", "third"],
+                &["set-buffer", "-b", "fresh", "-a", "x"],
+                &["set-buffer", "-b", "buffer0", "-a", "!"],
+                &["set-buffer", "-b", "named", "-n", "renamed"],
+                &["set-buffer", "-n", "top"],
+                &["set-buffer", "-b", "nosuch", "-n", "y"],
+                &["set-buffer", "-b", "renamed", "-n", "top"],
+                &["set-buffer", "-b", "renamed", "-n", ""],
+                &["set-buffer", "-b", "", "x"],
+                &["set-buffer", "-b", "renamed", "-n", "z", "ignored"],
+                &["set-buffer", "a", "b"],
+                &["set-buffer", "--", "-x"],
+                &["set-buffer", "-b"],
+                &["set-buffer", "-b", "tab\tname", "tabbed"],
+                &["set-buffer", "-b", "back\\slash", "slashed"],
+                &["set-buffer", "-b", "back\\slash", "-a", "+"],
+                &["set-buffer", "-b", "back\\slash", "-n", "also\\"],
+                &["set-buffer", "-b", "caf\u{e9}", "unicode name"],
+                &["set-buffer", "-b", "ctl\u{7f}", "delete"],
+                &["set-buffer", "-b", "back", "-n", "bad\nname"],
+                &["set-buffer", "-b", "multi", "line1\nline2\n"],
+                &["set-buffer", "h\u{e9}llo \u{1f600}"],
+                &["set-buffer", "-bjoined", "attached"],
+                &["set-buffer", "-ab", "joined", "more"],
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_set_buffer_without_buffers_matches_the_reference() {
+        let test = "buffers_set_buffer_without_buffers_matches_the_reference";
+        let pair = buffer_pair("setbnone");
+        run_steps(
+            test,
+            &pair,
+            &[&["set-buffer", "-n", "y"], &["set-buffer", "-b", "only", "-n", "y"]],
+        );
+    }
+
+    #[test]
+    fn buffers_set_buffer_rejects_flags_it_does_not_implement() {
+        assert_rejected_everywhere(
+            "set-buffer",
+            &[
+                ("-w", &["set-buffer", "-w", "data"]),
+                ("-t", &["set-buffer", "-t", "client", "data"]),
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_show_buffer_flags_match_the_reference() {
+        let test = "buffers_show_buffer_flags_match_the_reference";
+        let pair = buffer_pair("showb");
+        run_steps(
+            test,
+            &pair,
+            &[
+                &["show-buffer"],
+                &["show-buffer", "-b", "named"],
+                &["set-buffer", "plain"],
+                &["set-buffer", "-b", "named", "with\nnewline\n"],
+                &["show-buffer"],
+                &["showb", "-b", "named"],
+                &["show-buffer", "-b", "nosuch"],
+                &["show-buffer", "-b", ""],
+                &["show-buffer", "extra"],
+                &["show-buffer", "-b"],
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_list_buffers_flags_match_the_reference() {
+        let test = "buffers_list_buffers_flags_match_the_reference";
+        let pair = buffer_pair("lsb");
+        let long = "0123456789".repeat(25);
+        run_steps(
+            test,
+            &pair,
+            &[
+                &["list-buffers"],
+                &["list-buffers", "-F", "#{buffer_name}"],
+                &["set-buffer", "plain"],
+                &["set-buffer", "-b", "named", "second\nline"],
+                &["set-buffer", "tab\there \u{1b}[0m \\ end"],
+                &["set-buffer", "-b", "long", &long],
+                &["set-buffer", "h\u{e9}llo \u{1f600}"],
+                &["list-buffers"],
+                &["lsb"],
+                &["list-buffers", "-F", "#{buffer_name}:#{buffer_size}:#{buffer_sample}"],
+                &["list-buffers", "-F", ""],
+                &["list-buffers", "-f", "#{==:#{buffer_name},named}"],
+                &["list-buffers", "-f", "#{m:*line*,#{buffer_sample}}", "-F", "#{buffer_name}"],
+                &["list-buffers", "-f", "0"],
+                &["list-buffers", "-f", ""],
+                &["list-buffers", "-F"],
+                &["list-buffers", "extra"],
+                &["set-buffer", "-b", "named", "replaced"],
+                &["set-buffer", "-b", "plain2", "p"],
+                &["list-buffers", "-F", "#{buffer_name}"],
+                &["delete-buffer", "-b", "buffer0"],
+                &["set-buffer", "again"],
+                &["list-buffers", "-F", "#{buffer_name}"],
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_list_buffers_rejects_flags_it_does_not_implement() {
+        assert_rejected_everywhere(
+            "list-buffers",
+            &[
+                ("-O", &["list-buffers", "-O", "name"]),
+                ("-r", &["list-buffers", "-r"]),
+                ("-q", &["list-buffers", "-q"]),
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_delete_buffer_flags_match_the_reference() {
+        let test = "buffers_delete_buffer_flags_match_the_reference";
+        let pair = buffer_pair("delb");
+        run_steps(
+            test,
+            &pair,
+            &[
+                &["delete-buffer"],
+                &["delete-buffer", "-b", "nosuch"],
+                &["set-buffer", "-b", "keep", "named"],
+                &["delete-buffer"],
+                &["set-buffer", "one"],
+                &["set-buffer", "two"],
+                &["delete-buffer"],
+                &["deleteb", "-b", "keep"],
+                &["delete-buffer", "-b", ""],
+                &["delete-buffer", "extra"],
+                &["delete-buffer", "-b"],
+            ],
+        );
+    }
+
+    fn run_rooted_steps(test: &str, pair: &Pair, files: &[&str], steps: &[&[&str]]) {
+        for step in steps {
+            let outcomes = pair.both().map(|mux| {
+                let root = mux.root().to_string_lossy().into_owned();
+                let arguments = step
+                    .iter()
+                    .map(|argument| argument.replace("ROOT", &root))
+                    .collect::<Vec<_>>();
+                let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+                mux.outcome(&arguments)
+            });
+            assert_eq!(
+                parity::first_difference(&outcomes[0], &outcomes[1]),
+                None,
+                "{test}: {step:?}"
+            );
+            assert_same_buffers(test, pair, step);
+            let contents = pair.both().map(|mux| {
+                files
+                    .iter()
+                    .map(|file| std::fs::read(mux.root().join(file)).ok())
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(contents[0], contents[1], "{test}: files after {step:?}");
+        }
+    }
+
+    #[test]
+    fn buffers_load_buffer_flags_match_the_reference() {
+        let test = "buffers_load_buffer_flags_match_the_reference";
+        let pair = buffer_pair("loadb");
+        write_both(&pair, "text", b"loaded\nlines\n");
+        write_both(&pair, "empty", b"");
+        write_both(&pair, "binary", b"\xff\x00\x1b[0m");
+        for mux in pair.both() {
+            std::fs::create_dir(mux.root().join("dir")).expect("dir");
+        }
+        run_rooted_steps(
+            test,
+            &pair,
+            &[],
+            &[
+                &["load-buffer", "ROOT/text"],
+                &["loadb", "-b", "named", "ROOT/text"],
+                &["load-buffer", "ROOT/empty"],
+                &["load-buffer", "-b", "emptyname", "ROOT/empty"],
+                &["load-buffer", "ROOT/binary"],
+                &["load-buffer", "ROOT/missing"],
+                &["load-buffer", "-b", "never", "ROOT/missing"],
+                &["load-buffer", "ROOT/dir"],
+                &["load-buffer", "-b", "", "ROOT/text"],
+                &["load-buffer"],
+                &["load-buffer", "ROOT/text", "ROOT/text"],
+                &["load-buffer", "-b"],
+                &["load-buffer", "-b", "named", "ROOT/binary"],
+                &["load-buffer", "-bjoined", "ROOT/text"],
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_load_and_save_paths_are_not_format_expanded_in_tm() {
+        let pair = buffer_pair("pathfmt");
+        let literal = pair.tm.root().join("#{session_name}");
+        std::fs::write(&literal, b"literal").expect("write");
+        pair.tm.ok(&["load-buffer", &literal.to_string_lossy()]);
+        assert_eq!(pair.tm.ok(&["show-buffer"]), "literal");
+        let saved = pair.tm.root().join("saved-#{session_name}");
+        pair.tm.ok(&["save-buffer", &saved.to_string_lossy()]);
+        assert_eq!(std::fs::read(&saved).expect("saved"), b"literal");
+    }
+
+    #[test]
+    fn buffers_show_buffer_replaces_non_utf8_bytes_in_tm() {
+        let pair = buffer_pair("showbin");
+        let file = pair.tm.root().join("binary");
+        std::fs::write(&file, b"a\xffb").expect("write");
+        pair.tm.ok(&["load-buffer", &file.to_string_lossy()]);
+        assert_eq!(pair.tm.ok(&["show-buffer"]), "a\u{fffd}b");
+    }
+
+    #[test]
+    fn buffers_load_buffer_rejects_flags_it_does_not_implement() {
+        assert_rejected_everywhere(
+            "load-buffer",
+            &[
+                ("-w", &["load-buffer", "-w", "file"]),
+                ("-t", &["load-buffer", "-t", "client", "file"]),
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_save_buffer_flags_match_the_reference() {
+        let test = "buffers_save_buffer_flags_match_the_reference";
+        let pair = buffer_pair("saveb");
+        std::fs::create_dir(pair.tm.root().join("dir")).expect("dir");
+        std::fs::create_dir(pair.reference.root().join("dir")).expect("dir");
+        run_rooted_steps(
+            test,
+            &pair,
+            &["a", "n", "relative", "also"],
+            &[
+                &["save-buffer", "ROOT/a"],
+                &["set-buffer", "first\nline"],
+                &["set-buffer", "-b", "named", "second"],
+                &["save-buffer", "ROOT/a"],
+                &["save-buffer", "-a", "ROOT/a"],
+                &["save-buffer", "-a", "ROOT/fresh"],
+                &["saveb", "-b", "named", "ROOT/n"],
+                &["save-buffer", "-ab", "named", "ROOT/n"],
+                &["save-buffer", "-b", "nosuch", "ROOT/n"],
+                &["save-buffer", "-b", "", "ROOT/n"],
+                &["save-buffer"],
+                &["save-buffer", "ROOT/a", "ROOT/n"],
+                &["save-buffer", "ROOT/missing/x"],
+                &["save-buffer", "ROOT/dir"],
+                &["save-buffer", "-"],
+                &["save-buffer", "-b", "named", "-"],
+                &["save-buffer", "relative"],
+                &["save-buffer", "-a", "relative"],
+                &["save-buffer", "-b"],
+                &["save-buffer", "--", "also"],
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_save_buffer_rejects_flags_it_does_not_implement() {
+        assert_rejected_everywhere(
+            "save-buffer",
+            &[("-x", &["save-buffer", "-x", "file"]), ("-w", &["save-buffer", "-w", "file"])],
+        );
+    }
+
+    #[test]
+    fn buffers_commands_reject_flags_tmux_does_not_define() {
+        assert_rejected_everywhere(
+            "show-buffer",
+            &[("-x", &["show-buffer", "-x"]), ("-a", &["show-buffer", "-a"])],
+        );
+        assert_rejected_everywhere("delete-buffer", &[("-x", &["delete-buffer", "-x"])]);
+        assert_rejected_everywhere("load-buffer", &[("-x", &["load-buffer", "-x", "file"])]);
+        assert_rejected_everywhere("set-buffer", &[("-x", &["set-buffer", "-x", "data"])]);
+        assert_rejected_everywhere("list-buffers", &[("-x", &["list-buffers", "-x"])]);
+        assert_rejected_everywhere("paste-buffer", &[("-x", &["paste-buffer", "-x"])]);
+    }
+
+    #[test]
+    fn buffers_paste_buffer_rejects_flags_it_does_not_implement() {
+        assert_rejected_everywhere("paste-buffer", &[("-S", &["paste-buffer", "-S"])]);
+    }
+
+    struct Paster<'a> {
+        mux: &'a Mux,
+        file: std::path::PathBuf,
+        seen: usize,
+    }
+
+    impl<'a> Paster<'a> {
+        fn new(mux: &'a Mux) -> Self {
+            let file = mux.root().join("pasted");
+            let script = format!(
+                "printf '\\033[?2004h'; stty raw -echo; echo ready; exec cat > {}",
+                file.display()
+            );
+            mux.ok(&["new-session", "-d", "-s", "P", "-x", "40", "-y", "6", "--", "sh", "-c", &script]);
+            assert!(mux.capture_until("P", "ready", TIMEOUT).contains("ready"));
+            Self { mux, file, seen: 0 }
+        }
+
+        fn pasted_by(&mut self, arguments: &[&str]) -> (parity::Outcome, Vec<u8>) {
+            let outcome = self.mux.outcome(arguments);
+            self.mux.ok(&["send-keys", "-t", "P", "-l", "Z"]);
+            let deadline = Instant::now() + TIMEOUT;
+            let bytes = loop {
+                let bytes = std::fs::read(&self.file).unwrap_or_default();
+                if bytes.ends_with(b"Z") || Instant::now() >= deadline {
+                    break bytes;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let delta = bytes[self.seen.min(bytes.len())..].to_vec();
+            self.seen = bytes.len();
+            (outcome, delta)
+        }
+    }
+
+    fn paste_steps(test: &str, seed: &[&[&str]], steps: &[&[&str]]) {
+        let pair = Pair::new("pasteb");
+        let mut tm = Paster::new(&pair.tm);
+        let mut reference = Paster::new(&pair.reference);
+        for arguments in seed {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+        }
+        for arguments in steps {
+            let (tm_outcome, tm_bytes) = tm.pasted_by(arguments);
+            let (reference_outcome, reference_bytes) = reference.pasted_by(arguments);
+            assert_eq!(
+                parity::first_difference(&tm_outcome, &reference_outcome),
+                None,
+                "{test}: {arguments:?}"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&tm_bytes),
+                String::from_utf8_lossy(&reference_bytes),
+                "{test}: bytes pasted by {arguments:?}"
+            );
+            assert_same_buffers(test, &pair, arguments);
+        }
+    }
+
+    #[test]
+    fn buffers_paste_buffer_flags_match_the_reference() {
+        paste_steps(
+            "buffers_paste_buffer_flags_match_the_reference",
+            &[
+                &["set-buffer", "-b", "lines", "one\ntwo\n\nthree"],
+                &["set-buffer", "-b", "trailing", "end\n"],
+                &["set-buffer", "top\tword"],
+            ],
+            &[
+                &["paste-buffer", "-t", "P"],
+                &["paste-buffer", "-b", "lines", "-t", "P"],
+                &["pasteb", "-b", "lines", "-t", "P"],
+                &["paste-buffer", "-b", "trailing", "-t", "P"],
+                &["paste-buffer", "-r", "-b", "lines", "-t", "P"],
+                &["paste-buffer", "-s", "|", "-b", "lines", "-t", "P"],
+                &["paste-buffer", "-s", "", "-b", "lines", "-t", "P"],
+                &["paste-buffer", "-rs", "<>", "-b", "lines", "-t", "P"],
+                &["paste-buffer", "-p", "-b", "lines", "-t", "P"],
+                &["paste-buffer", "-p", "-r", "-b", "trailing", "-t", "P"],
+                &["paste-buffer", "-b", "nosuch", "-t", "P"],
+                &["paste-buffer", "-t", "nosuch"],
+                &["paste-buffer", "-b", "lines", "-t", "nosuch"],
+                &["paste-buffer", "extra", "-t", "P"],
+                &["paste-buffer", "-b"],
+                &["paste-buffer", "-d", "-b", "trailing", "-t", "P"],
+                &["paste-buffer", "-d", "-t", "P"],
+                &["paste-buffer", "-t", "P"],
+                &["paste-buffer", "-d", "-b", "nosuch", "-t", "P"],
+            ],
+        );
+    }
+
+    #[test]
+    fn buffers_paste_buffer_without_buffers_matches_the_reference() {
+        paste_steps(
+            "buffers_paste_buffer_without_buffers_matches_the_reference",
+            &[],
+            &[&["paste-buffer", "-t", "P"], &["paste-buffer", "-d", "-p", "-t", "P"]],
+        );
+    }
+
+    #[test]
+    fn buffers_paste_buffer_escapes_control_bytes_like_the_reference() {
+        let controls = (1u8..0x20)
+            .filter(|byte| *byte != b'\n')
+            .chain([0x7f])
+            .map(char::from)
+            .collect::<String>();
+        paste_steps(
+            "buffers_paste_buffer_escapes_control_bytes_like_the_reference",
+            &[
+                &["set-buffer", "-b", "controls", &controls],
+                &["set-buffer", "-b", "mixed", "a\u{1b}[31mred\\x\u{e9}\u{1f600}\u{85}\nb\tc"],
+            ],
+            &[
+                &["paste-buffer", "-b", "controls", "-t", "P"],
+                &["paste-buffer", "-b", "mixed", "-t", "P"],
+                &["paste-buffer", "-r", "-b", "mixed", "-t", "P"],
+            ],
+        );
     }
 }
