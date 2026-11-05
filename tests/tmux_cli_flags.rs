@@ -741,6 +741,45 @@ mod sessions {
     }
 
     #[test]
+    fn sessions_default_session_is_the_most_recently_active_like_the_reference() {
+        let test = "sessions_default_session_is_the_most_recently_active_like_the_reference";
+        let pair = Pair::new("defses");
+        for name in ["a", "b", "c"] {
+            pair.start(name);
+        }
+        pair.step(test, &["rename-session", "newest"]);
+        pair.step(test, &["has-session"]);
+        pair.step(test, &["new-window", "-d"]);
+
+        let observe = |mux: &Mux| {
+            let mut seen = Vec::new();
+            let mut first = attach(mux, "first", "a");
+            wait_clients(mux, 1);
+            first.detach();
+            wait_clients(mux, 0);
+            mux.ok(&["rename-session", "recent"]);
+            seen.push(sorted_lines(mux, &["list-sessions", "-F", "#{session_name}"]));
+
+            let mut second = raw_pty::RawClient::spawn(mux, "default", &["attach-session"], 10, 60);
+            let attached = wait_clients(mux, 1).remove(0).1;
+            seen.push(vec![format!("attached to {attached}")]);
+            let mut third = raw_pty::RawClient::spawn(mux, "default2", &["attach-session"], 10, 60);
+            let rows = wait_clients(mux, 2);
+            let mut sessions = rows.into_iter().map(|row| row.1).collect::<Vec<_>>();
+            sessions.sort();
+            seen.push(sessions);
+            second.detach();
+            third.detach();
+            wait_clients(mux, 0);
+            seen
+        };
+        assert_eq!(
+            observation_difference(test, &observe(&pair.tm), &observe(&pair.reference)),
+            None
+        );
+    }
+
+    #[test]
     fn sessions_tm_only_aliases_run_the_canonical_command() {
         let pair = Pair::new("ali");
         pair.start("a");

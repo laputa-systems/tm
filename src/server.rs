@@ -1593,6 +1593,7 @@ impl ServerState {
                 return Err("grouped session cannot specify a command".to_owned());
             }
             let source_index = self.resolve_session_target(Some(group_target))?;
+            let activity = self.next_activity();
             let source = &self.sessions[source_index];
             let windows = source
                 .windows
@@ -1613,6 +1614,7 @@ impl ServerState {
                 next_window_index: source.next_window_index,
                 cwd: source.cwd.clone(),
                 options: source.options.clone(),
+                activity,
             });
             self.reflow_session(session_id);
             let session = self
@@ -1662,6 +1664,7 @@ impl ServerState {
         window.synchronize_panes = self.synchronize_panes;
         let session_id = self.next_session_id;
         self.next_session_id += 1;
+        let activity = self.next_activity();
         self.sessions.push(Session {
             id: session_id,
             name: session_name.clone(),
@@ -1677,6 +1680,7 @@ impl ServerState {
             next_window_index: base_index.saturating_add(1),
             cwd: cwd.map(str::to_owned),
             options: HashMap::new(),
+            activity,
         });
         self.reflow_session(session_id);
         let session = self
@@ -1998,9 +2002,57 @@ impl ServerState {
         Ok(pane)
     }
 
+    fn next_activity(&mut self) -> u64 {
+        self.activity_counter = self.activity_counter.saturating_add(1);
+        self.activity_counter
+    }
+
+    fn touch_session(&mut self, session_id: u64) {
+        let activity = self.next_activity();
+        if let Some(session) = self.sessions.iter_mut().find(|session| session.id == session_id) {
+            session.activity = activity;
+        }
+    }
+
+    fn best_session_index(&self, prefer_unattached: bool) -> Result<usize, String> {
+        let attached = |session: &Session| {
+            self.clients
+                .values()
+                .any(|client| client.session_id == session.id)
+        };
+        let mut by_name = (0..self.sessions.len()).collect::<Vec<_>>();
+        by_name.sort_by(|left, right| self.sessions[*left].name.cmp(&self.sessions[*right].name));
+        let mut best: Option<usize> = None;
+        for index in by_name {
+            let session = &self.sessions[index];
+            let better = match best {
+                None => true,
+                Some(current) => {
+                    let current = &self.sessions[current];
+                    if prefer_unattached && attached(current) != attached(session) {
+                        attached(current)
+                    } else {
+                        session.activity > current.activity
+                    }
+                }
+            };
+            if better {
+                best = Some(index);
+            }
+        }
+        best.ok_or_else(|| "no sessions".to_owned())
+    }
+
     fn attach_target(&mut self, target: Option<&str>, size: Size) -> Result<u64, String> {
-        let session_index = self.resolve_session_target(target)?;
+        let defaults = target.is_none_or(str::is_empty)
+            && self.exec_context.and_then(|context| context.session_id).is_none();
+        let session_index = if defaults {
+            self.best_session_index(true)?
+        } else {
+            self.resolve_session_target(target)?
+        };
         let id = self.sessions[session_index].id;
+        self.touch_session(id);
         self.resize_session(id, size, true);
         Ok(id)
     }
@@ -2026,6 +2078,7 @@ impl ServerState {
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.activity = self.activity_counter;
         }
+        self.touch_session(session_id);
         if !was_latest {
             self.resize_session(session_id, size, true);
         }
@@ -7159,6 +7212,7 @@ impl ServerState {
             attached.session_id = session_id;
             attached.focused_pane = None;
         }
+        self.touch_session(session_id);
         self.resize_session(session_id, size, true);
         Ok(String::new())
     }
@@ -9309,7 +9363,7 @@ impl ServerState {
                     .position(|session| session.id == id)
                     .ok_or_else(|| format!("session not found: ${id}"));
             }
-            return Ok(0);
+            return self.best_session_index(false);
         }
         if let Some(id) = session_name
             .strip_prefix('$')
@@ -9347,7 +9401,7 @@ impl ServerState {
                     .position(|session| session.id == id)
                     .ok_or_else(|| format!("session not found: ${id}"));
             }
-            return Ok(0);
+            return self.best_session_index(false);
         }
         self.find_session(exact)
             .ok_or_else(|| format!("session not found: {exact}"))
