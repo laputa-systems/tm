@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const CONFIG: &str = include_str!("../src/config.rs");
+const COMMANDS: &str = include_str!("../src/command.rs");
 const MATRIX: &str = include_str!("../docs/parity.md");
 
 struct Row {
@@ -58,6 +59,48 @@ fn cli_flag_rows_are_classified_and_cited() {
     assert!(!rows.is_empty(), "CLI flag matrix is empty");
     let errors = validate_flag_rows(&rows, &Sources::load());
     assert!(errors.is_empty(), "CLI flag matrix is invalid:\n{}", errors.join("\n"));
+}
+
+#[test]
+fn cli_flag_rows_cover_every_command_the_parser_accepts() {
+    let rows = flag_rows(section(MATRIX, "## CLI flags", "## Baseline"));
+    let documented = rows
+        .iter()
+        .map(|row| row.command.as_str())
+        .collect::<BTreeSet<_>>();
+    let arms = dispatch_arms(COMMANDS);
+    assert!(arms.len() > 60, "command dispatch inventory shrank to {}", arms.len());
+    let missing = arms
+        .iter()
+        .filter(|names| !names.iter().any(|name| documented.contains(name.as_str())))
+        .map(|names| names.join(" | "))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "commands accepted by src/command.rs without a CLI flags row:\n{}",
+        missing.join("\n")
+    );
+}
+
+fn dispatch_arms(source: &str) -> Vec<Vec<String>> {
+    let start = source
+        .find("let command = match command {")
+        .expect("command dispatch");
+    let body = &source[start..];
+    let end = body.find("Some(unknown)").expect("command dispatch fallback");
+    body[..end]
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Some(\""))
+        .filter_map(|line| line.split_once(") =>"))
+        .map(|(patterns, _)| {
+            format!("\"{patterns}")
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect()
+        })
+        .collect()
 }
 
 struct FlagRow {

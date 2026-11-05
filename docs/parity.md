@@ -583,6 +583,67 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `show-environment` | `(session listing)` | tm-only | tmux seeds each new session with `update-environment` entries such as `-DISPLAY`; tm has no `update-environment`, so those lines and variables are absent | C6b `tests/tmux_cli_flags.rs::environment_session_listing_matches_the_reference_except_update_environment` | differential |
 | `show-environment` | `-h` | rejected | hidden variables | C6b `tests/tmux_cli_flags.rs::environment_rejects_flags_it_does_not_implement` | internal |
 | `show-environment` | `(any other flag)` | rejected | tmux 3.8 defines only `-ghst` | C6b `tests/tmux_cli_flags.rs::environment_rejects_flags_it_does_not_implement` | internal |
+| `copy-mode` | `-t` | match | target pane | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_flags_match_the_reference` | differential |
+| `copy-mode` | `-q` | match | leave every mode of the pane | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_flags_match_the_reference` | differential |
+| `copy-mode` | `-u` | match | enter and scroll up one page, which is the pane height minus 2 | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_flags_match_the_reference`; C6c `tests/tmux_cli_flags.rs::modes_copy_mode_scroll_exit_and_paging_match_the_reference` | differential |
+| `copy-mode` | `-d` | match | scroll down one page; at the bottom with `-e` the mode ends | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_flags_match_the_reference`; C6c `tests/tmux_cli_flags.rs::modes_copy_mode_scroll_exit_and_paging_match_the_reference` | differential |
+| `copy-mode` | `-e` | match | leave the mode when scrolling down reaches the bottom | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_flags_match_the_reference`; C6c `tests/tmux_cli_flags.rs::modes_copy_mode_scroll_exit_and_paging_match_the_reference` | differential |
+| `copy-mode` | `-H` | match | hide the position indicator; observed as the `[0/n]` text on the pane's top row | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_hide_position_matches_the_reference` | differential |
+| `copy-mode` | `-s` | match | show the source pane's content in the target pane | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_flags_match_the_reference` | differential |
+| `copy-mode` | `-k` | rejected | accepted by tmux 3.8 and ignored; tm's kill-pane-on-exit meaning differs | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_rejects_flags_it_does_not_implement` | internal |
+| `copy-mode` | `-M` | rejected | start the mode from a mouse event; no compiled binding uses it | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_rejects_flags_it_does_not_implement` | internal |
+| `copy-mode` | `-S` | rejected | scroll to the mouse position; no compiled binding uses it | C6c `tests/tmux_cli_flags.rs::modes_copy_mode_rejects_flags_it_does_not_implement` | internal |
+| `copy-mode-and-page` | `(command)` | tm-only | tm adds this command; it is `copy-mode -u` with the same flags and rejections, and tmux 3.8 reports an unknown command | C6c `tests/tmux_cli_flags.rs::modes_tm_only_commands_and_aliases_are_unknown_to_the_reference` | internal |
+| `choose-tree` | `(no flags)` | tm-only | tmux opens the tree mode on the target pane and works without a client; tm opens its own list on the attached client and fails with `requires an attached client` otherwise | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_open_a_client_mode_in_tm` | internal |
+| `choose-tree` | `-t` | tm-only | tmux targets the pane that gets the mode; tm uses the target to find the client attached to that session | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_open_a_client_mode_in_tm` | internal |
+| `choose-tree` | `template` | rejected | command run at the selection | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `choose` | tm-only | alias that tmux 3.8 lacks (ambiguous or unknown there) | C6c `tests/tmux_cli_flags.rs::modes_tm_only_commands_and_aliases_are_unknown_to_the_reference` | internal |
+| `choose-tree` | `-F` | rejected | format of each line | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-f` | rejected | filter expression | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-G` | rejected | include all sessions or all windows | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-h` | rejected | hide the source pane | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-K` | rejected | key format for the shortcut column | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-k` | rejected | kill the pane on exit | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-N` | rejected | start without the preview | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-O` | rejected | sort order | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-r` | rejected | reverse the sort order | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-s` | rejected | start collapsed to sessions | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-w` | rejected | start collapsed to windows | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-y` | rejected | run the template without confirmation | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-tree` | `-Z` | rejected | zoom the preview | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `(no flags)` | tm-only | tmux opens the buffer mode on the target pane and works without a client; tm opens its own list on the attached client and fails with `requires an attached client` otherwise | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_open_a_client_mode_in_tm` | internal |
+| `choose-buffer` | `-t` | tm-only | tmux targets the pane that gets the mode; tm uses the target to find the client attached to that session | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_open_a_client_mode_in_tm` | internal |
+| `choose-buffer` | `template` | rejected | command run at the selection | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `chooseb` | tm-only | alias that tmux 3.8 lacks (ambiguous or unknown there) | C6c `tests/tmux_cli_flags.rs::modes_tm_only_commands_and_aliases_are_unknown_to_the_reference` | internal |
+| `choose-buffer` | `-F` | rejected | format of each line | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-f` | rejected | filter expression | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-K` | rejected | key format for the shortcut column | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-k` | rejected | kill the pane on exit | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-N` | rejected | start without the preview | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-O` | rejected | sort order | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-r` | rejected | reverse the sort order | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-y` | rejected | run the template without confirmation | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-Z` | rejected | zoom the preview | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `(no flags)` | tm-only | tmux opens the client mode on the target pane and works without a client; tm opens its own list on the attached client and fails with `requires an attached client` otherwise | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_open_a_client_mode_in_tm` | internal |
+| `choose-client` | `-t` | tm-only | tmux targets the pane that gets the mode; tm uses the target to find the client attached to that session | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_open_a_client_mode_in_tm` | internal |
+| `choose-client` | `template` | rejected | command run at the selection | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `choosec` | tm-only | alias that tmux 3.8 lacks (ambiguous or unknown there) | C6c `tests/tmux_cli_flags.rs::modes_tm_only_commands_and_aliases_are_unknown_to_the_reference` | internal |
+| `choose-client` | `-F` | rejected | format of each line | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-f` | rejected | filter expression | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-h` | rejected | hide the source pane | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-i` | rejected | include only the attached client's session | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-K` | rejected | key format for the shortcut column | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-k` | rejected | kill the pane on exit | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-N` | rejected | start without the preview | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-O` | rejected | sort order | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-r` | rejected | reverse the sort order | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-y` | rejected | run the template without confirmation | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-Z` | rejected | zoom the preview | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-buffer` | `-G` | rejected | not a tmux 3.8 choose-buffer flag | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `choose-client` | `-G` | rejected | not a tmux 3.8 choose-client flag | C6c `tests/tmux_cli_flags.rs::modes_choose_commands_reject_flags_it_does_not_implement` | internal |
+| `help` | `(command)` | tm-only | prints tm's usage and exits nonzero; tmux 3.8 reports an unknown command | C6c `tests/tmux_cli_flags.rs::modes_tm_only_commands_and_aliases_are_unknown_to_the_reference` | internal |
+| `help` | `-h` | tm-only | prints tm's usage and exits nonzero; tmux prints its own usage | C6c `tests/tmux_cli_flags.rs::modes_tm_only_commands_and_aliases_are_unknown_to_the_reference` | internal |
+| `help` | `--help` | tm-only | prints tm's usage and exits nonzero; tmux rejects the option | C6c `tests/tmux_cli_flags.rs::modes_tm_only_commands_and_aliases_are_unknown_to_the_reference` | internal |
 
 ## Baseline
 

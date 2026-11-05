@@ -19668,7 +19668,7 @@ bind -r Right next-window
             .execute_copy_action(pane_id, CopyAction::PageUp, 1)
             .expect("move scrollbar grab view up");
         state
-            .execute_copy_action(pane_id, CopyAction::ScrollDown, 1)
+            .execute_copy_action(pane_id, CopyAction::ScrollUp, 1)
             .expect("position scrollbar grab view");
         assert_eq!(
             state

@@ -4216,3 +4216,249 @@ mod environment {
         }
     }
 }
+
+mod modes {
+    use super::*;
+
+    const OBSERVE_MODE: &str = "#{?pane_in_mode,#{pane_mode}:#{scroll_position},none}";
+
+    fn fixture(label: &str) -> Pair {
+        let pair = Pair::new(label);
+        for mux in pair.both() {
+            mux.ok(&[
+                "new-session", "-d", "-s", "S", "-x", "40", "-y", "8", "--", "sh", "-c",
+                "seq 1 30; echo AAAA; sleep 300",
+            ]);
+            mux.ok(&["split-window", "-d", "-t", "S", "--", "sh", "-c", "echo BBBB; sleep 300"]);
+            assert!(mux.capture_until("S.0", "AAAA", TIMEOUT).contains("AAAA"));
+            assert!(mux.capture_until("S.1", "BBBB", TIMEOUT).contains("BBBB"));
+        }
+        pair
+    }
+
+    fn observe(test: &str, pair: &Pair, arguments: &[&str]) {
+        compare_commands(
+            test,
+            &pair.tm,
+            &pair.reference,
+            &[
+                &["copy-mode", "-q", "-t", "S.0"],
+                &["copy-mode", "-q", "-t", "S.1"],
+                arguments,
+                &["display-message", "-p", "-t", "S.0", OBSERVE_MODE],
+                &["display-message", "-p", "-t", "S.1", OBSERVE_MODE],
+            ],
+        );
+    }
+
+    #[test]
+    fn modes_copy_mode_flags_match_the_reference() {
+        let test = "modes_copy_mode_flags_match_the_reference";
+        let pair = fixture("cmflags");
+        for arguments in [
+            &["copy-mode", "-t", "S.0"][..],
+            &["copy-mode", "-t", "S.1"],
+            &["copy-mode", "-u", "-t", "S.0"],
+            &["copy-mode", "-d", "-t", "S.0"],
+            &["copy-mode", "-u", "-d", "-t", "S.0"],
+            &["copy-mode", "-e", "-t", "S.0"],
+            &["copy-mode", "-e", "-d", "-t", "S.0"],
+            &["copy-mode", "-e", "-u", "-t", "S.0"],
+            &["copy-mode", "-H", "-t", "S.0"],
+            &["copy-mode", "-s", "S.0", "-t", "S.1"],
+            &["copy-mode", "-s", "S.0", "-t", "S.0"],
+            &["copy-mode", "-s", "nosuch", "-t", "S.1"],
+            &["copy-mode", "-t", "nosuch"],
+            &["copy-mode", "-q", "-t", "S.0"],
+            &["copy-mode", "extra"],
+        ] {
+            observe(test, &pair, arguments);
+        }
+        for mux in pair.both() {
+            mux.ok(&["copy-mode", "-t", "S.1"]);
+            mux.ok(&["copy-mode", "-q", "-t", "S.1"]);
+        }
+        compare_commands(
+            test,
+            &pair.tm,
+            &pair.reference,
+            &[
+                &["display-message", "-p", "-t", "S.1", OBSERVE_MODE],
+                &["send-keys", "-t", "S.1", "-X", "cancel"],
+            ],
+        );
+    }
+
+    #[test]
+    fn modes_copy_mode_scroll_exit_and_paging_match_the_reference() {
+        let test = "modes_copy_mode_scroll_exit_and_paging_match_the_reference";
+        let pair = fixture("cmscroll");
+        let probe = ["display-message", "-p", "-t", "S.0", OBSERVE_MODE];
+        for (entry, keys) in [
+            (&["copy-mode", "-e", "-u", "-t", "S.0"][..], &["scroll-down", "scroll-down", "page-down", "scroll-down"][..]),
+            (&["copy-mode", "-e", "-t", "S.0"], &["scroll-up", "scroll-down", "scroll-down"]),
+            (&["copy-mode", "-u", "-d", "-t", "S.0"], &["page-up", "page-up", "page-down"]),
+            (&["copy-mode", "-u", "-t", "S.0"], &["page-up", "page-down", "page-down"]),
+        ] {
+            for mux in pair.both() {
+                let _ = mux.run(&["copy-mode", "-q", "-t", "S.0"]);
+            }
+            compare_commands(test, &pair.tm, &pair.reference, &[entry, &probe]);
+            for key in keys {
+                compare_commands(
+                    test,
+                    &pair.tm,
+                    &pair.reference,
+                    &[&["send-keys", "-t", "S.0", "-X", key], &probe],
+                );
+            }
+        }
+    }
+
+    fn position_indicator_visible(mux: &Mux, label: &str, hide_position: bool) -> bool {
+        mux.ok(&["new-session", "-d", "-s", "S", "-x", "40", "-y", "8", "--", "sh", "-c", "seq 1 30; sleep 300"]);
+        let client = attach(mux, label, "S");
+        let command: &[&str] = if hide_position {
+            &["copy-mode", "-H", "-t", "S"]
+        } else {
+            &["copy-mode", "-t", "S"]
+        };
+        mux.ok(command);
+        mux.ok(&["set-option", "-g", "status-left", "MARK"]);
+        client.wait_for_text("MARK", TIMEOUT);
+        client.screen_text().lines().next().unwrap_or_default().contains("[0/")
+    }
+
+    #[test]
+    fn modes_copy_mode_hide_position_matches_the_reference() {
+        let test = "modes_copy_mode_hide_position_matches_the_reference";
+        for hide_position in [false, true] {
+            let pair = Pair::new(if hide_position { "cmhide" } else { "cmshow" });
+            let tm = position_indicator_visible(&pair.tm, "tm", hide_position);
+            let reference = position_indicator_visible(&pair.reference, "reference", hide_position);
+            assert_eq!(observation_difference(test, &tm, &reference), None);
+            assert_eq!(tm, !hide_position);
+        }
+    }
+
+    #[test]
+    fn modes_copy_mode_rejects_flags_it_does_not_implement() {
+        let pair = fixture("cmrej");
+        for command in ["copy-mode", "copy-mode-and-page"] {
+            for flag in ["-k", "-M", "-S"] {
+                let output = pair.tm.run(&[command, flag, "-t", "S.0"]);
+                assert!(!output.status.success(), "{command} {flag}");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stderr),
+                    format!("tm: unsupported flag {flag} for {command}\n")
+                );
+                assert_eq!(pair.tm.body(&["display-message", "-p", "-t", "S.0", OBSERVE_MODE]), "none");
+            }
+        }
+        for mux in pair.both() {
+            let output = mux.run(&["copy-mode", "-x"]);
+            assert!(!output.status.success());
+        }
+    }
+
+    #[test]
+    fn modes_choose_commands_reject_flags_it_does_not_implement() {
+        let pair = fixture("chrej");
+        for (command, accepted) in [
+            ("choose-tree", "F:f:GhK:kNO:rswyZ"),
+            ("choose-buffer", "F:f:K:kNO:ryZ"),
+            ("choose-client", "F:f:hiK:kNO:ryZ"),
+        ] {
+            let mut flags = accepted.chars().peekable();
+            while let Some(flag) = flags.next() {
+                let takes_value = flags.next_if_eq(&':').is_some();
+                let name = format!("-{flag}");
+                let mut arguments = vec![command, &name];
+                if takes_value {
+                    arguments.push("x");
+                }
+                let output = pair.tm.run(&arguments);
+                assert!(!output.status.success(), "{arguments:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stderr),
+                    format!("tm: unsupported flag {name} for {command}\n"),
+                    "{arguments:?}"
+                );
+            }
+            let output = pair.tm.run(&[command, "template"]);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag template for {command}\n")
+            );
+        }
+        for command in ["choose-buffer", "choose-client"] {
+            let output = pair.tm.run(&[command, "-G"]);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag -G for {command}\n")
+            );
+            assert!(!pair.reference.run(&[command, "-G"]).status.success());
+        }
+        assert_eq!(pair.tm.body(&["display-message", "-p", "-t", "S.0", OBSERVE_MODE]), "none");
+    }
+
+    #[test]
+    fn modes_choose_commands_open_a_client_mode_in_tm() {
+        let pair = fixture("chtm");
+        for (command, headless) in [
+            ("choose-tree", "tm: choose-tree requires an attached client\n"),
+            ("choose-buffer", "tm: chooser requires an attached client\n"),
+            ("choose-client", "tm: chooser requires an attached client\n"),
+        ] {
+            let output = pair.tm.run(&[command]);
+            assert!(!output.status.success(), "{command}");
+            assert_eq!(String::from_utf8_lossy(&output.stderr), headless);
+            assert!(pair.reference.run(&[command]).status.success(), "{command}");
+            let _ = pair.reference.run(&["copy-mode", "-q", "-t", "S.0"]);
+        }
+        let client = attach(&pair.tm, "chtm", "S");
+        pair.tm.ok(&["set-buffer", "-b", "keep", "data"]);
+        pair.tm.ok(&["choose-tree", "-t", "S"]);
+        client.wait_for_text("  1: sh", TIMEOUT);
+        pair.tm.ok(&["choose-tree", "-t", "S"]);
+        pair.tm.ok(&["choose-buffer", "-t", "S"]);
+        pair.tm.ok(&["choose-client", "-t", "S"]);
+    }
+
+    #[test]
+    fn modes_tm_only_commands_and_aliases_are_unknown_to_the_reference() {
+        let pair = fixture("tmonly");
+        for (alias, canonical, arguments) in [
+            ("choose", "choose-tree", vec!["-t", "S"]),
+            ("chooseb", "choose-buffer", vec!["-t", "S"]),
+            ("choosec", "choose-client", vec!["-t", "S"]),
+            ("copy-mode-and-page", "copy-mode", vec!["-u", "-t", "S.0"]),
+        ] {
+            let through_alias = pair.tm.outcome(&[&[alias][..], &arguments].concat());
+            let through_name = pair.tm.outcome(&[&[canonical][..], &arguments].concat());
+            assert_eq!(through_alias, through_name, "{alias}");
+            assert!(
+                !pair.reference.run(&[&[alias][..], &arguments].concat()).status.success(),
+                "tmux accepted {alias}"
+            );
+            let _ = pair.tm.run(&["copy-mode", "-q", "-t", "S.0"]);
+        }
+        assert_eq!(pair.tm.body(&["display-message", "-p", "-t", "S.0", OBSERVE_MODE]), "none");
+        pair.tm.ok(&["copy-mode-and-page", "-t", "S.0"]);
+        pair.reference.ok(&["copy-mode", "-u", "-t", "S.0"]);
+        assert_eq!(
+            pair.tm.body(&["display-message", "-p", "-t", "S.0", OBSERVE_MODE]),
+            pair.reference.body(&["display-message", "-p", "-t", "S.0", OBSERVE_MODE])
+        );
+        for help in ["help", "-h", "--help"] {
+            let output = pair.tm.run(&[help]);
+            assert!(!output.status.success(), "{help}");
+            assert!(output.stdout.is_empty(), "{help}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).starts_with("tm: usage: tm [-S socket]"),
+                "{help}"
+            );
+        }
+        assert!(!pair.reference.run(&["help"]).status.success());
+    }
+}

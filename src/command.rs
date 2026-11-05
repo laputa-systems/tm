@@ -90,8 +90,10 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("send-keys" | "send") => parse_send_keys(&arguments[index + 1..])?,
         Some("send-prefix") => parse_send_prefix(&arguments[index + 1..])?,
         Some("capture-pane" | "capturep") => parse_capture_pane(&arguments[index + 1..])?,
-        Some("copy-mode") => parse_copy_mode(&arguments[index + 1..], false)?,
-        Some("copy-mode-and-page") => parse_copy_mode(&arguments[index + 1..], true)?,
+        Some("copy-mode") => parse_copy_mode("copy-mode", &arguments[index + 1..], false)?,
+        Some("copy-mode-and-page") => {
+            parse_copy_mode("copy-mode-and-page", &arguments[index + 1..], true)?
+        },
         Some("display-panes") => parse_display_panes(&arguments[index + 1..])?,
         Some("choose-tree" | "choose") => parse_choose_tree(&arguments[index + 1..])?,
         Some("choose-buffer" | "chooseb") => parse_choose_buffer(&arguments[index + 1..])?,
@@ -837,50 +839,29 @@ fn repeat_count(value: &str) -> Result<u32, String> {
     u32::try_from(number).map_err(|_| "repeat count too large".to_owned())
 }
 
-fn parse_copy_mode(arguments: &[String], mut page: bool) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut source = None;
-    let mut exit_on_scroll = false;
-    let mut hide_position = false;
-    let mut kill_on_exit = false;
-    let mut page_down = false;
-    let mut reset = false;
-    let mut mouse_start = false;
-    let mut scroll_to_mouse = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-e" => exit_on_scroll = true,
-            "-H" => hide_position = true,
-            "-k" => kill_on_exit = true,
-            "-d" => page_down = true,
-            "-u" => page = true,
-            "-q" => reset = true,
-            "-M" => mouse_start = true,
-            "-S" => scroll_to_mouse = true,
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            value => return Err(format!("unknown copy-mode option: {value}")),
+fn parse_copy_mode(
+    command: &str,
+    arguments: &[String],
+    mut page: bool,
+) -> Result<InvocationSpec, String> {
+    let flags = scan_flags(command, arguments, "dekHMqSs:t:u", 0)?;
+    for (flag, name) in [('k', "-k"), ('M', "-M"), ('S', "-S")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, command));
         }
-        index += 1;
     }
+    page |= flags.has('u');
     Ok(InvocationSpec::plain(Request::CopyMode {
-        target,
-        source,
-        exit_on_scroll,
-        hide_position,
-        kill_on_exit,
+        target: flags.value('t').map(str::to_owned),
+        source: flags.value('s').map(str::to_owned),
+        exit_on_scroll: flags.has('e'),
+        hide_position: flags.has('H'),
+        kill_on_exit: false,
         page,
-        page_down,
-        reset,
-        mouse_start,
-        scroll_to_mouse,
+        page_down: flags.has('d'),
+        reset: flags.has('q'),
+        mouse_start: false,
+        scroll_to_mouse: false,
     }))
 }
 
@@ -905,151 +886,53 @@ fn parse_display_panes(arguments: &[String]) -> Result<InvocationSpec, String> {
     }))
 }
 
-fn parse_choose_tree(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut filter = None;
-    let mut format = None;
-    let mut sort = "index".to_owned();
-    let mut reverse = false;
-    let mut hide_source = false;
-    let mut kill_on_exit = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-f" => {
-                index += 1;
-                filter = Some(argument(arguments, index, "-f")?.to_owned());
-            }
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-O" => {
-                index += 1;
-                sort = argument(arguments, index, "-O")?.to_owned();
-            }
-            "-r" => reverse = true,
-            "-h" => hide_source = true,
-            "-k" => kill_on_exit = true,
-            "-N" | "-Z" | "-G" => {}
-            value => return Err(format!("unknown choose-tree option: {value}")),
+fn choose_target(
+    command: &str,
+    arguments: &[String],
+    accepted: &str,
+) -> Result<Option<String>, String> {
+    let flags = scan_flags(command, arguments, accepted, 1)?;
+    for flag in accepted.chars().filter(|flag| !matches!(flag, 't' | ':')) {
+        if flags.has(flag) {
+            return Err(unsupported_flag(&format!("-{flag}"), command));
         }
-        index += 1;
     }
+    if !flags.positional.is_empty() {
+        return Err(unsupported_flag("template", command));
+    }
+    Ok(flags.value('t').map(str::to_owned))
+}
+
+fn parse_choose_tree(arguments: &[String]) -> Result<InvocationSpec, String> {
     Ok(InvocationSpec::plain(Request::ChooseTree {
-        target,
-        filter,
-        format,
-        sort,
-        reverse,
-        hide_source,
-        kill_on_exit,
+        target: choose_target("choose-tree", arguments, "F:f:GhK:kNO:rst:wyZ")?,
+        filter: None,
+        format: None,
+        sort: "index".to_owned(),
+        reverse: false,
+        hide_source: false,
+        kill_on_exit: false,
     }))
 }
 
 fn parse_choose_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let options = parse_choose_list_options(arguments, true)?;
     Ok(InvocationSpec::plain(Request::ChooseBuffer {
-        target: options.target,
-        filter: options.filter,
-        format: options.format,
-        sort: options.sort,
-        reverse: options.reverse,
-        kill_on_exit: options.kill_on_exit,
+        target: choose_target("choose-buffer", arguments, "F:f:K:kNO:rt:yZ")?,
+        filter: None,
+        format: None,
+        sort: "index".to_owned(),
+        reverse: false,
+        kill_on_exit: false,
     }))
 }
 
 fn parse_choose_client(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut filter = None;
-    let mut format = None;
-    let mut kill_on_exit = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-f" => {
-                index += 1;
-                filter = Some(argument(arguments, index, "-f")?.to_owned());
-            }
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-k" => kill_on_exit = true,
-            "-N" | "-Z" | "-G" => {}
-            value => return Err(format!("unknown choose-client option: {value}")),
-        }
-        index += 1;
-    }
     Ok(InvocationSpec::plain(Request::ChooseClient {
-        target,
-        filter,
-        format,
-        kill_on_exit,
+        target: choose_target("choose-client", arguments, "F:f:hiK:kNO:rt:yZ")?,
+        filter: None,
+        format: None,
+        kill_on_exit: false,
     }))
-}
-
-struct ChooseListOptions {
-    target: Option<String>,
-    filter: Option<String>,
-    format: Option<String>,
-    sort: String,
-    reverse: bool,
-    kill_on_exit: bool,
-}
-
-fn parse_choose_list_options(
-    arguments: &[String],
-    allow_sort: bool,
-) -> Result<ChooseListOptions, String> {
-    let mut target = None;
-    let mut filter = None;
-    let mut format = None;
-    let mut sort = "index".to_owned();
-    let mut reverse = false;
-    let mut kill_on_exit = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-f" => {
-                index += 1;
-                filter = Some(argument(arguments, index, "-f")?.to_owned());
-            }
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-O" if allow_sort => {
-                index += 1;
-                sort = argument(arguments, index, "-O")?.to_owned();
-            }
-            "-r" if allow_sort => reverse = true,
-            "-k" => kill_on_exit = true,
-            "-N" | "-Z" | "-G" => {}
-            value => return Err(format!("unknown choose-buffer option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(ChooseListOptions {
-        target,
-        filter,
-        format,
-        sort,
-        reverse,
-        kill_on_exit,
-    })
 }
 
 fn parse_capture_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -1629,86 +1512,22 @@ mod tests {
     }
 
     #[test]
-    fn choose_tree_parses_filter_format_sort_and_source_options() {
-        let invocation = parse(&[
-            "choose-tree".to_owned(),
-            "-t".to_owned(),
-            "work:1".to_owned(),
-            "-f".to_owned(),
-            "#{==:#{session_name},work}".to_owned(),
-            "-F".to_owned(),
-            "#{session_name}:#{window_index}".to_owned(),
-            "-O".to_owned(),
-            "name".to_owned(),
-            "-r".to_owned(),
-            "-h".to_owned(),
-        ])
-        .expect("choose-tree");
-        assert!(matches!(
-            invocation.request,
-            Request::ChooseTree {
-                target: Some(target),
-                filter: Some(filter),
-                format: Some(format),
-                sort,
-                reverse: true,
-                hide_source: true,
-                ..
-            } if target == "work:1"
-                && filter == "#{==:#{session_name},work}"
-                && format == "#{session_name}:#{window_index}"
-                && sort == "name"
-        ));
-    }
-
-    #[test]
-    fn choose_buffer_and_client_parse_their_mode_options() {
-        let buffer = parse(&[
-            "choose-buffer".to_owned(),
-            "-t".to_owned(),
-            "work:0".to_owned(),
-            "-f".to_owned(),
-            "#{m:*log*,#{buffer_sample}}".to_owned(),
-            "-F".to_owned(),
-            "#{buffer_name}".to_owned(),
-            "-O".to_owned(),
-            "name".to_owned(),
-            "-r".to_owned(),
-        ])
-        .expect("choose-buffer");
-        assert!(matches!(
-            buffer.request,
-            Request::ChooseBuffer {
-                target: Some(target),
-                filter: Some(filter),
-                format: Some(format),
-                sort,
-                reverse: true,
-                ..
-            } if target == "work:0"
-                && filter == "#{m:*log*,#{buffer_sample}}"
-                && format == "#{buffer_name}"
-                && sort == "name"
-        ));
-
-        let client = parse(&[
-            "choose-client".to_owned(),
-            "-F".to_owned(),
-            "#{client_session}".to_owned(),
-            "-f".to_owned(),
-            "#{==:#{client_session},work}".to_owned(),
-        ])
-        .expect("choose-client");
-        assert!(matches!(
-            client.request,
-            Request::ChooseClient {
-                target: None,
-                filter: Some(filter),
-                format: Some(format),
-                ..
-            } if filter == "#{==:#{client_session},work}"
-                && format == "#{client_session}"
-        ));
+    fn choose_commands_take_only_a_target() {
+        for command in ["choose-tree", "choose-buffer", "choose-client"] {
+            let invocation = parse(&[command.to_owned(), "-t".to_owned(), "work:1".to_owned()])
+                .expect(command);
+            assert!(matches!(
+                invocation.request,
+                Request::ChooseTree { target: Some(ref target), .. }
+                    | Request::ChooseBuffer { target: Some(ref target), .. }
+                    | Request::ChooseClient { target: Some(ref target), .. }
+                    if target == "work:1"
+            ));
+            assert_eq!(
+                parse(&[command.to_owned(), "-f".to_owned(), "1".to_owned()]).err(),
+                Some(unsupported_flag("-f", command))
+            );
+        }
     }
 
     #[test]
@@ -1764,15 +1583,11 @@ mod tests {
                 ..
             } if source == "work:1.2"
         ));
-        let mouse = parse(&["copy-mode".to_owned(), "-M".to_owned(), "-S".to_owned()])
-            .expect("mouse copy mode flags");
-        assert!(matches!(
-            mouse.request,
-            Request::CopyMode {
-                mouse_start: true,
-                scroll_to_mouse: true,
-                ..
-            }
-        ));
+        for flag in ["-k", "-M", "-S"] {
+            assert_eq!(
+                parse(&["copy-mode".to_owned(), flag.to_owned()]).err(),
+                Some(unsupported_flag(flag, "copy-mode"))
+            );
+        }
     }
 }

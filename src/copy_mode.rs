@@ -317,6 +317,13 @@ pub(crate) enum CopyAction {
     NextSpaceEnd,
 }
 
+fn page_rows(parser: &vt100::Parser) -> usize {
+    match usize::from(parser.screen().size().0) {
+        rows if rows > 2 => rows - 2,
+        _ => 1,
+    }
+}
+
 /// tmux folds search text only when every ASCII letter in the query is
 /// lowercase; an uppercase query remains case-sensitive.
 fn search_is_lowercase(search: &str) -> bool {
@@ -664,15 +671,15 @@ impl CopyModeState {
             // A detached command has no mouse coordinate to apply.
             CopyAction::ScrollToMouse(None) => {}
             CopyAction::PageUp => {
-                let rows = usize::from(parser.screen().size().0).max(1);
+                let rows = page_rows(parser);
                 self.scroll_by(parser, rows.saturating_mul(repeat), true, &mut result);
             }
             CopyAction::PageDown => {
-                let rows = usize::from(parser.screen().size().0).max(1);
+                let rows = page_rows(parser);
                 self.scroll_by(parser, rows.saturating_mul(repeat), false, &mut result);
             }
             CopyAction::PageDownAndCancel => {
-                let rows = usize::from(parser.screen().size().0).max(1);
+                let rows = page_rows(parser);
                 self.scroll_by(parser, rows.saturating_mul(repeat), false, &mut result);
                 if self.scroll_offset == 0 {
                     result.exit = true;

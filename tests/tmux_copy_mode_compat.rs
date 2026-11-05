@@ -896,43 +896,6 @@ fn attached_copy_mode_numeric_prefixes_repeat_navigation_headlessly() {
 }
 
 #[test]
-fn copy_mode_kill_on_exit_only_kills_the_entering_pane_headlessly() {
-    let tm = Tm::new();
-    tm.ok(&[
-        "new-session",
-        "-d",
-        "-s",
-        "kill",
-        "--",
-        "sh",
-        "-c",
-        "sleep 30",
-    ]);
-    tm.ok(&[
-        "split-window",
-        "-d",
-        "-h",
-        "-t",
-        "kill:0",
-        "--",
-        "sh",
-        "-c",
-        "sleep 30",
-    ]);
-    let active = tm
-        .ok(&["display-message", "-p", "-t", "kill:0", "#{pane_id}"])
-        .trim()
-        .to_owned();
-    tm.ok(&["copy-mode", "-k", "-t", &active]);
-    assert_eq!(
-        tm.body(&["display-message", "-p", "-t", &active, "#{pane_in_mode}"]),
-        "1"
-    );
-    tm.ok(&["send-keys", "-X", "cancel", "-t", &active]);
-    assert_eq!(tm.ok(&["list-panes", "-t", "kill:0"]).lines().count(), 1);
-}
-
-#[test]
 fn copy_mode_redraw_scrolls_long_and_short_rows_headlessly() {
     let tm = Tm::new();
     tm.ok(&[

@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 26
+Next: 30
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -135,4 +135,40 @@ suites do not cover.
 - **Problem:** tm reports `*`, `-`, `!`, and `Z` for `#{window_flags}` and `#{window_raw_flags}`; tmux 3.8 also reports `#` (activity), `~` (silence), and `M` (marked pane), and escapes `#` in `window_flags`.
 - **Recommendation:** Add the flags when tm tracks activity, silence, and the marked window, with a differential probe per flag.
 - **Fix with:** reference-parity
+- **Effort:** S
+
+### TMUX-26 · P3 · Copy mode position indicator and copy formats differ from tmux
+
+- **Area:** Copy mode
+- **Where:** `src/server.rs` copy-mode rendering and format expansion
+- **Problem:** On an attached client, tmux 3.8 draws `HH:MM [0/n]` on the first row (the time of the top line); tm draws `[0/n]` only. `#{copy_cursor_y}` is the screen row in tmux (7 on an 8-row pane) and the history-absolute row in tm (30). `#{scroll_position}` is empty outside a mode in tmux and `0` in tm.
+- **Recommendation:** Port `copy-mode-position-format` with `top_line_time`, make `copy_cursor_y` viewport-relative, and print nothing for `scroll_position` outside a mode, each with a differential probe.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-27 · P3 · Attached base screen differs from tmux after the client resizes the window
+
+- **Area:** Rendering
+- **Where:** `src/server.rs` client attach resize and status rendering
+- **Problem:** A session created at 40x8 and attached by a 60x10 client shows 7 of the last output rows in tm and 8 in tmux, and `set-option -g status-left MARK` renders `MARK 1:sh` in tm and `MARK1:sh` in tmux (tm pads the left status).
+- **Recommendation:** Reproduce with a raw-PTY differential on the screen after attach, then fix resize reflow and the left-status padding separately.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-28 · P3 · choose-tree, choose-buffer and choose-client are client modes in tm
+
+- **Area:** Modes
+- **Where:** `src/server.rs` tree, buffer and client modes
+- **Problem:** tmux 3.8 puts these modes on the target pane (`#{pane_in_mode}` is 1, no client needed) with `(n)` shortcut lines and a template run at the selection. tm opens its own list on an attached client, renders different text, and C6c therefore rejects `-F`, `-f`, `-O`, `-r`, `-k`, `-h`, `-G`, `-N`, `-Z`, `-K`, `-s`, `-w`, `-y`, `-i` and the template.
+- **Recommendation:** Rebuild the modes on the pane-mode model with the tmux line format, then re-enable the flags one at a time with raw-PTY differential tests.
+- **Fix with:** reference-parity
+- **Effort:** L
+
+### TMUX-29 · P4 · Bound choose and display-panes commands still parse flags the CLI rejects
+
+- **Area:** Bindings
+- **Where:** `src/server.rs` `parse_tree_mode_command`, `parse_buffer_mode_command`, `parse_client_mode_command`, `parse_panes_mode_command`
+- **Problem:** Commands run from bindings use these parsers, which accept flags the command line now rejects. No compiled binding uses them.
+- **Recommendation:** Route bound commands through `crate::command::parse` or delete the parsers with the unused request fields.
+- **Fix with:** delete
 - **Effort:** S
