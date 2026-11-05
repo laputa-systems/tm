@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 10
+Next: 11
 
 ### TMUX-8 · P3 · An exited pipe helper stays a zombie while pipe-pane is active
 
@@ -17,6 +17,15 @@ Next: 10
 - **Problem:** `tm kill-server` followed immediately by `tm new-session ...` fails 10/10 with `tm: failed to fill whole buffer` on both this tree and the base checkpoint `af1d5d7`. `connect_or_start` can connect to the old listener before the accept loop notices shutdown and removes the socket; the daemon then exits without answering the request.
 - **Recommendation:** Make `kill-server` wait until the socket no longer accepts, or retry a connect or request that fails with EOF immediately after startup. Cover the restart loop with a test.
 - **Fix with:** lifecycle-concurrency
+- **Effort:** S
+
+### TMUX-10 · P3 · A session-scoped status-left is not rendered
+
+- **Area:** Status
+- **Where:** `src/server.rs` status rendering
+- **Problem:** `set-option -t S status-left X` changes the option but the status line keeps the global value; `set-option -g status-left X` renders. tmux 3.8 renders the session value.
+- **Recommendation:** Resolve status options through the session scope before the global table when rendering, with a differential raw-stream test.
+- **Fix with:** reference-parity
 - **Effort:** S
 
 TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, and TMUX-7 are closed with tests and

@@ -5,9 +5,9 @@
 - **Goal:** within tm's compiled profile and narrow scope, every behavior advertised as matching tmux 3.8 has evidence that runs both implementations, observes the effect exactly, and passes at the qualified commit. The known CLI and lifecycle mismatches are fixed. Generated histories cover multi-step use, and the release artifact on this host passes the suite.
 - **Base:** `d171bbd`, toolchain `nightly-2026-09-15` (pinned; do not change), host x86_64 Alpine (`x86_64-unknown-linux-musl`).
 - **Preflight:** 2026-11-05. Verdict: ready.
-- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2, G3, O1 (`KNOWN_DIFFERENCES` empty: exact comparison exposed no difference in the existing differential tests), O2 (raw runner `tests/support/raw_pty.rs`; fixed a resize row-loss mismatch).
+- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2, G3, O1 (`KNOWN_DIFFERENCES` empty: exact comparison exposed no difference in the existing differential tests), O2 (raw runner `tests/support/raw_pty.rs`; fixed a resize row-loss mismatch), O2.1–O2.4.
 - **Red / parked:** none. Baseline reds are listed in **Baseline**.
-- **Next:** O2.1–O2.4, mismatches O2 exposed: (1) OSC 52 bytes — tm writes `ESC]52;c;…BEL`, the reference `ESC]52;;…BEL` on `tmux-256color` and ST-terminated on `xterm-256color`; (2) tm's incremental frames lack the sync brackets the reference puts around every frame; (3) `show-options -s terminal-features` omits the `[0]` array index; (4) tm's `capture-pane` trims trailing blank lines the reference keeps. Then C1, C2, M1 ∥ L1, L2, V1.
+- **Next:** O2.5 — the three `KNOWN_DIFFERENCES` entries for `capture-pane -J`, `-e`, and `-N` (row `capture options`). Then C1, C2, M1 ∥ L1, L2, V1. For C3–C6, O2.x found: `show-options -sv`/`-sq` rejected, `set-option -a` unsupported, `capture-pane` without `-p` prints instead of filling a buffer, and `capture-pane -T`/`-P` unknown; session-scoped `status-left` is TMUX-10.
 - **Ruling (affects O2, H2, H3):** ptytest 0.1.1–0.3.0 rejects any escape with an intermediate byte, such as `ESC ( B`, under every profile, so it cannot attach the reference. Differential attached observations use a raw-PTY runner in `tests/support/` (openpty, a reader thread, and the existing `vt100` dev-dependency for screen state; it answers DA1, without which tmux withholds `?1004h`); ptytest stays for tm-only scenarios. The upstream ptytest fix is listed under **Needs environment**.
 
 ## Charter
@@ -41,7 +41,7 @@
   - a leaked daemon or child process;
   - a single test taking more than 10 s of wall time, or a test binary more than 30 s, without a stated reason.
 
-  Record anything smaller in `TODO.md` as `TMUX-<n>`, with the next number from the file header (currently 10).
+  Record anything smaller in `TODO.md` as `TMUX-<n>`, with the next number from the file header (currently 11).
 - **Root cause first.** Reproduce with the smallest failing test, fix the responsible layer, and keep the test (`root-cause`). Never retry without a cause. A failure that shows up only under host load is a synchronization bug until shown otherwise. Other campaigns share this host. After 3 failed attempts, park the slice on branch `park/<id>` with the cause and a retry condition in **Status**, then move on.
 - **Oracle rule.** A parity claim must either execute the reference at `.work/ref/tmux-3.8/bin/tmux` or cite a recorded reference observation in `tests/reference/`. A test derived only from tm output is `internal` evidence. Never set `TMUX_REF`, and never use `/usr/bin/tmux` as the reference.
 - **Checks.** A slice ends on its acceptance command plus the narrowest affected suite, run on the integrated tree. The full gate is `cargo test --no-fail-fast && make parity && make lint`, about 2.5 min. It runs after G3, after V1, after H4, and at Z. Never weaken, delete, or skip a test, and never accept an unexplained golden update. When a test was itself wrong, the commit body says so.
