@@ -234,7 +234,7 @@ fn switching_to_a_normal_pane_disables_application_modes() {
         .expect("cursor initial render");
     assert_eq!(count(&client, b"\x1b[?1h"), 1);
     assert_eq!(count(&client, b"\x1b="), 1);
-    tm.ok(&["select-pane", "-t", "S:0.1"]);
+    tm.ok(&["select-pane", "-t", "S:1.1"]);
     client
         .wait_for_quiescence(client.deadline(Duration::from_secs(3)), Duration::from_millis(50))
         .expect("normal pane render");
@@ -287,7 +287,7 @@ fn mouse_routes_only_to_the_pane_that_requested_it() {
     send(&mut client, b"\x1b[<64;130;2M");
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let mode = tm.body(&["display-message", "-p", "-t", "S:0.1", "#{pane_in_mode}"]);
+        let mode = tm.body(&["display-message", "-p", "-t", "S:1.1", "#{pane_in_mode}"]);
         if mode == "1" || std::time::Instant::now() >= deadline {
             assert_eq!(mode, "1", "wheel over a non-mouse pane did not enter copy mode");
             break;

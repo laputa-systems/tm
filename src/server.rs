@@ -222,6 +222,38 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
     result
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WindowRelink {
+    Link,
+    Move,
+}
+
+fn default_window_name(command: &[String]) -> String {
+    let source = if command.is_empty() {
+        crate::pty::default_shell()
+    } else {
+        command.join(" ")
+    };
+    let source = source.strip_prefix('"').unwrap_or(&source);
+    let source = &source[..source.find('"').unwrap_or(source.len())];
+    let source = source.strip_prefix("exec ").unwrap_or(source);
+    let source = source.trim_start_matches([' ', '-']);
+    let word = &source[..source.find(' ').unwrap_or(source.len())];
+    let word = match word.char_indices().rev().find(|(_, character)| {
+        character.is_alphanumeric() || character.is_ascii_punctuation()
+    }) {
+        Some((at, character)) => &word[..at + character.len_utf8()],
+        None => "",
+    };
+    if word.starts_with('/') {
+        Path::new(word)
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+    } else {
+        word.to_owned()
+    }
+}
+
 const IN_FLIGHT_EXIT_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -752,6 +784,7 @@ struct ServerState {
     mouse_context: Option<MouseContext>,
     exec_context: Option<ExecContext>,
     activity_counter: u64,
+    next_session_group: u64,
     key_timer_counter: u64,
     pending_restores: HashMap<u64, Vec<u8>>,
 }
@@ -1476,6 +1509,7 @@ impl ServerState {
             mouse_context: None,
             exec_context: None,
             activity_counter: 0,
+            next_session_group: 0,
             key_timer_counter: 0,
             pending_restores: HashMap::new(),
         }
@@ -1594,6 +1628,15 @@ impl ServerState {
             }
             let source_index = self.resolve_session_target(Some(group_target))?;
             let activity = self.next_activity();
+            let group = match self.sessions[source_index].group {
+                Some(group) => group,
+                None => {
+                    let group = self.next_session_group;
+                    self.next_session_group += 1;
+                    self.sessions[source_index].group = Some(group);
+                    group
+                }
+            };
             let source = &self.sessions[source_index];
             let windows = source
                 .windows
@@ -1615,6 +1658,7 @@ impl ServerState {
                 cwd: source.cwd.clone(),
                 options: source.options.clone(),
                 activity,
+                group: Some(group),
             });
             self.reflow_session(session_id);
             let session = self
@@ -1655,7 +1699,7 @@ impl ServerState {
                         &self.global_options,
                     )
                 })
-                .unwrap_or_else(|| "0".to_owned()),
+                .unwrap_or_else(|| default_window_name(command)),
             size,
             pane,
         );
@@ -1681,6 +1725,7 @@ impl ServerState {
             cwd: cwd.map(str::to_owned),
             options: HashMap::new(),
             activity,
+            group: None,
         });
         self.reflow_session(session_id);
         let session = self
@@ -1718,52 +1763,61 @@ impl ServerState {
             cwd,
         } = options;
         let session_index = self.resolve_session_index(target)?;
-        if select_existing
-            && let Some(name) = name
-            && let Some(window) = self.sessions[session_index]
-                .windows
-                .iter()
-                .find(|window| window.name == name)
-        {
-            let index = window.index;
-            if !detached {
-                self.sessions[session_index].select_window(index);
+        let requested_index = match requested_index {
+            Some(index) => Some(index),
+            None => {
+                let window_part = target.and_then(|target| match target.split_once(':') {
+                    Some((_, window)) => Some(window),
+                    None if self.find_session(target).is_some() => None,
+                    None => Some(target),
+                });
+                match window_part {
+                    Some(part) => self.window_index_for_creation(session_index, part)?,
+                    None => None,
+                }
             }
-            return Ok(String::new());
+        };
+        if select_existing {
+            let windows = &self.sessions[session_index].windows;
+            let existing = match requested_index {
+                Some(index) => windows.iter().find(|window| window.index == index),
+                None => name.and_then(|name| windows.iter().find(|window| window.name == name)),
+            }
+            .map(|window| window.index);
+            if let Some(index) = existing {
+                if !detached {
+                    self.sessions[session_index].select_window(index);
+                }
+                return Ok(String::new());
+            }
         }
-        let requested_index = requested_index.or_else(|| {
-            target
-                .and_then(|target| target.rsplit_once(':').map(|(_, window)| window))
-                .and_then(|window| window.parse::<u32>().ok())
-        });
         let insertion_index = if after || before {
-            let (_, target_window) = self.resolve_window_target(target)?;
-            let target_number = self.sessions[session_index].windows[target_window].index;
-            Some(if after {
-                target_number.saturating_add(1)
-            } else {
-                target_number
-            })
+            let session = &self.sessions[session_index];
+            let base = requested_index
+                .filter(|index| session.windows.iter().any(|window| window.index == *index))
+                .unwrap_or(session.active_window);
+            let index = if before { base } else { base.saturating_add(1) };
+            let run_end = (index..)
+                .find(|candidate| session.windows.iter().all(|window| window.index != *candidate))
+                .expect("a free window index exists");
+            let session = &mut self.sessions[session_index];
+            for window in &mut session.windows {
+                if (index..run_end).contains(&window.index) {
+                    window.index += 1;
+                }
+            }
+            if (index..run_end).contains(&session.active_window) {
+                session.active_window += 1;
+            }
+            if let Some(last_window) = session.last_window
+                && (index..run_end).contains(&last_window)
+            {
+                session.last_window = Some(last_window + 1);
+            }
+            Some(index)
         } else {
             requested_index
         };
-        if after || before {
-            let index = insertion_index.expect("window insertion always has an index");
-            let active_window = self.sessions[session_index].active_window;
-            for window in &mut self.sessions[session_index].windows {
-                if window.index >= index {
-                    window.index = window.index.saturating_add(1);
-                }
-            }
-            if active_window >= index {
-                self.sessions[session_index].active_window = active_window.saturating_add(1);
-            }
-            if let Some(last_window) = self.sessions[session_index].last_window
-                && last_window >= index
-            {
-                self.sessions[session_index].last_window = Some(last_window.saturating_add(1));
-            }
-        }
         let (session_id, size, window_index, session_cwd) = {
             let session = &mut self.sessions[session_index];
             let index = insertion_index.unwrap_or_else(|| {
@@ -1809,7 +1863,7 @@ impl ServerState {
                     &self.global_options,
                 )
             })
-            .unwrap_or_else(|| "0".to_owned());
+            .unwrap_or_else(|| default_window_name(command));
         let window_id = self.next_window_id;
         self.next_window_id += 1;
         let mut window = Window::new(window_id, window_index, window_name, size, pane);
@@ -1829,25 +1883,15 @@ impl ServerState {
         self.sync_group_windows(session_index);
         self.reflow_session(session_id);
         if let Some(format) = format {
-            let session = &self.sessions[session_index];
-            let window = session
+            let window_id = self.sessions[session_index]
                 .windows
                 .iter()
                 .find(|window| window.index == window_index)
+                .map(|window| window.id)
                 .ok_or_else(|| "new window no longer exists".to_owned())?;
-            Ok(render_format(
-                format,
-                &[
-                    ("session_name", session.name.clone()),
-                    ("window_index", window.index.to_string()),
-                    ("window_name", window.name.clone()),
-                    ("window_panes", window.panes.len().to_string()),
-                ],
-            ))
-        } else if detached {
-            Ok(String::new())
+            self.display_message(Some(&format!("@{window_id}")), format)
         } else {
-            Ok(format!("{session_id}:{window_index}"))
+            Ok(String::new())
         }
     }
 
@@ -4727,7 +4771,7 @@ impl ServerState {
             }
             if command[0] == "select-layout" {
                 if let Some(layout) = command.get(1) {
-                    self.select_layout(session_id, layout);
+                    self.select_layout(session_id, None, layout);
                 }
                 continue;
             }
@@ -4830,7 +4874,7 @@ impl ServerState {
         )
     }
 
-    fn select_layout(&mut self, session_id: u64, layout: &str) {
+    fn select_layout(&mut self, session_id: u64, window_number: Option<u32>, layout: &str) {
         let Some(session) = self
             .sessions
             .iter_mut()
@@ -4838,7 +4882,12 @@ impl ServerState {
         else {
             return;
         };
-        let Some(window) = session.active_window() else {
+        let window_number = window_number.unwrap_or(session.active_window);
+        let Some(window) = session
+            .windows
+            .iter()
+            .find(|window| window.index == window_number)
+        else {
             return;
         };
         let pane_ids = window.panes.iter().map(|pane| pane.id).collect::<Vec<_>>();
@@ -4853,8 +4902,8 @@ impl ServerState {
         let window = session
             .windows
             .iter_mut()
-            .find(|window| window.index == session.active_window)
-            .expect("active window exists");
+            .find(|window| window.index == window_number)
+            .expect("layout window exists");
         let count = pane_ids.len();
         let size = match axis {
             Axis::Horizontal => window.layout_rect().cols,
@@ -4936,7 +4985,7 @@ impl ServerState {
                 if let Some(client) = self.clients.get(&client_id)
                     && let Some(layout) = line.tokens.get(1)
                 {
-                    self.select_layout(client.session_id, layout);
+                    self.select_layout(client.session_id, None, layout);
                 }
             }
             "set" | "set-option" | "setw" | "set-window-option" => {
@@ -7266,24 +7315,13 @@ impl ServerState {
     }
 
     fn session_group_info(&self, session_index: usize) -> (bool, usize, String) {
-        let ids = self.sessions[session_index]
-            .windows
-            .iter()
-            .map(|window| window.id)
-            .collect::<HashSet<_>>();
         let mut members = self
-            .sessions
-            .iter()
-            .filter(|session| {
-                session
-                    .windows
-                    .iter()
-                    .any(|window| ids.contains(&window.id))
-            })
-            .map(|session| session.name.clone())
+            .group_member_indices(session_index)
+            .into_iter()
+            .map(|index| self.sessions[index].name.clone())
             .collect::<Vec<_>>();
         members.sort();
-        let grouped = members.len() > 1;
+        let grouped = self.sessions[session_index].group.is_some();
         (grouped, members.len(), members.join(","))
     }
 
@@ -7457,20 +7495,13 @@ impl ServerState {
     }
 
     fn group_member_indices(&self, session_index: usize) -> Vec<usize> {
-        let ids = self.sessions[session_index]
-            .windows
-            .iter()
-            .map(|window| window.id)
-            .collect::<HashSet<_>>();
+        let Some(group) = self.sessions[session_index].group else {
+            return vec![session_index];
+        };
         self.sessions
             .iter()
             .enumerate()
-            .filter(|(_, session)| {
-                session
-                    .windows
-                    .iter()
-                    .any(|window| ids.contains(&window.id))
-            })
+            .filter(|(_, session)| session.group == Some(group))
             .map(|(index, _)| index)
             .collect()
     }
@@ -7643,7 +7674,7 @@ impl ServerState {
     }
 
     fn next_window(&mut self, target: Option<&str>) -> CommandResult {
-        let session_index = self.resolve_session_index(target)?;
+        let session_index = self.resolve_session_target(target)?;
         let selected_window = {
             let session = &mut self.sessions[session_index];
             if session.windows.len() > 1 {
@@ -7660,7 +7691,7 @@ impl ServerState {
                     .find(|window| window.index == next)
                     .map(|window| window.id)
             } else {
-                None
+                return Err("no next window".to_owned());
             }
         };
         if let Some(window_id) = selected_window {
@@ -7670,7 +7701,7 @@ impl ServerState {
     }
 
     fn previous_window(&mut self, target: Option<&str>) -> CommandResult {
-        let session_index = self.resolve_session_index(target)?;
+        let session_index = self.resolve_session_target(target)?;
         let selected_window = {
             let session = &mut self.sessions[session_index];
             if session.windows.len() > 1 {
@@ -7692,7 +7723,7 @@ impl ServerState {
                     .find(|window| window.index == previous)
                     .map(|window| window.id)
             } else {
-                None
+                return Err("no previous window".to_owned());
             }
         };
         if let Some(window_id) = selected_window {
@@ -7734,37 +7765,69 @@ impl ServerState {
         target: Option<&str>,
         detached: bool,
     ) -> CommandResult {
-        let (target_session, target_index) = self.resolve_window_target(target)?;
-        let (source_session, source_index) = if let Some(source) = source {
-            self.resolve_window_target(Some(source))?
-        } else {
-            let session = &self.sessions[target_session];
-            let index = session
-                .windows
-                .iter()
-                .position(|window| window.index == session.active_window)
-                .ok_or_else(|| "can't find window: active".to_owned())?;
-            (target_session, index)
-        };
-        if source_session != target_session {
-            return Err("swap-window requires windows in the same session".to_owned());
-        }
-        if source_index == target_index {
+        let (source_session, source_position) = self.resolve_window_target(source)?;
+        let (target_session, target_position) = self.resolve_window_target(target)?;
+        let source_window = &self.sessions[source_session].windows[source_position];
+        let target_window = &self.sessions[target_session].windows[target_position];
+        if source_window.id == target_window.id {
             return Ok(String::new());
         }
-        let session = &mut self.sessions[source_session];
-        let source_number = session.windows[source_index].index;
-        let target_number = session.windows[target_index].index;
-        session.windows.swap(source_index, target_index);
-        session.windows[source_index].index = source_number;
-        session.windows[target_index].index = target_number;
-        // tmux keeps the current index selected for the normal form, so a
-        // chained `select-window -t +/-1` can finish the user's move. `-d`
-        // instead keeps the source window selected at its new index.
+        let source_number = source_window.index;
+        let target_number = target_window.index;
+        if source_session == target_session {
+            let session = &mut self.sessions[source_session];
+            session.windows.swap(source_position, target_position);
+            session.windows[source_position].index = source_number;
+            session.windows[target_position].index = target_number;
+        } else {
+            let mut moved_in = self.sessions[source_session].windows.remove(source_position);
+            let mut moved_out = self.sessions[target_session].windows.remove(target_position);
+            moved_in.index = target_number;
+            moved_out.index = source_number;
+            self.sessions[target_session].windows.insert(target_position, moved_in);
+            self.sessions[source_session].windows.insert(source_position, moved_out);
+        }
         if detached {
-            session.select_window(target_number);
+            self.sessions[target_session].select_window(target_number);
+            if source_session != target_session {
+                self.sessions[source_session].select_window(source_number);
+            }
+        }
+        for session_index in [source_session, target_session] {
+            self.sync_group_windows(session_index);
+            let session_id = self.sessions[session_index].id;
+            self.reflow_session(session_id);
         }
         Ok(String::new())
+    }
+
+    fn resolve_index_target(&self, target: Option<&str>) -> Result<(usize, Option<u32>), String> {
+        let target = target.unwrap_or("");
+        if target.starts_with('@') {
+            let (session_index, position) = self.resolve_window_target(Some(target))?;
+            return Ok((
+                session_index,
+                Some(self.sessions[session_index].windows[position].index),
+            ));
+        }
+        match target.split_once(':') {
+            Some((session, part)) => {
+                let session_index = if session.is_empty() {
+                    self.resolve_session_index(None)?
+                } else {
+                    self.resolve_session_target(Some(session))?
+                };
+                Ok((session_index, self.window_index_for_creation(session_index, part)?))
+            }
+            None if target.is_empty() => Ok((self.resolve_session_index(None)?, None)),
+            None if target.starts_with('$') || self.find_session(target).is_some() => {
+                Ok((self.resolve_session_target(Some(target))?, None))
+            }
+            None => {
+                let session_index = self.resolve_session_index(None)?;
+                Ok((session_index, self.window_index_for_creation(session_index, target)?))
+            }
+        }
     }
 
     fn link_window(
@@ -7774,60 +7837,123 @@ impl ServerState {
         detached: bool,
         force: bool,
     ) -> CommandResult {
-        let source = source.ok_or_else(|| "link-window requires a source".to_owned())?;
-        let (source_session, source_position) = self.resolve_window_target(Some(source))?;
-        let destination_session = self.resolve_session_index(target)?;
-        let target_part = target
-            .and_then(|target| target.split_once(':').map(|(_, rest)| rest))
-            .filter(|rest| !rest.is_empty());
-        let destination_number = if let Some(part) = target_part {
-            if let Ok(index) = part.parse::<u32>() {
-                index
-            } else {
-                return Err("link-window target must be an index".to_owned());
-            }
-        } else {
+        self.relink_window(source, target, WindowRelink::Link, detached, force, false)
+    }
+
+    fn relink_window(
+        &mut self,
+        source: Option<&str>,
+        target: Option<&str>,
+        mode: WindowRelink,
+        detached: bool,
+        force: bool,
+        after: bool,
+    ) -> CommandResult {
+        let (source_session, source_position) = self.resolve_window_target(source)?;
+        let source_id = self.sessions[source_session].windows[source_position].id;
+        let mut source_number = self.sessions[source_session].windows[source_position].index;
+        let (destination_session, requested) = self.resolve_index_target(target)?;
+        let requested = if after {
             let session = &self.sessions[destination_session];
-            (session.base_index..=session.next_window_index)
-                .find(|index| session.windows.iter().all(|window| window.index != *index))
-                .unwrap_or(session.next_window_index)
-        };
-        let source_window = self.sessions[source_session].windows[source_position].linked_clone();
-        if source_session == destination_session && source_window.index == destination_number {
-            return Ok(String::new());
-        }
-        if let Some(position) = self.sessions[destination_session]
-            .windows
-            .iter()
-            .position(|window| window.index == destination_number)
-        {
-            if !force {
-                return Err(format!("index in use: {destination_number}"));
+            let base = requested
+                .filter(|index| session.windows.iter().any(|window| window.index == *index))
+                .unwrap_or(session.active_window);
+            let index = base.saturating_add(1);
+            let run_end = (index..)
+                .find(|candidate| session.windows.iter().all(|window| window.index != *candidate))
+                .expect("a free window index exists");
+            let session = &mut self.sessions[destination_session];
+            for window in &mut session.windows {
+                if (index..run_end).contains(&window.index) {
+                    window.index += 1;
+                }
             }
-            let old = self.sessions[destination_session].windows.remove(position);
+            if (index..run_end).contains(&session.active_window) {
+                session.active_window += 1;
+            }
+            if let Some(last_window) = session.last_window
+                && (index..run_end).contains(&last_window)
+            {
+                session.last_window = Some(last_window + 1);
+            }
+            if destination_session == source_session && (index..run_end).contains(&source_number) {
+                source_number += 1;
+            }
+            Some(index)
+        } else {
+            requested
+        };
+        let mut select = !detached;
+        if let Some(index) = requested
+            && let Some(existing) = self.sessions[destination_session]
+                .windows
+                .iter()
+                .position(|window| window.index == index)
+        {
+            if self.sessions[destination_session].windows[existing].id == source_id {
+                return Err(format!("same index: {index}"));
+            }
+            if !force {
+                return Err(format!("index in use: {index}"));
+            }
+            let old = self.sessions[destination_session].windows.remove(existing);
+            if self.sessions[destination_session].active_window == old.index {
+                select = true;
+            }
+            if self.sessions[destination_session].last_window == Some(old.index) {
+                self.sessions[destination_session].last_window = None;
+            }
             if self.window_link_count(old.id) == 0 {
                 for pane in old.panes {
                     pane.pty.kill();
                 }
             }
         }
-        let mut linked = source_window;
-        linked.index = destination_number;
-        self.sessions[destination_session].windows.push(linked);
-        self.sessions[destination_session]
+        let source_position = self.sessions[source_session]
             .windows
-            .sort_by_key(|window| window.index);
-        self.sessions[destination_session].next_window_index = self.sessions[destination_session]
+            .iter()
+            .position(|window| window.index == source_number && window.id == source_id)
+            .expect("source window survives its destination being cleared");
+        let destination_number = requested.unwrap_or_else(|| {
+            let session = &self.sessions[destination_session];
+            (session.base_index..)
+                .find(|index| session.windows.iter().all(|window| window.index != *index))
+                .expect("a free window index exists")
+        });
+        let mut linked = self.sessions[source_session].windows[source_position].linked_clone();
+        linked.index = destination_number;
+        let destination = &mut self.sessions[destination_session];
+        destination.windows.push(linked);
+        destination.windows.sort_by_key(|window| window.index);
+        destination.next_window_index = destination
             .next_window_index
             .max(destination_number.saturating_add(1));
-        if !detached {
-            self.sessions[destination_session].select_window(destination_number);
+        if select {
+            destination.select_window(destination_number);
         }
-        let source_id = self.sessions[source_session].id;
-        let destination_id = self.sessions[destination_session].id;
-        self.reflow_session(source_id);
-        if source_id != destination_id {
-            self.reflow_session(destination_id);
+        let destination_id = destination.id;
+        let source_session_id = self.sessions[source_session].id;
+        if mode == WindowRelink::Move {
+            let source_position = self.sessions[source_session]
+                .windows
+                .iter()
+                .position(|window| window.index == source_number && window.id == source_id)
+                .expect("source link survives linking");
+            let window = self.sessions[source_session].windows.remove(source_position);
+            if self.sessions[source_session].windows.is_empty() {
+                self.sessions.remove(source_session);
+            } else {
+                self.sessions[source_session].select_after_removing(window.index);
+                if source.is_none() && self.sessions[source_session].renumber_windows {
+                    renumber_session_windows(&mut self.sessions[source_session]);
+                }
+            }
+        }
+        for session_id in [source_session_id, destination_id] {
+            if let Some(index) = self.sessions.iter().position(|session| session.id == session_id) {
+                self.sync_group_windows(index);
+                self.reflow_session(session_id);
+            }
         }
         Ok(String::new())
     }
@@ -7848,15 +7974,8 @@ impl ServerState {
         if self.sessions[session_index].windows.is_empty() {
             self.sessions.remove(session_index);
         } else {
-            let session = &mut self.sessions[session_index];
-            if session.active_window == window.index {
-                let replacement = session.windows[0].index;
-                session.select_window(replacement);
-            }
-            if session.renumber_windows {
-                renumber_session_windows(session);
-            }
-            let session_id = session.id;
+            self.sessions[session_index].select_after_removing(window.index);
+            let session_id = self.sessions[session_index].id;
             self.reflow_session(session_id);
         }
         Ok(String::new())
@@ -7879,125 +7998,17 @@ impl ServerState {
         force: bool,
         renumber: bool,
     ) -> CommandResult {
-        if renumber && source.is_none() {
-            let session_index = self.resolve_session_index(target)?;
+        if renumber {
+            let session_index = match target {
+                Some(target) => self.resolve_session_target(Some(target))?,
+                None => self.resolve_session_index(None)?,
+            };
             let session_id = self.sessions[session_index].id;
             renumber_session_windows(&mut self.sessions[session_index]);
             self.reflow_session(session_id);
             return Ok(String::new());
         }
-        let source_target = source.or(target);
-        let (source_session, source_position) = self.resolve_window_target(source_target)?;
-        let source_number = self.sessions[source_session].windows[source_position].index;
-        let destination_session = self.resolve_session_index(target)?;
-        let destination_number = if after {
-            let (_, target_position) = self.resolve_window_target(target)?;
-            self.sessions[destination_session].windows[target_position]
-                .index
-                .saturating_add(1)
-        } else {
-            let target_part = target
-                .and_then(|target| target.split_once(':').map(|(_, rest)| rest))
-                .filter(|rest| !rest.is_empty());
-            if let Some(part) = target_part {
-                if let Ok(index) = part.parse::<u32>() {
-                    index
-                } else {
-                    self.sessions[destination_session]
-                        .windows
-                        .iter()
-                        .find(|window| window.name == part)
-                        .map(|window| window.index)
-                        .ok_or_else(|| format!("can't find window: {part}"))?
-                }
-            } else {
-                (0..=self.sessions[destination_session].next_window_index)
-                    .find(|index| {
-                        self.sessions[destination_session]
-                            .windows
-                            .iter()
-                            .all(|window| window.index != *index)
-                    })
-                    .unwrap_or(self.sessions[destination_session].next_window_index)
-            }
-        };
-        let same_source =
-            source_session == destination_session && source_number == destination_number && !after;
-        if same_source {
-            return Ok(String::new());
-        }
-        if !after
-            && self.sessions[destination_session]
-                .windows
-                .iter()
-                .any(|window| window.index == destination_number && window.index != source_number)
-            && !force
-        {
-            return Err(format!("index in use: {destination_number}"));
-        }
-
-        let source_id = self.sessions[source_session].id;
-        let destination_id = self.sessions[destination_session].id;
-        let window = self.sessions[source_session]
-            .windows
-            .remove(source_position);
-        if self.sessions[source_session].windows.is_empty() {
-            self.sessions[source_session].select_window(source_number);
-        } else if self.sessions[source_session].active_window == source_number {
-            let index = self.sessions[source_session].windows[0].index;
-            self.sessions[source_session].select_window(index);
-        }
-        if !after {
-            if let Some(position) = self.sessions[destination_session]
-                .windows
-                .iter()
-                .position(|window| window.index == destination_number)
-            {
-                let old = self.sessions[destination_session].windows.remove(position);
-                if self.window_link_count(old.id) == 0 {
-                    for pane in old.panes {
-                        pane.pty.kill();
-                    }
-                }
-            }
-        } else {
-            for existing in &mut self.sessions[destination_session].windows {
-                if existing.index >= destination_number {
-                    existing.index = existing.index.saturating_add(1);
-                }
-            }
-        }
-        let mut window = window;
-        window.index = destination_number;
-        self.sessions[destination_session].windows.push(window);
-        self.sessions[destination_session]
-            .windows
-            .sort_by_key(|window| window.index);
-        self.sessions[destination_session].next_window_index = self.sessions[destination_session]
-            .next_window_index
-            .max(destination_number.saturating_add(1));
-        if !detached {
-            self.sessions[destination_session].select_window(destination_number);
-        }
-        if renumber {
-            for session_index in [source_session, destination_session]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
-            {
-                renumber_session_windows(&mut self.sessions[session_index]);
-            }
-        }
-        if source_session < self.sessions.len() {
-            self.sync_group_windows(source_session);
-        }
-        if destination_session < self.sessions.len() && destination_session != source_session {
-            self.sync_group_windows(destination_session);
-        }
-        self.reflow_session(source_id);
-        if destination_id != source_id {
-            self.reflow_session(destination_id);
-        }
-        Ok(String::new())
+        self.relink_window(source, target, WindowRelink::Move, detached, force, after)
     }
 
     fn rename_session(&mut self, target: Option<&str>, name: &str) -> CommandResult {
@@ -8276,9 +8287,6 @@ impl ServerState {
             None => ("", None),
         };
         let target_session = self.resolve_session_index(Some(target_session_target))?;
-        if source_session != target_session {
-            return Err("source and target must be in the same session".to_owned());
-        }
         let session_id = self.sessions[source_session].id;
         let new_index = if let Some(part) = target_window_part {
             let index = part
@@ -8295,6 +8303,9 @@ impl ServerState {
         } else {
             self.next_free_window_index(target_session)
         };
+        if source_session != target_session {
+            return Err("source and target must be in the same session".to_owned());
+        }
         let pane_position = self.sessions[source_session].windows[source_window]
             .panes
             .iter()
@@ -8502,11 +8513,21 @@ impl ServerState {
                 .iter()
                 .any(|pane| !pane.dead);
             if window_active && !kill {
-                return Err("respawn window failed: window is still active".to_owned());
+                let session = &self.sessions[session_index];
+                return Err(format!(
+                    "respawn window failed: window {}:{} still active",
+                    session.name, session.windows[window_index].index
+                ));
             }
         }
         if !existing_dead && !kill {
-            return Err("respawn pane failed: pane is still active".to_owned());
+            let session = &self.sessions[session_index];
+            let window = &session.windows[window_index];
+            let pane_index = window.pane(pane_id).map_or(0, |pane| pane.index);
+            return Err(format!(
+                "respawn pane failed: pane {}:{}.{pane_index} still active",
+                session.name, window.index
+            ));
         }
         let effective_command = if command.is_empty() {
             stored_command
@@ -8544,6 +8565,8 @@ impl ServerState {
             window.active_pane = pane_id;
             window.last_pane = None;
             window.next_pane_index = 1;
+            let respawned_index = window.index;
+            self.sessions[session_index].select_window(respawned_index);
             self.reflow_session(session_id);
             self.sync_group_windows(session_index);
             return Ok(String::new());
@@ -8692,6 +8715,10 @@ impl ServerState {
             }
             self.sessions[session_index].windows = kept;
             self.sessions[session_index].select_window(keep_index);
+            self.sessions[session_index].last_window = None;
+            if self.sessions[session_index].renumber_windows {
+                renumber_session_windows(&mut self.sessions[session_index]);
+            }
             self.sync_group_windows(session_index);
             self.reflow_session(session_id);
             return Ok(String::new());
@@ -8708,13 +8735,8 @@ impl ServerState {
         }
         if self.sessions[session_index].windows.is_empty() {
             self.sessions.remove(session_index);
-        } else if self.sessions[session_index].active_window == window.index {
-            let index = self.sessions[session_index].windows[0].index;
-            self.sessions[session_index].select_window(index);
-            if self.sessions[session_index].renumber_windows {
-                renumber_session_windows(&mut self.sessions[session_index]);
-            }
         } else {
+            self.sessions[session_index].select_after_removing(window.index);
             if self.sessions[session_index].renumber_windows {
                 renumber_session_windows(&mut self.sessions[session_index]);
             }
@@ -9428,7 +9450,11 @@ impl ServerState {
             None if target.starts_with('$') || self.find_session(target).is_some() => (target, ""),
             None => ("", target),
         };
-        let session_index = self.resolve_session_index(Some(session_target))?;
+        let session_index = if target.contains(':') && !session_target.is_empty() {
+            self.resolve_session_target(Some(session_target))?
+        } else {
+            self.resolve_session_index(Some(session_target))?
+        };
         let context_window = if session_target.is_empty() {
             self.exec_context.and_then(|context| context.window_id)
         } else {
@@ -9465,7 +9491,13 @@ impl ServerState {
         let (window_target, pane_token) = target
             .rsplit_once('.')
             .map_or((target, None), |(window, pane)| (window, Some(pane)));
-        let (session_index, window_index) = self.resolve_window_target(Some(window_target))?;
+        let (session_index, window_index) =
+            self.resolve_window_target(Some(window_target)).map_err(|error| {
+                match error.strip_prefix("can't find window: ") {
+                    Some(name) if !target.contains([':', '.']) => format!("can't find pane: {name}"),
+                    _ => error,
+                }
+            })?;
         let window = &self.sessions[session_index].windows[window_index];
         let token = pane_token.unwrap_or("");
         let pane_id = if token.is_empty() {
@@ -9583,6 +9615,74 @@ impl ServerState {
             return Err(format!("pane not found: {token}"));
         };
         Ok((session_index, window_index, pane_id))
+    }
+
+    fn window_index_for_creation(
+        &self,
+        session_index: usize,
+        part: &str,
+    ) -> Result<Option<u32>, String> {
+        let session = &self.sessions[session_index];
+        let missing = || format!("can't find window: {part}");
+        if part.is_empty() {
+            return Ok(None);
+        }
+        if part.starts_with('@') {
+            return self
+                .window_index(session_index, part, None)
+                .map(|(_, position)| Some(session.windows[position].index));
+        }
+        if let Some(sign) = part.chars().next().filter(|sign| matches!(sign, '+' | '-')) {
+            let count = if part.len() > 1 {
+                part[1..]
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|count| *count >= 1)
+                    .ok_or_else(missing)?
+            } else {
+                1
+            };
+            return if sign == '+' {
+                session
+                    .active_window
+                    .checked_add(count)
+                    .map(Some)
+                    .ok_or_else(missing)
+            } else {
+                session
+                    .active_window
+                    .checked_sub(count)
+                    .map(Some)
+                    .ok_or_else(missing)
+            };
+        }
+        let indices = || session.windows.iter().map(|window| window.index);
+        match part {
+            "!" => return session.last_window.map(Some).ok_or_else(missing),
+            "^" => return indices().min().map(Some).ok_or_else(missing),
+            "$" => return indices().max().map(Some).ok_or_else(missing),
+            _ => {}
+        }
+        if let Ok(index) = part.parse::<u32>() {
+            return Ok(Some(index));
+        }
+        let named = |matches: &dyn Fn(&str) -> bool| {
+            let found = session
+                .windows
+                .iter()
+                .filter(|window| matches(&window.name))
+                .map(|window| window.index)
+                .collect::<Vec<_>>();
+            match found[..] {
+                [index] => Some(Some(index)),
+                [] => None,
+                _ => Some(None),
+            }
+        };
+        match named(&|name| name == part).or_else(|| named(&|name| name.starts_with(part))) {
+            Some(Some(index)) => Ok(Some(index)),
+            _ => Err(missing()),
+        }
     }
 
     fn window_index(
@@ -11568,11 +11668,14 @@ fn execute_request_inner(
         Request::SelectWindow { target } => state.select_window(&target),
         Request::SelectLayout { target, layout } => {
             if !matches!(layout.as_str(), "even-horizontal" | "even-vertical") {
-                return Err(format!("unknown layout: {layout}"));
+                return Err(format!("unsupported layout {layout} for select-layout"));
             }
-            let index = state.resolve_session_index(target.as_deref())?;
-            let session_id = state.sessions[index].id;
-            state.select_layout(session_id, &layout);
+            let (session_index, window_position) = state.resolve_pane_target(target.as_deref()).map(
+                |(session_index, window_index, _)| (session_index, window_index),
+            )?;
+            let session_id = state.sessions[session_index].id;
+            let window_number = state.sessions[session_index].windows[window_position].index;
+            state.select_layout(session_id, Some(window_number), &layout);
             Ok(String::new())
         }
         Request::RotateWindow { target, up } => state.rotate_window(target.as_deref(), up),
@@ -17651,7 +17754,7 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
             state
                 .list_windows(Some("prompt"), Some("#{window_index}:#{window_name}"))
                 .expect("list prompted windows"),
-            "1:0\n2:renamed"
+            format!("1:{}\n2:renamed", default_window_name(&[]))
         );
     }
 

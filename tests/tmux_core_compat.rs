@@ -382,11 +382,11 @@ fn session_and_window_target_tokens_match_headless_tmux() {
             .to_owned()
     };
 
-    assert_eq!(window(&format!("{session_id}:")), "0");
+    assert_eq!(window(&format!("{session_id}:")), default_shell_name());
     assert_eq!(window(&window_id.to_string()), "editing");
     assert_eq!(window("targets:editi"), "editing");
     assert_eq!(window("targets:sh*"), "shell");
-    assert_eq!(window("targets:^"), "0");
+    assert_eq!(window("targets:^"), default_shell_name());
     assert_eq!(window("targets:$"), "logs");
     assert_eq!(window("targets:+"), "editing");
     assert_eq!(window("targets:{next}"), "editing");
@@ -506,7 +506,7 @@ fn grouped_sessions_share_headless_windows_but_track_active_window() {
             "-F",
             "#{session_grouped}:#{session_group_size}"
         ])
-        .contains("0:1")
+        .contains("1:1")
     );
 }
 
@@ -592,12 +592,12 @@ fn window_ops_port_new_select_and_kill_window_behavior() {
         "sleep 30",
     ]);
     let windows = tm.ok(&["list-windows", "-t", "W"]);
-    assert!(windows.contains("0: 0"));
+    assert!(windows.contains("0: sh"));
     assert!(windows.contains("1: second"));
     tm.ok(&["select-window", "-t", "W:1"]);
     assert!(tm.ok(&["list-windows", "-t", "W"]).contains("1: second *"));
     tm.ok(&["next-window", "-t", "W"]);
-    assert!(tm.ok(&["list-windows", "-t", "W"]).contains("0: 0 *"));
+    assert!(tm.ok(&["list-windows", "-t", "W"]).contains("0: sh *"));
     tm.ok(&["kill-window", "-t", "W:1"]);
     assert_eq!(tm.ok(&["list-windows", "-t", "W"]).lines().count(), 1);
 }
@@ -629,7 +629,7 @@ fn move_window_preserves_headless_window_order_and_renumbering() {
             "-F",
             "#{window_index}:#{window_name}"
         ]),
-        "0:0\n1:one\n7:two\n"
+        "0:sh\n1:one\n7:two\n"
     );
     tm.ok(&["move-window", "-d", "-a", "-s", "M:7", "-t", "M:0"]);
     assert_eq!(
@@ -640,7 +640,7 @@ fn move_window_preserves_headless_window_order_and_renumbering() {
             "-F",
             "#{window_index}:#{window_name}"
         ]),
-        "0:0\n1:two\n2:one\n"
+        "0:sh\n1:two\n2:one\n"
     );
     tm.ok(&["move-window", "-r", "-t", "M:"]);
     assert_eq!(
@@ -651,7 +651,7 @@ fn move_window_preserves_headless_window_order_and_renumbering() {
             "-F",
             "#{window_index}:#{window_name}"
         ]),
-        "0:0\n1:two\n2:one\n"
+        "0:sh\n1:two\n2:one\n"
     );
     tm.ok(&["set-option", "-t", "M", "base-index", "5"]);
     tm.ok(&["move-window", "-r", "-t", "M:"]);
@@ -663,7 +663,7 @@ fn move_window_preserves_headless_window_order_and_renumbering() {
             "-F",
             "#{window_index}:#{window_name}",
         ]),
-        "5:0\n6:two\n7:one\n"
+        "5:sh\n6:two\n7:one\n"
     );
     tm.ok(&["set-option", "-t", "M", "renumber-windows", "on"]);
     tm.ok(&["kill-window", "-t", "M:6"]);
@@ -675,7 +675,7 @@ fn move_window_preserves_headless_window_order_and_renumbering() {
             "-F",
             "#{window_index}:#{window_name}",
         ]),
-        "5:0\n6:one\n"
+        "5:sh\n6:one\n"
     );
     tm.ok(&["set-option", "-t", "M", "base-index", "0"]);
     tm.ok(&["move-window", "-r", "-t", "M:"]);
@@ -687,7 +687,7 @@ fn move_window_preserves_headless_window_order_and_renumbering() {
             "-F",
             "#{window_index}:#{window_name}",
         ]),
-        "0:0\n1:one\n"
+        "0:sh\n1:one\n"
     );
 }
 
@@ -1406,7 +1406,7 @@ fn rotate_and_swap_windows_preserve_headless_layout_identity() {
             "-F",
             "#{window_index}:#{window_name}"
         ]),
-        "0:second\n1:0\n"
+        "0:second\n1:sh\n"
     );
 }
 
@@ -1647,7 +1647,7 @@ fn new_window_supports_explicit_indices_force_and_print_formats_headlessly() {
             "nw:",
             "#{window_index}:#{window_name}"
         ]),
-        "0:0\n"
+        "0:sh\n"
     );
 }
 
@@ -2273,4 +2273,16 @@ fn run_shell_matches_headless_stdout_and_background_contract() {
         ])
         .is_empty()
     );
+}
+
+fn default_shell_name() -> String {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|shell| std::path::Path::new(shell).is_file())
+        .unwrap_or_else(|| "/bin/sh".to_owned());
+    std::path::Path::new(&shell)
+        .file_name()
+        .expect("shell path has a file name")
+        .to_string_lossy()
+        .into_owned()
 }

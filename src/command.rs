@@ -60,7 +60,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
             parse_join_pane(&arguments[index + 1..])?
         }
         Some("respawn-pane" | "respawnp") => parse_respawn(&arguments[index + 1..], false)?,
-        Some("respawn-window" | "respawnw") => parse_respawn(&arguments[index + 1..], true)?,
+        Some("respawn-window" | "respawnw") => parse_respawn_window(&arguments[index + 1..])?,
         Some("clear-history" | "clearhist") => InvocationSpec::plain(Request::ClearHistory {
             target: optional_target(&arguments[index + 1..])?,
         }),
@@ -73,14 +73,12 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("list-panes" | "lsp") => parse_list_panes(&arguments[index + 1..])?,
         Some("select-window" | "selectw") => parse_select_window(&arguments[index + 1..])?,
         Some("select-layout" | "selectl") => parse_select_layout(&arguments[index + 1..])?,
-        Some("last-window" | "last") => InvocationSpec::plain(Request::SelectWindow {
-            target: "!".to_owned(),
-        }),
+        Some("last-window" | "last") => parse_last_window(&arguments[index + 1..])?,
         Some("next-window" | "next") => InvocationSpec::plain(Request::NextWindow {
-            target: optional_target(&arguments[index + 1..])?,
+            target: parse_session_window_navigation("next-window", &arguments[index + 1..])?,
         }),
         Some("previous-window" | "prev") => InvocationSpec::plain(Request::PreviousWindow {
-            target: optional_target(&arguments[index + 1..])?,
+            target: parse_session_window_navigation("previous-window", &arguments[index + 1..])?,
         }),
         Some("rename-session" | "rename") => {
             let (target, name) = target_and_name("rename-session", &arguments[index + 1..])?;
@@ -229,96 +227,30 @@ fn parse_kill_session(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_kill_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut all = false;
-    let mut force = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-a" => all = true,
-            "-f" => force = true,
-            value if !value.starts_with('-') => target = Some(value.to_owned()),
-            value => return Err(format!("unknown kill-window option: {value}")),
-        }
-        index += 1;
+    let flags = scan_flags("kill-window", arguments, "af:t:", 0)?;
+    if flags.has('f') {
+        return Err(unsupported_flag("-f", "kill-window"));
     }
-    if force && !all {
-        return Err("-f only valid with -a".to_owned());
-    }
-    Ok(InvocationSpec::plain(Request::KillWindow { target, all }))
+    Ok(InvocationSpec::plain(Request::KillWindow {
+        target: flags.value('t').map(str::to_owned),
+        all: flags.has('a'),
+    }))
 }
 
 fn parse_new_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut name = None;
-    let mut cwd = None;
-    let mut detached = false;
-    let mut index = None;
-    let mut force = false;
-    let mut format = None;
-    let mut after = false;
-    let mut before = false;
-    let mut select_existing = false;
-    let mut empty = false;
-    let (command, _) = parse_common_tail(arguments, |flag, value| match flag {
-        "-t" => {
-            target = Some(value.to_owned());
-            Ok(())
-        }
-        "-n" => {
-            name = Some(value.to_owned());
-            Ok(())
-        }
-        "-c" => {
-            cwd = Some(value.to_owned());
-            Ok(())
-        }
-        "-d" => {
-            detached = true;
-            Ok(())
-        }
-        "-k" => {
-            force = true;
-            Ok(())
-        }
-        "-P" => {
-            format = Some("#{window_index}:#{window_name}".to_owned());
-            Ok(())
-        }
-        "-F" => {
-            format = Some(value.to_owned());
-            Ok(())
-        }
-        "-I" => {
-            index = Some(
-                value
-                    .parse::<u32>()
-                    .map_err(|_| "new-window index requires an integer".to_owned())?,
-            );
-            Ok(())
-        }
-        "-a" => {
-            after = true;
-            Ok(())
-        }
-        "-b" => {
-            before = true;
-            Ok(())
-        }
-        "-S" => {
-            select_existing = true;
-            Ok(())
-        }
-        "-E" => {
-            empty = true;
-            Ok(())
-        }
-        other => Err(format!("unknown new-window option: {other}")),
-    })?;
+    let flags = scan_flags("new-window", arguments, "abc:de:EF:kn:PSt:", usize::MAX)?;
+    if flags.has('e') {
+        return Err(unsupported_flag("-e", "new-window"));
+    }
+    let detached = flags.has('d');
+    let format = flags.has('P').then(|| {
+        flags
+            .value('F')
+            .unwrap_or("#{session_name}:#{window_index}.#{pane_index}")
+            .to_owned()
+    });
+    let command = flags.positional.to_vec();
+    let empty = flags.has('E');
     let (command, empty) = if command.len() == 1 && command[0].is_empty() {
         (Vec::new(), true)
     } else {
@@ -327,23 +259,20 @@ fn parse_new_window(arguments: &[String]) -> Result<InvocationSpec, String> {
         }
         (command, empty)
     };
-    Ok(InvocationSpec {
-        request: Request::NewWindow {
-            target: target.clone(),
-            name,
-            detached,
-            empty,
-            index,
-            force,
-            format,
-            after,
-            before,
-            select_existing,
-            command,
-            cwd,
-        },
-        attach: !detached,
-    })
+    Ok(InvocationSpec::plain(Request::NewWindow {
+        target: flags.value('t').map(str::to_owned),
+        name: flags.value('n').map(str::to_owned),
+        detached,
+        empty,
+        index: None,
+        force: flags.has('k'),
+        format,
+        after: flags.has('a'),
+        before: flags.has('b'),
+        select_existing: flags.has('S'),
+        command,
+        cwd: flags.value('c').map(str::to_owned),
+    }))
 }
 
 fn parse_split_window(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -509,199 +438,123 @@ fn parse_run_shell(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_select_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut navigation = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-n" => navigation = Some(true),
-            "-p" => navigation = Some(false),
-            "-l" => {
-                if navigation.is_some() {
-                    return Err("select-window accepts only one navigation option".to_owned());
-                }
-                target = Some("!".to_owned());
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown select-window option: {value}"));
-            }
-            value => target = Some(value.to_owned()),
+    let flags = scan_flags("select-window", arguments, "lnpTt:", 0)?;
+    if flags.has('T') {
+        return Err(unsupported_flag("-T", "select-window"));
+    }
+    let target = flags.value('t').map(str::to_owned);
+    Ok(InvocationSpec::plain(if flags.has('n') {
+        Request::NextWindow { target }
+    } else if flags.has('p') {
+        Request::PreviousWindow { target }
+    } else if flags.has('l') {
+        last_window_request(target.as_deref())
+    } else {
+        Request::SelectWindow {
+            target: target.unwrap_or_default(),
         }
-        index += 1;
-    }
-    if let Some(next) = navigation {
-        return Ok(InvocationSpec::plain(if next {
-            Request::NextWindow { target }
-        } else {
-            Request::PreviousWindow { target }
-        }));
-    }
-    Ok(InvocationSpec::plain(Request::SelectWindow {
-        target: target.ok_or_else(|| "select-window requires a target".to_owned())?,
     }))
+}
+
+fn last_window_request(session: Option<&str>) -> Request {
+    let target = match session {
+        None => "!".to_owned(),
+        Some(target) => format!(
+            "{}:!",
+            target.split_once(':').map_or(target, |(session, _)| session)
+        ),
+    };
+    Request::SelectWindow { target }
+}
+
+fn parse_session_window_navigation(
+    command: &str,
+    arguments: &[String],
+) -> Result<Option<String>, String> {
+    let flags = scan_flags(command, arguments, "at:", 0)?;
+    if flags.has('a') {
+        return Err(unsupported_flag("-a", command));
+    }
+    Ok(flags.value('t').map(str::to_owned))
+}
+
+fn parse_last_window(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("last-window", arguments, "t:", 0)?;
+    Ok(InvocationSpec::plain(last_window_request(flags.value('t'))))
 }
 
 fn parse_select_layout(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut layout = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown select-layout option: {value}"));
-            }
-            value => {
-                if layout.replace(value.to_owned()).is_some() {
-                    return Err("select-layout accepts one layout".to_owned());
-                }
-            }
+    let flags = scan_flags("select-layout", arguments, "Enopt:", 1)?;
+    for (flag, name) in [('E', "-E"), ('n', "-n"), ('o', "-o"), ('p', "-p")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "select-layout"));
         }
-        index += 1;
     }
     Ok(InvocationSpec::plain(Request::SelectLayout {
-        target,
-        layout: layout.ok_or_else(|| "select-layout requires a layout".to_owned())?,
+        target: flags.value('t').map(str::to_owned),
+        layout: flags
+            .positional
+            .first()
+            .cloned()
+            .ok_or_else(|| "select-layout requires a layout".to_owned())?,
     }))
 }
 
-fn parse_rotate_window(arguments: &[String]) -> Result<InvocationSpec, String> {    let mut target = None;
-    let mut up = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-U" => up = true,
-            "-D" => up = false,
-            value => return Err(format!("unknown rotate-window option: {value}")),
-        }
-        index += 1;
+fn parse_rotate_window(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("rotate-window", arguments, "Dt:UZ", 0)?;
+    if flags.has('Z') {
+        return Err(unsupported_flag("-Z", "rotate-window"));
     }
-    Ok(InvocationSpec::plain(Request::RotateWindow { target, up }))
+    Ok(InvocationSpec::plain(Request::RotateWindow {
+        target: flags.value('t').map(str::to_owned),
+        up: flags.has('U'),
+    }))
 }
 
 fn parse_swap_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut source = None;
-    let mut target = None;
-    let mut detached = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-d" => detached = true,
-            "-r" => {}
-            value => return Err(format!("unknown swap-window option: {value}")),
-        }
-        index += 1;
-    }
+    let flags = scan_flags("swap-window", arguments, "ds:t:", 0)?;
     Ok(InvocationSpec::plain(Request::SwapWindow {
-        source,
-        target,
-        detached,
+        source: flags.value('s').map(str::to_owned),
+        target: flags.value('t').map(str::to_owned),
+        detached: flags.has('d'),
     }))
 }
 
 fn parse_move_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut source = None;
-    let mut target = None;
-    let mut after = false;
-    let mut detached = false;
-    let mut force = false;
-    let mut renumber = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-a" => after = true,
-            "-d" => detached = true,
-            "-k" => force = true,
-            "-r" => renumber = true,
-            value => return Err(format!("unknown move-window option: {value}")),
-        }
-        index += 1;
+    let flags = scan_flags("move-window", arguments, "abdkrs:t:", 0)?;
+    if flags.has('b') {
+        return Err(unsupported_flag("-b", "move-window"));
     }
     Ok(InvocationSpec::plain(Request::MoveWindow {
-        source,
-        target,
-        after,
-        detached,
-        force,
-        renumber,
+        source: flags.value('s').map(str::to_owned),
+        target: flags.value('t').map(str::to_owned),
+        after: flags.has('a'),
+        detached: flags.has('d'),
+        force: flags.has('k'),
+        renumber: flags.has('r'),
     }))
 }
 
 fn parse_link_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut source = None;
-    let mut target = None;
-    let mut detached = false;
-    let mut force = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-d" => detached = true,
-            "-k" => force = true,
-            value => return Err(format!("unknown link-window option: {value}")),
+    let flags = scan_flags("link-window", arguments, "abdks:t:", 0)?;
+    for (flag, name) in [('a', "-a"), ('b', "-b")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "link-window"));
         }
-        index += 1;
     }
     Ok(InvocationSpec::plain(Request::LinkWindow {
-        source,
-        target,
-        detached,
-        force,
+        source: flags.value('s').map(str::to_owned),
+        target: flags.value('t').map(str::to_owned),
+        detached: flags.has('d'),
+        force: flags.has('k'),
     }))
 }
 
 fn parse_unlink_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut force = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-k" => force = true,
-            value => return Err(format!("unknown unlink-window option: {value}")),
-        }
-        index += 1;
-    }
+    let flags = scan_flags("unlink-window", arguments, "kt:", 0)?;
     Ok(InvocationSpec::plain(Request::UnlinkWindow {
-        target,
-        force,
+        target: flags.value('t').map(str::to_owned),
+        force: flags.has('k'),
     }))
 }
 
@@ -1060,6 +913,23 @@ fn parse_respawn(arguments: &[String], window: bool) -> Result<InvocationSpec, S
         kill,
         empty,
         window,
+    }))
+}
+
+fn parse_respawn_window(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("respawn-window", arguments, "c:e:Ekt:", usize::MAX)?;
+    for (flag, name) in [('e', "-e"), ('E', "-E")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "respawn-window"));
+        }
+    }
+    Ok(InvocationSpec::plain(Request::RespawnPane {
+        target: flags.value('t').map(str::to_owned),
+        command: flags.positional.to_vec(),
+        cwd: flags.value('c').map(str::to_owned),
+        kill: flags.has('k'),
+        empty: false,
+        window: true,
     }))
 }
 

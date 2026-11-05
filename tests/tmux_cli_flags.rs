@@ -807,3 +807,467 @@ mod sessions {
         assert_eq!(sorted_lines(&pair.tm, &["list-sessions", "-F", "#{session_name}"]), ["a"]);
     }
 }
+
+mod windows {
+    use super::*;
+
+    fn fixture(label: &str) -> Pair {
+        let pair = Pair::new(label);
+        pair.start("S");
+        for mux in pair.both() {
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "two", "--", "sleep", "300"]);
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "three", "--", "sleep", "300"]);
+            mux.ok(&["split-window", "-d", "-l", "11", "-t", "S:two", "--", "sleep", "300"]);
+        }
+        pair.start("T");
+        pair
+    }
+
+    fn window_topology(mux: &Mux) -> String {
+        let mut text = String::new();
+        for session in sorted_lines(mux, &["list-sessions", "-F", "#{session_name}"]) {
+            let rows = sorted_lines(
+                mux,
+                &[
+                    "list-windows",
+                    "-t",
+                    &session,
+                    "-F",
+                    "#{window_index} #{window_name} #{window_panes} #{window_width}x#{window_height} #{window_active}",
+                ],
+            );
+            text.push_str(&format!("windows {session} {rows:?}\n"));
+            for index in mux
+                .body(&["list-windows", "-t", &session, "-F", "#{window_index}"])
+                .lines()
+            {
+                let target = format!("{session}:{index}");
+                text.push_str(&format!(
+                    "panes {target} {:?}\n",
+                    sorted_lines(
+                        mux,
+                        &[
+                            "list-panes",
+                            "-t",
+                            &target,
+                            "-F",
+                            "#{pane_index} #{pane_width}x#{pane_height} #{pane_active}",
+                        ],
+                    )
+                ));
+            }
+        }
+        text
+    }
+
+    fn probe(test: &str, label: &str, steps: &[&[&str]]) {
+        let pair = fixture("win");
+        for arguments in steps {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+            assert_eq!(
+                observation_difference(
+                    &format!("{test}: {label}: topology after {arguments:?}"),
+                    &window_topology(&pair.tm),
+                    &window_topology(&pair.reference)
+                ),
+                None
+            );
+        }
+    }
+
+    fn probes(test: &str, cases: &[&[&[&str]]]) {
+        for steps in cases {
+            probe(test, &format!("{steps:?}"), steps);
+        }
+    }
+
+    fn assert_window_rejected(command: &str, flag: &str, arguments: &[&str]) {
+        let pair = fixture("winrej");
+        let before = window_topology(&pair.tm);
+        let output = pair.tm.run(arguments);
+        assert!(!output.status.success(), "{arguments:?} succeeded");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("tm: unsupported flag {flag} for {command}\n"),
+            "{arguments:?}"
+        );
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+        assert_eq!(window_topology(&pair.tm), before, "{arguments:?} changed the topology");
+    }
+
+    #[test]
+    fn windows_new_window_flags_match_the_reference() {
+        let test = "windows_new_window_flags_match_the_reference";
+        probes(
+            test,
+            &[
+                &[&["new-window", "-d", "-t", "S"]],
+                &[&["new-window", "-t", "S"]],
+                &[&["new-window", "-d", "-t", "S:9"]],
+                &[&["new-window", "-d", "-t", "S:two"]],
+                &[&["new-window", "-d", "-k", "-t", "S:two"]],
+                &[&["new-window", "-d", "-k", "-t", "S:two", "--", "sleep", "300"]],
+                &[&["new-window", "-d", "-t", "nosuch"]],
+                &[&["new-window", "-d", "-n", "named", "-t", "S"]],
+                &[&["new-window", "-d", "-c", "/tmp", "-t", "S"], &["display-message", "-p", "-t", "S:4", "#{pane_current_path}"]],
+                &[&["new-window", "-d", "-P", "-t", "S"]],
+                &[&["new-window", "-d", "-P", "-F", "#{window_index} #{window_name}", "-t", "S"]],
+                &[&["new-window", "-d", "-F", "#{window_index}", "-t", "S"]],
+                &[&["new-window", "-d", "-a", "-t", "S:1"]],
+                &[&["new-window", "-d", "-a", "-t", "S:two"]],
+                &[&["new-window", "-d", "-b", "-t", "S:two"]],
+                &[&["new-window", "-d", "-b", "-t", "S:1"]],
+                &[&["new-window", "-d", "-a", "-b", "-t", "S:two"]],
+                &[&["new-window", "-d", "-a", "-k", "-t", "S:two"]],
+                &[&["new-window", "-d", "-S", "-n", "two", "-t", "S"]],
+                &[&["new-window", "-S", "-n", "two", "-t", "S"]],
+                &[&["new-window", "-d", "-S", "-n", "fresh", "-t", "S"]],
+                &[&["new-window", "-d", "-E", "-t", "S"]],
+                &[&["new-window", "-d", "-E", "-t", "S", "--", "sleep", "300"]],
+                &[&["new-window", "-d", "-t", "S", "--", "sleep", "300"]],
+                &[&["new-window", "-d", "-t", "S", "sleep", "300"]],
+                &[&["new-window", "-d", "-t", "S", "sleep 300"]],
+                &[&["new-window", "-d", "-t", "S", "-n", "x", "--", "sleep", "300"]],
+                &[&["new-window", "-dn", "joined", "-t", "S"]],
+                &[&["new-window", "-d", "-t", "S:"]],
+                &[&["new-window", "-d", "-t", "=S"]],
+                &[&["new-window", "-d"]],
+                &[&["new-window"]],
+                &[&["new-window", "-d", "-n"]],
+                &[&["new-window", "-d", "-t"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_kill_window_flags_match_the_reference() {
+        probes(
+            "windows_kill_window_flags_match_the_reference",
+            &[
+                &[&["kill-window", "-t", "S:two"]],
+                &[&["kill-window", "-t", "S:2"]],
+                &[&["kill-window", "-t", "S:9"]],
+                &[&["kill-window", "-t", "nosuch"]],
+                &[&["kill-window", "-t", "S:3"], &["kill-window", "-t", "S:2"]],
+                &[&["kill-window", "-t", "S:1"]],
+                &[&["select-window", "-t", "S:3"], &["kill-window", "-t", "S:3"]],
+                &[&["select-window", "-t", "S:2"], &["select-window", "-t", "S:3"], &["kill-window", "-t", "S:3"]],
+                &[&["select-window", "-t", "S:2"], &["kill-window", "-t", "S:2"]],
+                &[&["kill-window", "-a", "-t", "S:2"]],
+                &[&["kill-window", "-a", "-t", "S:1"]],
+                &[&["kill-window", "-a"]],
+                &[&["kill-window", "-at", "S:3"]],
+                &[&["kill-window", "-t", "T:1"]],
+                &[&["kill-window", "-t", "T:1"], &["kill-window", "-t", "S:1"]],
+                &[&["kill-window"]],
+                &[&["kill-window", "S:2"]],
+                &[&["kill-window", "-t"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_kill_window_rejects_flags_it_does_not_implement() {
+        assert_window_rejected("kill-window", "-f", &["kill-window", "-a", "-f", "1", "-t", "S:2"]);
+    }
+
+    #[test]
+    fn windows_select_window_flags_match_the_reference() {
+        probes(
+            "windows_select_window_flags_match_the_reference",
+            &[
+                &[&["select-window", "-t", "S:3"]],
+                &[&["select-window", "-t", "3"]],
+                &[&["select-window", "-t", "two"]],
+                &[&["select-window", "-t", "tw"]],
+                &[&["select-window", "-t", "S:9"]],
+                &[&["select-window", "-t", "nosuch"]],
+                &[&["select-window", "-t", "S:+1"]],
+                &[&["select-window", "-t", "S:-1"]],
+                &[&["select-window", "-t", "S:$"]],
+                &[&["select-window", "-t", "S:^"]],
+                &[&["select-window"]],
+                &[&["select-window", "-n", "-t", "S"]],
+                &[&["select-window", "-n", "-t", "S"], &["select-window", "-n", "-t", "S"], &["select-window", "-n", "-t", "S"]],
+                &[&["select-window", "-p", "-t", "S"]],
+                &[&["select-window", "-n", "-t", "T"]],
+                &[&["select-window", "-l", "-t", "S"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "S"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "S:2"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-l"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-n", "-l", "-t", "S"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-p", "-n", "-t", "S"]],
+                &[&["select-window", "-t", "S:3"], &["select-window", "-pl", "-t", "S"]],
+                &[&["select-window", "S:3"]],
+                &[&["select-window", "-t"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_select_window_rejects_flags_it_does_not_implement() {
+        assert_window_rejected("select-window", "-T", &["select-window", "-T", "-t", "S:1"]);
+    }
+
+    #[test]
+    fn windows_next_previous_and_last_window_flags_match_the_reference() {
+        let test = "windows_next_previous_and_last_window_flags_match_the_reference";
+        probes(
+            test,
+            &[
+                &[&["next-window", "-t", "S"]],
+                &[&["next-window"]],
+                &[&["next-window", "-t", "T"]],
+                &[&["next-window", "-t", "nosuch"]],
+                &[&["next-window", "-t", "=S"]],
+                &[&["next-window", "-t", "S:2"]],
+                &[&["next-window", "-t", "S"], &["next-window", "-t", "S"], &["next-window", "-t", "S"]],
+                &[&["previous-window", "-t", "S"]],
+                &[&["previous-window"]],
+                &[&["previous-window", "-t", "T"]],
+                &[&["previous-window", "-t", "nosuch"]],
+                &[&["previous-window", "-t", "S"], &["previous-window", "-t", "S"]],
+                &[&["last-window", "-t", "S"]],
+                &[&["last-window"]],
+                &[&["select-window", "-t", "S:3"], &["last-window", "-t", "S"]],
+                &[&["select-window", "-t", "S:3"], &["last-window", "-t", "S"], &["last-window", "-t", "S"]],
+                &[&["select-window", "-t", "S:3"], &["last-window", "-t", "T"]],
+                &[&["select-window", "-t", "S:3"], &["last-window", "-t", "nosuch"]],
+                &[&["select-window", "-t", "S:3"], &["last-window"]],
+                &[&["select-window", "-t", "S:3"], &["last-window", "S"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_next_previous_and_last_window_reject_flags_they_do_not_implement() {
+        assert_window_rejected("next-window", "-a", &["next-window", "-a", "-t", "S"]);
+        assert_window_rejected("previous-window", "-a", &["previous-window", "-a", "-t", "S"]);
+    }
+
+    #[test]
+    fn windows_link_and_unlink_window_flags_match_the_reference() {
+        probes(
+            "windows_link_and_unlink_window_flags_match_the_reference",
+            &[
+                &[&["link-window", "-s", "S:3", "-t", "T:"]],
+                &[&["link-window", "-s", "S:3", "-t", "T:9"]],
+                &[&["link-window", "-s", "S:3", "-t", "T:1"]],
+                &[&["link-window", "-k", "-s", "S:3", "-t", "T:1"]],
+                &[&["link-window", "-d", "-s", "S:3", "-t", "T:"]],
+                &[&["link-window", "-dk", "-s", "S:3", "-t", "T:1"]],
+                &[&["link-window", "-s", "S:3", "-t", "S:9"]],
+                &[&["link-window", "-s", "S:3", "-t", "S:2"]],
+                &[&["link-window", "-s", "S:9", "-t", "T:"]],
+                &[&["link-window", "-s", "nosuch:1", "-t", "T:"]],
+                &[&["link-window", "-t", "T:"]],
+                &[&["link-window", "-s", "S:3"]],
+                &[&["link-window", "-s", "two", "-t", "T:"]],
+                &[&["link-window", "-s", "S:3", "-t", "T:"], &["unlink-window", "-t", "T:2"]],
+                &[&["link-window", "-s", "S:3", "-t", "T:"], &["unlink-window", "-t", "S:3"]],
+                &[&["link-window", "-s", "S:3", "-t", "T:"], &["unlink-window", "-k", "-t", "S:3"]],
+                &[&["unlink-window", "-t", "S:3"]],
+                &[&["unlink-window", "-k", "-t", "S:3"]],
+                &[&["unlink-window", "-k", "-t", "T:1"]],
+                &[&["unlink-window", "-t", "S:9"]],
+                &[&["unlink-window"]],
+                &[&["unlink-window", "S:3"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_link_and_unlink_window_reject_flags_they_do_not_implement() {
+        assert_window_rejected("link-window", "-a", &["link-window", "-a", "-s", "S:3", "-t", "T:"]);
+        assert_window_rejected("link-window", "-b", &["link-window", "-b", "-s", "S:3", "-t", "T:"]);
+    }
+
+    #[test]
+    fn windows_move_window_flags_match_the_reference() {
+        probes(
+            "windows_move_window_flags_match_the_reference",
+            &[
+                &[&["move-window", "-s", "S:3", "-t", "T:"]],
+                &[&["move-window", "-s", "S:3", "-t", "T:9"]],
+                &[&["move-window", "-s", "S:3", "-t", "S:9"]],
+                &[&["move-window", "-s", "S:3", "-t", "S:1"]],
+                &[&["move-window", "-k", "-s", "S:3", "-t", "S:1"]],
+                &[&["move-window", "-d", "-s", "S:3", "-t", "T:"]],
+                &[&["move-window", "-a", "-s", "S:3", "-t", "S:1"]],
+                &[&["move-window", "-a", "-s", "S:3", "-t", "T:1"]],
+                &[&["move-window", "-ad", "-s", "S:3", "-t", "T:1"]],
+                &[&["move-window", "-r", "-t", "S"]],
+                &[&["move-window", "-s", "S:3", "-t", "S:7"], &["move-window", "-r", "-t", "S"]],
+                &[&["move-window", "-r"]],
+                &[&["move-window", "-r", "-s", "S:1", "-t", "S:5"]],
+                &[&["move-window", "-s", "S:9", "-t", "T:"]],
+                &[&["move-window", "-s", "nosuch:1", "-t", "T:"]],
+                &[&["move-window", "-t", "T:5"]],
+                &[&["move-window", "-s", "S:3"]],
+                &[&["move-window", "-s", "two", "-t", "T:"]],
+                &[&["move-window", "-s", "S:3", "-t", "nosuch:"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_move_window_rejects_flags_it_does_not_implement() {
+        assert_window_rejected("move-window", "-b", &["move-window", "-b", "-s", "S:3", "-t", "S:1"]);
+    }
+
+    #[test]
+    fn windows_swap_window_flags_match_the_reference() {
+        probes(
+            "windows_swap_window_flags_match_the_reference",
+            &[
+                &[&["swap-window", "-s", "S:1", "-t", "S:3"]],
+                &[&["swap-window", "-d", "-s", "S:1", "-t", "S:3"]],
+                &[&["swap-window", "-s", "S:1", "-t", "T:1"]],
+                &[&["swap-window", "-d", "-s", "S:3", "-t", "T:1"]],
+                &[&["swap-window", "-t", "S:3"]],
+                &[&["swap-window", "-s", "S:3"]],
+                &[&["swap-window"]],
+                &[&["swap-window", "-s", "S:9", "-t", "S:1"]],
+                &[&["swap-window", "-s", "S:1", "-t", "S:9"]],
+                &[&["swap-window", "-s", "S:1", "-t", "S:1"]],
+                &[&["swap-window", "-s", "two", "-t", "three"]],
+                &[&["swap-window", "-s", "S:1", "-t", "nosuch"]],
+                &[&["swap-window", "-s", "S:2", "-t", "S:3"], &["swap-window", "-s", "S:2", "-t", "S:3"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_swap_window_rejects_flags_it_does_not_implement() {
+        assert_window_rejected("swap-window", "-r", &["swap-window", "-r", "-s", "S:1", "-t", "S:3"]);
+    }
+
+    #[test]
+    fn windows_rotate_window_flags_match_the_reference() {
+        probes(
+            "windows_rotate_window_flags_match_the_reference",
+            &[
+                &[&["rotate-window", "-t", "S:2"]],
+                &[&["rotate-window", "-D", "-t", "S:2"]],
+                &[&["rotate-window", "-U", "-t", "S:2"]],
+                &[&["rotate-window", "-UD", "-t", "S:2"]],
+                &[&["rotate-window", "-DU", "-t", "S:2"]],
+                &[&["rotate-window", "-t", "S:1"]],
+                &[&["rotate-window", "-t", "S:9"]],
+                &[&["rotate-window", "-t", "nosuch"]],
+                &[&["rotate-window"]],
+                &[&["rotate-window", "-U", "-t", "S:2"], &["rotate-window", "-U", "-t", "S:2"]],
+                &[&["rotate-window", "S:2"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_rotate_window_rejects_flags_it_does_not_implement() {
+        assert_window_rejected("rotate-window", "-Z", &["rotate-window", "-Z", "-t", "S:2"]);
+    }
+
+    #[test]
+    fn windows_rename_window_flags_match_the_reference() {
+        probes(
+            "windows_rename_window_flags_match_the_reference",
+            &[
+                &[&["rename-window", "-t", "S:2", "renamed"]],
+                &[&["rename-window", "-t", "two", "renamed"]],
+                &[&["rename-window", "renamed"]],
+                &[&["rename-window", "-t", "S:9", "renamed"]],
+                &[&["rename-window", "-t", "nosuch", "renamed"]],
+                &[&["rename-window", "-t", "S:2"]],
+                &[&["rename-window", "-t", "S:2", "a", "b"]],
+                &[&["rename-window", "-t", "S:2", "--", "-dash"]],
+                &[&["rename-window", "-t", "S:2", ""]],
+                &[&["rename-window", "-t", "S:2", "#{session_name}"]],
+                &[&["rename-window", "-tS:2", "joined"]],
+                &[&["rename-window"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_respawn_window_flags_match_the_reference() {
+        probes(
+            "windows_respawn_window_flags_match_the_reference",
+            &[
+                &[&["respawn-window", "-t", "S:3"]],
+                &[&["respawn-window", "-k", "-t", "S:3"]],
+                &[&["respawn-window", "-k", "-t", "S:2"]],
+                &[&["respawn-window", "-k", "-t", "S:9"]],
+                &[&["respawn-window", "-k", "-c", "/tmp", "-t", "S:3"], &["display-message", "-p", "-t", "S:3", "#{pane_current_path}"]],
+                &[&["respawn-window", "-k", "-t", "S:3", "--", "sleep", "301"], &["display-message", "-p", "-t", "S:3", "#{pane_start_command}"]],
+                &[&["respawn-window", "-k", "-t", "S:3", "sleep 302"]],
+                &[&["respawn-window", "-kt", "S:3"]],
+                &[&["respawn-window", "-k"]],
+                &[&["respawn-window"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_respawn_window_rejects_flags_it_does_not_implement() {
+        assert_window_rejected("respawn-window", "-e", &["respawn-window", "-k", "-e", "A=1", "-t", "S:3"]);
+        assert_window_rejected("respawn-window", "-E", &["respawn-window", "-k", "-E", "-t", "S:3"]);
+        assert_window_rejected("respawn-window", "-d", &["respawn-window", "-k", "-d", "-t", "S:3"]);
+    }
+
+    #[test]
+    fn windows_select_layout_flags_match_the_reference() {
+        probes(
+            "windows_select_layout_flags_match_the_reference",
+            &[
+                &[&["select-layout", "-t", "S:2", "even-horizontal"]],
+                &[&["select-layout", "-t", "S:2", "even-vertical"]],
+                &[&["select-layout", "-t", "S:1", "even-horizontal"]],
+                &[&["select-layout", "-t", "S:9", "even-horizontal"]],
+                &[&["select-layout", "-t", "nosuch", "even-horizontal"]],
+                &[&["select-layout", "even-horizontal"]],
+                &[&["select-layout", "-t", "S:2", "even-horizontal", "extra"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_select_layout_rejects_layouts_it_does_not_implement() {
+        let pair = fixture("winlay");
+        let before = window_topology(&pair.tm);
+        for layout in ["tiled", "main-horizontal", "main-vertical", "bogus"] {
+            let output = pair.tm.run(&["select-layout", "-t", "S:2", layout]);
+            assert!(!output.status.success(), "{layout}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported layout {layout} for select-layout\n")
+            );
+        }
+        for arguments in [&["select-layout", "-t", "S:2"][..], &["select-layout"][..]] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                "tm: select-layout requires a layout\n"
+            );
+        }
+        assert_eq!(window_topology(&pair.tm), before);
+    }
+
+    #[test]
+    fn windows_select_layout_rejects_flags_it_does_not_implement() {
+        for flag in ["-E", "-n", "-o", "-p"] {
+            assert_window_rejected("select-layout", flag, &["select-layout", flag, "-t", "S:2"]);
+        }
+    }
+
+    #[test]
+    fn windows_new_window_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-e", &["new-window", "-d", "-e", "A=1", "-t", "S"][..]),
+            ("-I", &["new-window", "-d", "-I", "7", "-t", "S"][..]),
+            ("-x", &["new-window", "-x", "-t", "S"][..]),
+        ] {
+            assert_window_rejected("new-window", flag, arguments);
+        }
+    }
+}

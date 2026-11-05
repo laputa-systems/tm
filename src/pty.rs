@@ -231,14 +231,21 @@ impl Drop for Pty {
     }
 }
 
+pub(crate) fn default_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|shell| Path::new(shell).is_file())
+        .unwrap_or_else(|| "/bin/sh".to_owned())
+}
+
 fn command_line(command: &[String]) -> io::Result<(String, Vec<String>)> {
+    if let [line] = command {
+        return Ok((default_shell(), vec!["-c".to_owned(), line.clone()]));
+    }
     if let Some(program) = command.first() {
         return Ok((program.clone(), command[1..].to_vec()));
     }
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|shell| Path::new(shell).is_file())
-        .unwrap_or_else(|| "/bin/sh".to_owned());
+    let shell = default_shell();
     let arguments = match Path::new(&shell).file_name().and_then(|name| name.to_str()) {
         Some("sh" | "bash" | "dash" | "ksh" | "zsh") => {
             vec!["-l".to_owned(), "-i".to_owned()]

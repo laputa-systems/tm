@@ -952,6 +952,7 @@ pub(crate) struct Session {
     pub cwd: Option<String>,
     pub options: HashMap<String, String>,
     pub activity: u64,
+    pub group: Option<u64>,
 }
 
 impl Session {
@@ -959,6 +960,29 @@ impl Session {
         self.windows
             .iter()
             .find(|window| window.index == self.active_window)
+    }
+
+    pub(crate) fn select_after_removing(&mut self, removed: u32) {
+        if self.last_window == Some(removed) {
+            self.last_window = None;
+        }
+        if self.active_window != removed || self.windows.is_empty() {
+            return;
+        }
+        let exists = |index: &u32| self.windows.iter().any(|window| window.index == *index);
+        let previous = self
+            .windows
+            .iter()
+            .map(|window| window.index)
+            .filter(|index| *index < removed)
+            .max()
+            .or_else(|| self.windows.iter().map(|window| window.index).max());
+        self.active_window = self
+            .last_window
+            .filter(exists)
+            .or(previous)
+            .unwrap_or(self.windows[0].index);
+        self.last_window = None;
     }
 
     pub(crate) fn select_window(&mut self, index: u32) {

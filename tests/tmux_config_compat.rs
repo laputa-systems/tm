@@ -79,7 +79,7 @@ fn compiled_defaults_ignore_tm_config_and_home_tmux_conf() {
             "-F",
             "#{window_index}:#{window_name}"
         ]),
-        "1:0\n"
+        "1:sleep\n"
     );
     assert_eq!(tm.ok(&["show-options", "-g", "-v", "prefix"]), "C-a\n");
     assert_eq!(
