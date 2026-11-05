@@ -479,11 +479,11 @@ fn grouped_sessions_share_headless_windows_but_track_active_window() {
     tm.ok(&["select-window", "-t", "group-two:1"]);
     assert!(
         tm.ok(&["list-windows", "-t", "group-two"])
-            .contains("1: second *")
+            .contains("1: second* (")
     );
     assert!(
         tm.ok(&["list-windows", "-t", "group-one"])
-            .contains("0: shared *")
+            .contains("0: shared* (")
     );
     tm.ok(&["kill-session", "-t", "group-two"]);
     assert_eq!(
@@ -585,9 +585,9 @@ fn window_ops_port_new_select_and_kill_window_behavior() {
     assert!(windows.contains("0: sh"));
     assert!(windows.contains("1: second"));
     tm.ok(&["select-window", "-t", "W:1"]);
-    assert!(tm.ok(&["list-windows", "-t", "W"]).contains("1: second *"));
+    assert!(tm.ok(&["list-windows", "-t", "W"]).contains("1: second* ("));
     tm.ok(&["next-window", "-t", "W"]);
-    assert!(tm.ok(&["list-windows", "-t", "W"]).contains("0: sh *"));
+    assert!(tm.ok(&["list-windows", "-t", "W"]).contains("0: sh* ("));
     tm.ok(&["kill-window", "-t", "W:1"]);
     assert_eq!(tm.ok(&["list-windows", "-t", "W"]).lines().count(), 1);
 }

@@ -258,6 +258,15 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `move-window` | `-t` | match | target index or session | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
 | `swap-window` | `-d` | match | select the swapped windows' indexes in both sessions | C4 `tests/tmux_cli_flags.rs::windows_swap_window_flags_match_the_reference` | differential |
 | `swap-window` | `-r` | rejected | accepted and ignored before C4; tmux has no such flag | C4 `tests/tmux_cli_flags.rs::windows_swap_window_rejects_flags_it_does_not_implement` | internal |
+| `list-windows` | `-a` | match | list the windows of every session, ordered by session name then index, with the session-qualified default format | C6a `tests/tmux_cli_flags.rs::windows_list_windows_flags_match_the_reference` | differential |
+| `list-windows` | `-F` | match | output format, evaluated for each window with its active pane; an empty format prints an empty line per window | C6a `tests/tmux_cli_flags.rs::windows_list_windows_flags_match_the_reference` | differential |
+| `list-windows` | `-f` | match | format filter; every value except an empty string and `0` is true | C6a `tests/tmux_cli_flags.rs::windows_list_windows_flags_match_the_reference` | differential |
+| `list-windows` | `-t` | match | target session; an unknown session fails with `can't find session` | C6a `tests/tmux_cli_flags.rs::windows_list_windows_flags_match_the_reference` | differential |
+| `list-windows` | `(default format)` | tm-only | tm prints tmux's default line with an empty `#{window_layout}`, because tm has no layout dump in tmux 3.8's format | C6a `tests/tmux_cli_flags.rs::windows_list_windows_default_format_matches_except_the_layout` | differential |
+| `list-windows` | `-O` | rejected | sort order | C6a `tests/tmux_cli_flags.rs::windows_list_windows_rejects_flags_it_does_not_implement` | internal |
+| `list-windows` | `-r` | rejected | reverse the sort order | C6a `tests/tmux_cli_flags.rs::windows_list_windows_rejects_flags_it_does_not_implement` | internal |
+| `list-windows` | `(any other flag)` | rejected | tmux 3.8 defines only `-a`, `-F`, `-f`, `-O`, `-r`, and `-t` | C6a `tests/tmux_cli_flags.rs::windows_list_windows_rejects_flags_it_does_not_implement` | internal |
+| `select-window` | `-t (offset targets)` | match | `+N` and `-N` need a count of 1 or more; `--`, `-x`, and `+0` are looked up as window names and fail with `can't find window` | C6a `tests/tmux_cli_flags.rs::windows_offset_targets_that_are_not_counts_fail_like_the_reference` | differential |
 | `swap-window` | `-s` | match | source window; the default is the current window | C4 `tests/tmux_cli_flags.rs::windows_swap_window_flags_match_the_reference` | differential |
 | `swap-window` | `-t` | match | target window; windows may be in different sessions | C4 `tests/tmux_cli_flags.rs::windows_swap_window_flags_match_the_reference` | differential |
 | `rotate-window` | `-D` | match | rotate panes down | C4 `tests/tmux_cli_flags.rs::windows_rotate_window_flags_match_the_reference` | differential |

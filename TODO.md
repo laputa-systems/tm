@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 24
+Next: 26
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -116,5 +116,23 @@ suites do not cover.
 - **Where:** `src/server.rs` time modifier handling
 - **Problem:** With `@ts` set to `1000000000`, `display-message -p '#{t/f/%%Y:@ts}'` prints `2001` in tm and the current year in tmux 3.8, and `#{t/f/%%Y:#{@ts}}` prints `2001` in tm and `1000000000` in tmux. `tests/tmux_core_compat.rs` expected `2001` for the single-percent form, which tmux answers with the current year because `display-message` runs `strftime` over the whole message first; the case was never compared with the reference and now only checks for output.
 - **Recommendation:** Port `format_modifiers` time handling after probing the forms above and restore an exact assertion.
+- **Fix with:** reference-parity
+- **Effort:** S
+
+### TMUX-24 · P3 · window_layout and the default list-panes line differ from tmux
+
+- **Area:** Formats
+- **Where:** `src/server.rs` `format_pane`, `list_panes`
+- **Problem:** `#{window_layout}` expands to nothing; tmux 3.8 prints a JSON layout such as `{"V":2,"L":{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%4"}}`, so the default `list-windows` line differs in its `[layout ...]` column. The default `list-panes` line is `%4: 0 *` in tm and `0: [80x24] [history 0/10000, 960 bytes] %4 (active)` in tmux.
+- **Recommendation:** Add `window_layout` from the layout tree and port the default `list-panes` template, then drop the layout exception in `windows_list_windows_default_format_matches_except_the_layout`.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-25 · P4 · window_flags lacks the activity, silence, and marked flags
+
+- **Area:** Formats
+- **Where:** `src/server.rs` `window_printable_flags`
+- **Problem:** tm reports `*`, `-`, `!`, and `Z` for `#{window_flags}` and `#{window_raw_flags}`; tmux 3.8 also reports `#` (activity), `~` (silence), and `M` (marked pane), and escapes `#` in `window_flags`.
+- **Recommendation:** Add the flags when tm tracks activity, silence, and the marked window, with a differential probe per flag.
 - **Fix with:** reference-parity
 - **Effort:** S

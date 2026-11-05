@@ -1386,6 +1386,104 @@ mod windows {
             assert_window_rejected("new-window", flag, arguments);
         }
     }
+
+    #[test]
+    fn windows_list_windows_flags_match_the_reference() {
+        let test = "windows_list_windows_flags_match_the_reference";
+        let pair = fixture("lsw");
+        let window_format = "#{window_index} #{window_name} #{window_panes} #{window_active}";
+        for arguments in [
+            &["list-windows", "-F", "#{window_index}"][..],
+            &["lsw", "-F", "#{window_index}"],
+            &["list-windows", "-t", "S", "-F", "#{window_index}"],
+            &["list-windows", "-t", "T", "-F", "#{window_index}"],
+            &["list-windows", "-t", "=S", "-F", "#{window_index}"],
+            &["list-windows", "-tS", "-F", "#{window_index}"],
+            &["list-windows", "-a"],
+            &["list-windows", "-a", "-t", "T"],
+            &["list-windows", "-F", window_format],
+            &["list-windows", "-t", "S", "-F", "#{session_name}:#{window_id}:#{window_flags}"],
+            &["list-windows", "-a", "-F", "#{session_name}:#{window_index}"],
+            &["list-windows", "-F", ""],
+            &["list-windows", "-f", "#{==:#{window_name},two}", "-F", window_format],
+            &["list-windows", "-f", "#{window_active}", "-F", window_format],
+            &["list-windows", "-f", "#{>:#{window_panes},1}", "-F", window_format],
+            &["list-windows", "-a", "-f", "#{==:#{session_name},T}", "-F", "#{session_name}:#{window_index}"],
+            &["list-windows", "-f", "0", "-F", window_format],
+            &["list-windows", "-f", "false", "-F", window_format],
+            &["list-windows", "-f", "", "-F", window_format],
+            &["list-windows", "-t", "nosuch"],
+            &["list-windows", "-t", "S:two", "-F", "#{window_index}"],
+            &["list-windows", "-t", "--"],
+            &["list-windows", "extra"],
+            &["list-windows", "-t"],
+            &["list-windows", "-F"],
+            &["list-windows", "-f"],
+        ] {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+        }
+    }
+
+    #[test]
+    fn windows_list_windows_default_format_matches_except_the_layout() {
+        let pair = fixture("lswdefault");
+        for arguments in [&["list-windows"][..], &["list-windows", "-t", "T"]] {
+            let tm = pair.tm.body(arguments);
+            let reference = pair.reference.body(arguments);
+            let without_layout = reference
+                .lines()
+                .map(|line| {
+                    let start = line.find("[layout ").expect("layout column");
+                    let end = line.rfind("] @").expect("window id column");
+                    format!("{}[layout {}", &line[..start], &line[end..])
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(tm, without_layout, "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn windows_list_windows_rejects_flags_it_does_not_implement() {
+        let pair = fixture("lswrej");
+        for (flag, arguments) in [
+            ("-O", &["list-windows", "-O", "name"][..]),
+            ("-r", &["list-windows", "-r"]),
+            ("-x", &["list-windows", "-x"]),
+        ] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("tm: unsupported flag {flag} for list-windows\n"),
+                "{arguments:?}"
+            );
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn windows_offset_targets_that_are_not_counts_fail_like_the_reference() {
+        let test = "windows_offset_targets_that_are_not_counts_fail_like_the_reference";
+        let pair = fixture("offsets");
+        for spelling in [
+            "--", "++", "-0", "+0", "-x", "+x", "-1", "+1", "+2", "-2", "-10", "+-1", "- ", "-",
+            "+", "{next}", "{previous}", "{last}", "!", "^", "$", "two", "tw", "=two", "=tw",
+            "-two", "+two", "1-", "-1x", "+99999999999",
+        ] {
+            for command in ["list-panes", "select-window", "rename-window"] {
+                let arguments: Vec<&str> = match command {
+                    "rename-window" => vec![command, "-t", spelling, "renamed"],
+                    "list-panes" => {
+                        vec![command, "-t", spelling, "-F", "#{window_index}.#{pane_index}"]
+                    }
+                    _ => vec![command, "-t", spelling],
+                };
+                compare_commands(test, &pair.tm, &pair.reference, &[&arguments]);
+                pair.assert_same_topology(test, &arguments);
+            }
+        }
+    }
 }
 
 mod panes {

@@ -421,13 +421,13 @@ fn parse_select_window(arguments: &[String]) -> Result<InvocationSpec, String> {
 
 fn last_window_request(session: Option<&str>) -> Request {
     let target = match session {
-        None => "!".to_owned(),
+        None => String::new(),
         Some(target) => format!(
-            "{}:!",
+            "{}:",
             target.split_once(':').map_or(target, |(session, _)| session)
         ),
     };
-    Request::SelectWindow { target, step: WindowStep::Exact }
+    Request::SelectWindow { target, step: WindowStep::Last }
 }
 
 fn parse_session_window_navigation(
@@ -512,30 +512,17 @@ fn parse_unlink_window(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_list_windows(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut format = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-f" => {
-                index += 1;
-                let _ = argument(arguments, index, "-f")?;
-            }
-            value => return Err(format!("unknown list-windows option: {value}")),
+    let flags = scan_flags("list-windows", arguments, "aF:f:O:rt:", 0)?;
+    for (flag, name) in [('O', "-O"), ('r', "-r")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "list-windows"));
         }
-        index += 1;
     }
     Ok(InvocationSpec::plain(Request::ListWindows {
-        target,
-        format,
+        target: flags.value('t').map(str::to_owned),
+        format: flags.value('F').map(str::to_owned),
+        filter: flags.value('f').map(str::to_owned),
+        all: flags.has('a'),
     }))
 }
 
@@ -1784,7 +1771,7 @@ mod tests {
         let last = parse(&["last-window".to_owned()]).expect("last");
         assert!(matches!(
             last.request,
-            Request::SelectWindow { target, step: WindowStep::Exact } if target == "!"
+            Request::SelectWindow { target, step: WindowStep::Last } if target.is_empty()
         ));
         assert!(parse(&["kill-window".to_owned(), "-f".to_owned()]).is_err());
     }

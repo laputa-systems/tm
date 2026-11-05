@@ -70,7 +70,8 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     if !attach && prints_body {
         match &request {
             crate::protocol::Request::ShowBuffer { .. }
-            | crate::protocol::Request::SaveBuffer { .. } => print!("{body}"),
+            | crate::protocol::Request::SaveBuffer { .. }
+            | crate::protocol::Request::ListWindows { .. } => print!("{body}"),
             _ => println!("{body}"),
         }
     }

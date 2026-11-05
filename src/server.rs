@@ -7655,69 +7655,57 @@ impl ServerState {
         }
     }
 
-    fn list_windows(&self, target: Option<&str>, format: Option<&str>) -> CommandResult {
-        let session_index = self.resolve_session_index(target)?;
-        let session = &self.sessions[session_index];
-        let mut windows = session.windows.iter().collect::<Vec<_>>();
-        windows.sort_by_key(|window| window.index);
-        Ok(windows
-            .into_iter()
-            .enumerate()
-            .map(|(window_position, window)| {
-                let marker = if window.index == session.active_window {
-                    '*'
-                } else {
-                    '-'
-                };
-                match format {
-                    Some(format) => {
-                        let pane_id = window.active_pane;
-                        let format = self.expand_context_loops(
-                            format,
-                            session_index,
-                            window_position,
-                            pane_id,
-                        );
-                        render_format_with_options(
-                            &format,
-                            &[
-                                ("session_name", session.name.clone()),
-                                ("session_id", format!("${}", session.id)),
-                                ("window_index", window.index.to_string()),
-                                ("window_id", format!("@{}", window.id)),
-                                ("window_name", window.name.clone()),
-                                ("window_panes", window.panes.len().to_string()),
-                                ("window_linked", "0".to_owned()),
-                                (
-                                    "window_linked_sessions",
-                                    self.window_link_count(window.id).to_string(),
-                                ),
-                                (
-                                    "window_bell_flag",
-                                    if window.bell_alert { "1" } else { "0" }.to_owned(),
-                                ),
-                                ("window_flags", window_alert_flags(window)),
-                                ("window_width", window.size.cols.to_string()),
-                                ("window_height", window.size.rows.to_string()),
-                                (
-                                    "window_active",
-                                    if marker == '*' { "1" } else { "0" }.to_owned(),
-                                ),
-                            ],
-                            &self.global_options,
-                        )
+    #[cfg(test)]
+    fn list_windows(
+        &self,
+        target: Option<&str>,
+        format: Option<&str>,
+        filter: Option<&str>,
+        all: bool,
+    ) -> CommandResult {
+        self.list_window_lines(target, format, filter, all)
+            .map(|lines| lines.join("\n"))
+    }
+
+    fn list_window_lines(
+        &self,
+        target: Option<&str>,
+        format: Option<&str>,
+        filter: Option<&str>,
+        all: bool,
+    ) -> Result<Vec<String>, String> {
+        let session_indices = if all {
+            let mut indices = (0..self.sessions.len()).collect::<Vec<_>>();
+            indices.sort_by(|left, right| self.sessions[*left].name.cmp(&self.sessions[*right].name));
+            indices
+        } else {
+            vec![match target.filter(|target| !target.is_empty()) {
+                Some(target) => self.resolve_session_target(Some(target))?,
+                None => self.resolve_session_index(None)?,
+            }]
+        };
+        let format = format.unwrap_or(if all {
+            "#{session_name}:#{window_index}: #{window_name}#{window_raw_flags} (#{window_panes} panes) [#{window_width}x#{window_height}] "
+        } else {
+            "#{window_index}: #{window_name}#{window_raw_flags} (#{window_panes} panes) [#{window_width}x#{window_height}] [layout #{window_layout}] #{window_id}#{?window_active, (active),}"
+        });
+        let mut lines = Vec::new();
+        for session_index in session_indices {
+            let session = &self.sessions[session_index];
+            let mut positions = (0..session.windows.len()).collect::<Vec<_>>();
+            positions.sort_by_key(|position| session.windows[*position].index);
+            for position in positions {
+                let pane_id = session.windows[position].active_pane;
+                if let Some(filter) = filter {
+                    let expanded = self.render_pane(session_index, position, pane_id, filter)?;
+                    if !format_true(&expanded) {
+                        continue;
                     }
-                    None => format!(
-                        "{}: {} {} {}",
-                        window.index,
-                        window.name,
-                        marker,
-                        window.panes.len()
-                    ),
                 }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"))
+                lines.push(self.render_pane(session_index, position, pane_id, format)?);
+            }
+        }
+        Ok(lines)
     }
 
     fn list_panes(
@@ -7852,7 +7840,9 @@ impl ServerState {
 
     fn select_last_window_of(&mut self, target: &str) -> CommandResult {
         let (session_index, _) = self.resolve_window_target(Some(target))?;
-        let (session_index, window_index) = self.window_index(session_index, "!", None)?;
+        let (session_index, window_index) = self
+            .window_index(session_index, "!", None)
+            .map_err(|_| "no last window".to_owned())?;
         self.select_resolved_window(session_index, window_index)
     }
 
@@ -9649,6 +9639,9 @@ impl ServerState {
                 .position(|session| session.windows.iter().any(|window| window.id == id))
                 .ok_or_else(|| format!("can't find window: @{id}"));
         }
+        if session_name.starts_with('$') {
+            return Err(format!("can't find session: {target}"));
+        }
         let exact = session_name.strip_prefix('=').unwrap_or(session_name);
         if session_name.starts_with('=') {
             return self
@@ -9894,7 +9887,6 @@ impl ServerState {
         context_window: Option<u64>,
     ) -> Result<(usize, usize), String> {
         let session = &self.sessions[session_index];
-        let target = target.trim();
         let current_index = context_window
             .and_then(|id| {
                 session
@@ -9933,7 +9925,7 @@ impl ServerState {
         if target == "!" || target == "{last}" {
             let index = session
                 .last_window
-                .ok_or_else(|| "no last window".to_owned())?;
+                .ok_or_else(|| "can't find window: !".to_owned())?;
             return session
                 .windows
                 .iter()
@@ -9941,18 +9933,26 @@ impl ServerState {
                 .map(|position| (session_index, position))
                 .ok_or_else(|| format!("can't find window: {target}"));
         }
-        if matches!(target, "+" | "-" | "{next}" | "{previous}")
-            || target.starts_with('+')
-            || target.starts_with('-')
-        {
-            let forward = target == "+" || target == "{next}" || target.starts_with('+');
-            let count = target
+        let offset = match target {
+            "{next}" => Some(1),
+            "{previous}" => Some(1),
+            _ => target
                 .strip_prefix('+')
                 .or_else(|| target.strip_prefix('-'))
-                .unwrap_or("")
-                .parse::<usize>()
-                .unwrap_or(1)
-                .max(1);
+                .and_then(|count| {
+                    if count.is_empty() {
+                        Some(1)
+                    } else {
+                        count
+                            .parse::<i32>()
+                            .ok()
+                            .filter(|count| *count >= 1)
+                            .map(|count| count as usize)
+                    }
+                }),
+        };
+        if let Some(count) = offset {
+            let forward = target == "{next}" || target.starts_with('+');
             let current = session
                 .windows
                 .iter()
@@ -10004,7 +10004,7 @@ impl ServerState {
             .collect::<Vec<_>>();
         match matches.as_slice() {
             [index] => Ok((session_index, *index)),
-            [] => Err(format!("can't find window: {target}")),
+            [] => Err(format!("can't find window: {exact}")),
             _ => Err(format!("window target is ambiguous: {target}")),
         }
     }
@@ -11506,6 +11506,21 @@ fn window_alert_flags(window: &Window) -> String {
     }
 }
 
+fn window_printable_flags(session: &Session, window: &Window) -> String {
+    let mut flags = String::new();
+    if window.index == session.active_window {
+        flags.push('*');
+    }
+    if session.last_window == Some(window.index) {
+        flags.push('-');
+    }
+    flags.push_str(&window_alert_flags(window));
+    if window.zoomed {
+        flags.push('Z');
+    }
+    flags
+}
+
 fn render_status_span(
     format: &str,
     session: &Session,
@@ -11906,9 +11921,14 @@ fn execute_request_inner(
                 format: format.as_deref(),
             },
         ),
-        Request::ListWindows { target, format } => {
-            state.list_windows(target.as_deref(), format.as_deref())
-        }
+        Request::ListWindows {
+            target,
+            format,
+            filter,
+            all,
+        } => state
+            .list_window_lines(target.as_deref(), format.as_deref(), filter.as_deref(), all)
+            .map(|lines| lines.iter().map(|line| format!("{line}\n")).collect()),
         Request::ListPanes {
             target,
             format,
@@ -14701,10 +14721,11 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
             "window_bell_flag",
             if window.bell_alert { "1" } else { "0" }.to_owned(),
         ),
-        ("window_flags", window_alert_flags(window)),
+        ("window_flags", window_printable_flags(session, window)),
+        ("window_raw_flags", window_printable_flags(session, window)),
         (
             "window_active",
-            if window.active_pane == pane.id {
+            if window.index == session.active_window {
                 "1"
             } else {
                 "0"
@@ -18212,7 +18233,7 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
         state.handle_client_input(client_id, b"renamed\r", &shared);
         assert_eq!(
             state
-                .list_windows(Some("prompt"), Some("#{window_index}:#{window_name}"))
+                .list_windows(Some("prompt"), Some("#{window_index}:#{window_name}"), None, false)
                 .expect("list prompted windows"),
             format!("1:{}\n2:renamed", default_window_name(&[]))
         );
@@ -18335,7 +18356,7 @@ bind n command-prompt -p "name: " "rename-window '%%'"
         );
         assert_eq!(
             state
-                .list_windows(Some("prompt-edit"), Some("#{window_name}"))
+                .list_windows(Some("prompt-edit"), Some("#{window_name}"), None, false)
                 .expect("list edited window"),
             "YabXcdZ"
         );
@@ -20615,7 +20636,7 @@ bind -r Right next-window
             .expect("swap active and relative target");
         assert_eq!(
             state
-                .list_windows(Some("swap-config"), Some("#{window_index}:#{window_name}"))
+                .list_windows(Some("swap-config"), Some("#{window_index}:#{window_name}"), None, false)
                 .expect("list swapped windows"),
             "0:second\n1:first"
         );

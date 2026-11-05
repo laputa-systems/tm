@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0009;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_000a;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -63,6 +63,8 @@ pub(crate) enum Request {
     ListWindows {
         target: Option<String>,
         format: Option<String>,
+        filter: Option<String>,
+        all: bool,
     },
     ListPanes {
         target: Option<String>,
@@ -497,10 +499,17 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_optional_string(&mut payload, cwd);
             put_optional_string(&mut payload, format);
         }
-        Request::ListWindows { target, format } => {
+        Request::ListWindows {
+            target,
+            format,
+            filter,
+            all,
+        } => {
             payload.push(8);
             put_optional_string(&mut payload, target);
             put_optional_string(&mut payload, format);
+            put_optional_string(&mut payload, filter);
+            put_bool(&mut payload, *all);
         }
         Request::ListPanes {
             target,
@@ -1078,6 +1087,8 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         8 => Request::ListWindows {
             target: decoder.optional_string()?,
             format: decoder.optional_string()?,
+            filter: decoder.optional_string()?,
+            all: decoder.bool()?,
         },
         9 => Request::ListPanes {
             target: decoder.optional_string()?,
@@ -2178,6 +2189,8 @@ mod tests {
         7 => Request::ListWindows {
                 target: source.opt_text(),
                 format: source.opt_text(),
+                filter: source.opt_text(),
+                all: source.flag(),
         },
         8 => Request::ListPanes {
                 target: source.opt_text(),
@@ -2558,7 +2571,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0009;
+    const GOLDEN_VERSION: u32 = 0x544d_000a;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2568,7 +2581,7 @@ mod tests {
         "09000000050102000000743200",
         "3000000006010200000074320001010001020000007438000101020000000300000074313203000000c3a9090103000000743134",
         "3700000007010200000074320001010001010200000074390103000000743131020000000300000074313203000000c3a909010300000074313400",
-        "09000000080102000000743200",
+        "110000000801020000007432000102000000743500",
         "110000000901020000007432000102000000743501",
         "080000000a02000000743103",
         "0e0000003901020000007432020000007433",
