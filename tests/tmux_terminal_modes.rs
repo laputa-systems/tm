@@ -249,7 +249,7 @@ fn attach_sets_and_detach_resets_each_terminal_mode_like_the_reference() {
 struct FeatureEffects {
     sync_used: bool,
     sync_balanced: bool,
-    clipboard: Vec<String>,
+    clipboard: Vec<Vec<u8>>,
 }
 
 fn observe_features(mux: &Mux, features: Option<&str>) -> FeatureEffects {
@@ -268,7 +268,7 @@ fn observe_features(mux: &Mux, features: Option<&str>) -> FeatureEffects {
         mux.ok(&["send-keys", "-t", "S", "-X", command]);
     }
     let clipboard = client.wait_for_stream(copied, "OSC 52 clipboard write", TIMEOUT, |stream| {
-        Some(raw_pty::osc52_payloads(stream)).filter(|payloads| !payloads.is_empty())
+        Some(raw_pty::osc52_sequences(stream)).filter(|payloads| !payloads.is_empty())
     });
     assert_eq!(client.detach(), Some(0));
     let stream = client.bytes_since(raw_pty::Mark::default());
@@ -283,11 +283,11 @@ fn observe_features(mux: &Mux, features: Option<&str>) -> FeatureEffects {
 fn terminal_features_sync_and_clipboard_select_for_the_term_like_the_reference() {
     const PAIR: &str = "xterm-256color:Sync:clipboard";
     let cases = [
-        ("tmux-256color", None, true),
-        ("xterm-256color", None, false),
-        ("xterm-256color", Some(PAIR), true),
+        ("tmux-256color", None, true, b"\x1b]52;;YWxwaGEK\x07".as_slice()),
+        ("xterm-256color", None, false, b"\x1b]52;;YWxwaGEK\x1b\\".as_slice()),
+        ("xterm-256color", Some(PAIR), true, b"\x1b]52;;YWxwaGEK\x07".as_slice()),
     ];
-    for (term, features, sync) in cases {
+    for (term, features, sync, clipboard) in cases {
         let scratch = Scratch::new("modes-features");
         let tm = Mux::tm(&scratch, "tm").with_term(term);
         let reference = Mux::reference(&scratch, "reference").with_term(term);
@@ -295,7 +295,7 @@ fn terminal_features_sync_and_clipboard_select_for_the_term_like_the_reference()
         let reference_effects = observe_features(&reference, features);
         assert_eq!(reference_effects.sync_used, sync, "{term} {features:?}");
         assert!(reference_effects.sync_balanced, "{term} {features:?}");
-        assert_eq!(reference_effects.clipboard, ["YWxwaGEK"], "{term} {features:?}");
+        assert_eq!(reference_effects.clipboard, [clipboard.to_vec()], "{term} {features:?}");
         assert_eq!(
             parity::observation_difference(
                 &format!("terminal feature effects for {term} {features:?}"),

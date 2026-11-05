@@ -295,19 +295,20 @@ pub fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
 
-pub fn osc52_payloads(stream: &[u8]) -> Vec<String> {
+pub fn osc52_sequences(stream: &[u8]) -> Vec<Vec<u8>> {
     let opener = b"\x1b]52;";
-    let mut payloads = Vec::new();
+    let mut sequences = Vec::new();
     let mut offset = 0;
     while let Some(at) = find(&stream[offset..], opener) {
-        let body = &stream[offset + at + opener.len()..];
+        let start = offset + at;
+        let body = &stream[start + opener.len()..];
         let Some(end) = body.iter().position(|byte| *byte == 0x07 || *byte == 0x1b) else {
             break;
         };
-        let text = String::from_utf8_lossy(&body[..end]);
-        let (_, payload) = text.split_once(';').unwrap_or(("", &text));
-        payloads.push(payload.to_owned());
-        offset += at + opener.len() + end;
+        let terminator = if body[end] == 0x1b { 2 } else { 1 };
+        let stop = (start + opener.len() + end + terminator).min(stream.len());
+        sequences.push(stream[start..stop].to_vec());
+        offset = stop;
     }
-    payloads
+    sequences
 }

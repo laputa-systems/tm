@@ -415,7 +415,22 @@ pub(crate) struct Capabilities {
     pub sync_end: Option<&'static [u8]>,
     pub extkeys_enable: Option<&'static [u8]>,
     pub extkeys_disable: Option<&'static [u8]>,
-    pub clipboard: bool,
+    pub clipboard: Option<ClipboardTerminator>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClipboardTerminator {
+    Bell,
+    StringTerminator,
+}
+
+impl ClipboardTerminator {
+    pub(crate) fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Bell => b"\x07",
+            Self::StringTerminator => b"\x1b\\",
+        }
+    }
 }
 
 const ALTERNATE_ENTER: &[u8] = b"\x1b[?1049h";
@@ -447,11 +462,12 @@ impl Capabilities {
                 sync_end: Some(SYNC_END),
                 extkeys_enable: None,
                 extkeys_disable: None,
-                clipboard: true,
+                clipboard: Some(ClipboardTerminator::Bell),
             },
             "xterm-256color" => Self {
                 sync_begin: None,
                 sync_end: None,
+                clipboard: Some(ClipboardTerminator::StringTerminator),
                 ..Self::for_term("tmux-256color", "")
             },
             _ => Self {
@@ -467,7 +483,7 @@ impl Capabilities {
                 sync_end: None,
                 extkeys_enable: None,
                 extkeys_disable: None,
-                clipboard: false,
+                clipboard: None,
             },
         };
         for entry in features.split([',', ' ']).filter(|entry| !entry.is_empty()) {
@@ -484,7 +500,7 @@ impl Capabilities {
                         capabilities.sync_begin = Some(SYNC_BEGIN);
                         capabilities.sync_end = Some(SYNC_END);
                     }
-                    "clipboard" => capabilities.clipboard = true,
+                    "clipboard" => capabilities.clipboard = Some(ClipboardTerminator::Bell),
                     "focus" => {
                         capabilities.focus_enable = Some(FOCUS_ENABLE);
                         capabilities.focus_disable = Some(FOCUS_DISABLE);

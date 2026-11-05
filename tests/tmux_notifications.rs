@@ -10,7 +10,7 @@ mod raw_pty;
 use std::time::Duration;
 
 use parity::{Mux, Scratch};
-use raw_pty::{osc52_payloads, Mark, RawClient};
+use raw_pty::{osc52_sequences, Mark, RawClient};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -117,9 +117,9 @@ fn tm_copy_emits_osc52_once_per_capable_client() {
         let mark = client.mark();
         copy_first_line(mux);
         let payloads = client.wait_for_stream(mark, "OSC 52 clipboard write", TIMEOUT, |stream| {
-            Some(osc52_payloads(stream)).filter(|payloads| !payloads.is_empty())
+            Some(osc52_sequences(stream)).filter(|payloads| !payloads.is_empty())
         });
-        assert_eq!(payloads, ["YWxwaGEK"], "{:?}", mux.implementation());
+        assert_eq!(payloads, [b"\x1b]52;;YWxwaGEK\x07".to_vec()], "{:?}", mux.implementation());
 
         mux.ok(&["set-option", "-g", "set-clipboard", "off"]);
         let off_mark: Mark = client.mark();
@@ -127,7 +127,7 @@ fn tm_copy_emits_osc52_once_per_capable_client() {
         mux.ok(&["send-keys", "-t", "S", "BARRIER"]);
         client.wait_for_text("BARRIER", TIMEOUT);
         assert!(
-            osc52_payloads(&client.bytes_since(off_mark)).is_empty(),
+            osc52_sequences(&client.bytes_since(off_mark)).is_empty(),
             "{:?}",
             mux.implementation()
         );

@@ -720,7 +720,7 @@ struct AttachedClient {
     modes: terminal::TerminalModes,
     detach_requested: bool,
     bell_pending: bool,
-    clipboard: Option<Vec<u8>>,
+    clipboard: Option<(Vec<u8>, terminal::ClipboardTerminator)>,
     prefix_pending: bool,
     key_buffer: Vec<u8>,
     key_events: Vec<DecodedKey>,
@@ -5714,8 +5714,10 @@ impl ServerState {
                     .cloned()
                     .unwrap_or_default();
                 for client in self.clients.values_mut() {
-                    if terminal::Capabilities::for_term(&client.term, &features).clipboard {
-                        client.clipboard = Some(data.clone());
+                    if let Some(terminator) =
+                        terminal::Capabilities::for_term(&client.term, &features).clipboard
+                    {
+                        client.clipboard = Some((data.clone(), terminator));
                     }
                 }
             }
@@ -8669,7 +8671,10 @@ impl ServerState {
                 .clients
                 .get_mut(&client_id)
                 .and_then(|client| client.clipboard.take()),
-            None => self.clipboard_pending.take(),
+            None => self
+                .clipboard_pending
+                .take()
+                .map(|data| (data, terminal::ClipboardTerminator::Bell)),
         };
         let bell = client_id
             .and_then(|client_id| self.clients.get_mut(&client_id))
@@ -8680,10 +8685,10 @@ impl ServerState {
         } else {
             output.extend_from_slice(b"\x1b[?25l\x1b[H\x1b[0m");
         }
-        if let Some(data) = clipboard {
-            output.extend_from_slice(b"\x1b]52;c;");
+        if let Some((data, terminator)) = clipboard {
+            output.extend_from_slice(b"\x1b]52;;");
             output.extend_from_slice(base64_encode(&data).as_bytes());
-            output.push(0x07);
+            output.extend_from_slice(terminator.bytes());
         }
         if bell {
             output.push(0x07);
@@ -16831,8 +16836,8 @@ mod tests {
             .expect("render clipboard event");
         assert!(
             rendered
-                .windows(b"\x1b]52;c;Y29weSBtZQ==\x07".len())
-                .any(|window| window == b"\x1b]52;c;Y29weSBtZQ==\x07")
+                .windows(b"\x1b]52;;Y29weSBtZQ==\x07".len())
+                .any(|window| window == b"\x1b]52;;Y29weSBtZQ==\x07")
         );
         let next_render = state
             .render_session(session_id, None)
