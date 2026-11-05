@@ -13,7 +13,6 @@ pub(crate) enum Request {
         group_target: Option<String>,
         format: Option<String>,
         window_name: Option<String>,
-        empty: bool,
         command: Vec<String>,
         cwd: Option<String>,
         size: Size,
@@ -375,7 +374,6 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
             group_target,
             format,
             window_name,
-            empty,
             command,
             cwd,
             size,
@@ -387,7 +385,6 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
             put_optional_string(&mut payload, group_target);
             put_optional_string(&mut payload, format);
             put_optional_string(&mut payload, window_name);
-            put_bool(&mut payload, *empty);
             put_strings(&mut payload, command);
             put_optional_string(&mut payload, cwd);
             put_size(&mut payload, *size);
@@ -977,7 +974,6 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
             group_target: decoder.optional_string()?,
             format: decoder.optional_string()?,
             window_name: decoder.optional_string()?,
-            empty: decoder.bool()?,
             command: decoder.strings()?,
             cwd: decoder.optional_string()?,
             size: decoder.size()?,

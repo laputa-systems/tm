@@ -28,14 +28,13 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     if !ok {
         return Err(body);
     }
-    if !attach
-        && (!body.is_empty()
-            || matches!(
-                request,
-                crate::protocol::Request::DisplayMessage { .. }
-                    | crate::protocol::Request::CapturePane { .. }
-            ))
-    {
+    let prints_body = match &request {
+        crate::protocol::Request::NewSession { format, .. } => format.is_some(),
+        crate::protocol::Request::DisplayMessage { .. }
+        | crate::protocol::Request::CapturePane { .. } => true,
+        _ => !body.is_empty(),
+    };
+    if !attach && prints_body {
         println!("{body}");
     }
     if !attach {

@@ -1,5 +1,9 @@
 #![cfg(unix)]
 
+#[path = "support/parity.rs"]
+#[allow(dead_code)]
+mod parity;
+
 use std::fs;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -92,14 +96,14 @@ fn session_ops_port_the_tmux_session_lifecycle() {
         "printf ready; sleep 30",
     ]);
     assert!(tm.ok(&["list-sessions"]).contains("S1: 1 windows"));
-    tm.ok(&["new-session", "-d", "-E"]);
+    tm.ok(&["new-session", "-d", "--", "sleep", "300"]);
     assert!(
         tm.ok(&["ls"])
             .lines()
             .any(|line| line.starts_with("0: 1 windows")),
         "ls should list an unnamed session using its numeric default name"
     );
-    tm.ok(&["new-session", "-d", "-E", "-s", ""]);
+    tm.ok(&["new-session", "-d", "-s", "", "--", "sleep", "300"]);
     assert!(
         tm.ok(&["ls"])
             .lines()
@@ -118,10 +122,7 @@ fn session_ops_port_the_tmux_session_lifecycle() {
         ]),
         "$3:printed:1\n"
     );
-    assert_eq!(
-        tm.ok(&["new-session", "-A", "-d", "-s", "printed"]),
-        "printed\n"
-    );
+    assert_eq!(tm.ok(&["new-session", "-A", "-d", "-s", "printed"]), "");
     assert!(tm.ok(&["has-session", "-t", "S1"]).is_empty());
     tm.fail(&["new-session", "-d", "-s", "S1"]);
 
@@ -133,9 +134,46 @@ fn session_ops_port_the_tmux_session_lifecycle() {
 }
 
 #[test]
+fn new_session_e_keeps_the_command_and_the_default_shell_like_the_reference() {
+    let scratch = parity::Scratch::new("new-session-e");
+    let tm = parity::Mux::tm(&scratch, "tm");
+    let reference = parity::Mux::reference(&scratch, "reference");
+    const PANE_FORMAT: &str =
+        "#{session_name} dead=#{pane_dead} start=#{pane_start_command} process=#{?pane_pid,yes,no}";
+    let test = "new_session_e_keeps_the_command_and_the_default_shell_like_the_reference";
+    parity::compare_commands(
+        test,
+        &tm,
+        &reference,
+        &[
+            &["new-session", "-d", "-s", "command", "-E", "--", "sleep", "300"],
+            &["new-session", "-d", "-s", "shell", "-E"],
+            &["new-session", "-d", "-s", "blank", "-E", ""],
+        ],
+    );
+    for mux in [&tm, &reference] {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while mux.run(&["has-session", "-t", "=blank"]).status.success() {
+            assert!(Instant::now() < deadline, "the empty-command session did not exit");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+    parity::compare_commands(
+        test,
+        &tm,
+        &reference,
+        &[
+            &["list-sessions", "-F", "#{session_name}"],
+            &["list-panes", "-t", "=command", "-F", PANE_FORMAT],
+            &["list-panes", "-t", "=shell", "-F", PANE_FORMAT],
+        ],
+    );
+}
+
+#[test]
 fn session_and_window_option_inheritance_preserves_base_indices_headlessly() {
     let tm = Tm::new();
-    tm.ok(&["new-session", "-d", "-E", "-s", "bootstrap"]);
+    tm.ok(&["new-session", "-d", "-s", "bootstrap", "--", "sleep", "300"]);
     tm.ok(&["set-option", "-g", "base-index", "100"]);
     tm.ok(&["new-session", "-d", "-s", "indexed", "--", "sleep", "30"]);
     assert_eq!(
@@ -1907,7 +1945,7 @@ fn pipe_pane_captures_pty_output_and_toggles_off_headlessly() {
 #[test]
 fn format_modifiers_match_tmux_headlessly_without_extra_dependencies() {
     let tm = Tm::new();
-    tm.ok(&["new-session", "-d", "-E", "-s", "formats"]);
+    tm.ok(&["new-session", "-d", "-s", "formats", "--", "sleep", "300"]);
     for (name, value) in [
         ("@s", "abcdefghij"),
         ("@path", "/usr/local/bin/foo"),
@@ -2004,13 +2042,13 @@ fn format_modifiers_match_tmux_headlessly_without_extra_dependencies() {
 #[test]
 fn format_name_and_content_modifiers_match_tmux_headlessly() {
     let tm = Tm::new();
-    tm.ok(&["new-session", "-d", "-E", "-s", "names"]);
+    tm.ok(&["new-session", "-d", "-s", "names", "--", "sleep", "300"]);
     let names_id = tm
         .ok(&["display-message", "-p", "-t", "names:", "#{session_id}"])
         .trim()
         .to_owned();
     tm.ok(&["rename-window", "-t", "names:0", "knownwin"]);
-    tm.ok(&["new-session", "-d", "-E", "-s", "other"]);
+    tm.ok(&["new-session", "-d", "-s", "other", "--", "sleep", "300"]);
     tm.ok(&["new-window", "-d", "-t", "other:", "-n", "sibling"]);
     assert_eq!(
         tm.ok(&[
@@ -2152,7 +2190,7 @@ fn format_name_and_content_modifiers_match_tmux_headlessly() {
 fn format_context_loops_iterate_sessions_windows_and_panes_headlessly() {
     let tm = Tm::new();
     for name in ["zeta", "alpha", "mike"] {
-        tm.ok(&["new-session", "-d", "-E", "-s", name]);
+        tm.ok(&["new-session", "-d", "-s", name, "--", "sleep", "300"]);
     }
     assert_eq!(
         tm.ok(&["display-message", "-p", "#{S:#{session_name} }"]),
@@ -2218,7 +2256,7 @@ fn format_context_loops_iterate_sessions_windows_and_panes_headlessly() {
 #[test]
 fn run_shell_matches_headless_stdout_and_background_contract() {
     let tm = Tm::new();
-    tm.ok(&["new-session", "-d", "-E", "-s", "run"]);
+    tm.ok(&["new-session", "-d", "-s", "run", "--", "sleep", "300"]);
     assert_eq!(
         tm.ok(&["run-shell", "--", "printf", "shell-output"]),
         "shell-output\n"

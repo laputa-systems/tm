@@ -157,7 +157,6 @@ fn default_new_session() -> InvocationSpec {
             group_target: None,
             format: None,
             window_name: None,
-            empty: false,
             command: Vec::new(),
             cwd: current_dir(),
             size: Size::new(80, 24),
@@ -174,7 +173,6 @@ fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
     let mut attach_existing = false;
     let mut group_target = None;
     let mut format = None;
-    let mut empty = false;
     let mut command = Vec::new();
     let mut size = Size::new(80, 24);
     let mut index = 0;
@@ -206,7 +204,7 @@ fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
                 index += 1;
                 window_name = Some(argument(arguments, index, "-n")?.to_owned());
             }
-            "-E" => empty = true,
+            "-E" => {}
             value if value.starts_with("-n") && value.len() > 2 => {
                 window_name = Some(value[2..].to_owned());
             }
@@ -242,13 +240,6 @@ fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
         }
         index += 1;
     }
-    if command.len() == 1 && command[0].is_empty() {
-        command.clear();
-        empty = true;
-    }
-    if empty && !command.is_empty() {
-        return Err("command cannot be given for empty pane".to_owned());
-    }
     Ok(InvocationSpec {
         request: Request::NewSession {
             name,
@@ -257,7 +248,6 @@ fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
             group_target,
             format,
             window_name,
-            empty,
             command,
             cwd,
             size,
