@@ -449,16 +449,21 @@ fn attach_client(
                     continue;
                 }
                 let clear_screen = last_size != Some(render_size);
+                let modes_before = client.modes;
                 let Some(full_render) =
                     state.render_session_with_clear(session_id, Some(client_id), clear_screen)
                 else {
                     break None;
                 };
-                break Some((full_render, render_size, revision));
+                let modes_changed = state
+                    .clients
+                    .get(&client_id)
+                    .is_some_and(|client| client.modes != modes_before);
+                break Some((full_render, render_size, revision, modes_changed));
             },
             Err(_) => None,
         };
-        let Some((full_render, render_size, render_revision)) = next_render else {
+        let Some((full_render, render_size, render_revision, modes_changed)) = next_render else {
             break;
         };
         // Keep the revision observed before rendering. Rendering consumes
@@ -484,9 +489,10 @@ fn attach_client(
             // Screen diffs cannot carry OSC/DCS side effects (for example an
             // OSC 52 clipboard update), so preserve the complete non-clearing
             // frame whenever one is present.
-            let delta = if full_render
-                .windows(2)
-                .any(|window| window == b"\x1b]" || window == b"\x1bP")
+            let delta = if modes_changed
+                || full_render
+                    .windows(2)
+                    .any(|window| window == b"\x1b]" || window == b"\x1bP")
                 || full_render.contains(&0x07)
             {
                 Err(())
@@ -1837,7 +1843,8 @@ impl ServerState {
                 .global_options
                 .get("focus-events")
                 .is_some_and(|value| parse_on_off(value).unwrap_or(true))
-                && capabilities.focus_enable.is_some(),
+                && capabilities.focus_enable.is_some()
+                && active.is_some_and(|pane| pane.output_state.focus_events()),
             paste: capabilities.paste_enable.is_some(),
             extkeys: self
                 .global_options
@@ -18409,7 +18416,7 @@ bind -r Right next-window
                 .any(|window| window == b"\x1b[?1006h")
         );
         assert!(
-            rendered
+            !rendered
                 .windows(b"\x1b[?1004h".len())
                 .any(|window| window == b"\x1b[?1004h")
         );

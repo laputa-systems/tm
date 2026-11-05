@@ -63,13 +63,15 @@ fn attach_owns_modes_once_and_restores_them_on_detach() {
     let (mut client, baseline) = attach(&tm, "modes", ProtocolProfile::xterm_minimal_v1());
     assert_eq!(count(&client, b"\x1b[?1049h"), 1);
     assert_eq!(count(&client, b"\x1b[?2004h"), 1);
-    assert_eq!(count(&client, b"\x1b[?1004h"), 1);
+    assert_eq!(count(&client, b"\x1b[?1004h"), 0);
     assert_eq!(count(&client, b"\x1b[?1000h"), 1);
     assert!(count(&client, b"\x1b[?2026h") >= 1);
     assert_eq!(count(&client, b"\x1b[>1u"), 0);
 
     send(&mut client, b"input\n");
     pty_harness::wait_for_text(&mut client, "INPUT_ACK", Duration::from_secs(3));
+    send(&mut client, b"focus\n");
+    pty_harness::wait_for_text(&mut client, "FOCUS_READY", Duration::from_secs(3));
     assert_eq!(count(&client, b"\x1b[?1049h"), 1);
     assert_eq!(count(&client, b"\x1b[?2004h"), 1);
     assert_eq!(count(&client, b"\x1b[?1004h"), 1);
@@ -111,7 +113,7 @@ fn xterm_256color_has_no_sync_but_keeps_common_modes() {
     let (mut client, baseline) = attach(&tm, "xterm", ProtocolProfile::xterm_minimal_v1());
     assert_eq!(count(&client, b"\x1b[?1049h"), 1);
     assert_eq!(count(&client, b"\x1b[?2004h"), 1);
-    assert_eq!(count(&client, b"\x1b[?1004h"), 1);
+    assert_eq!(count(&client, b"\x1b[?1004h"), 0);
     assert_eq!(count(&client, b"\x1b[?1000h"), 1);
     assert_eq!(count(&client, b"\x1b[?2026h"), 0);
     pty_harness::detach(&mut client, &baseline);
