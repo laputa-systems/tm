@@ -5,9 +5,9 @@
 - **Goal:** within tm's compiled profile and narrow scope, every behavior advertised as matching tmux 3.8 has evidence that runs both implementations, observes the effect exactly, and passes at the qualified commit. The known CLI and lifecycle mismatches are fixed. Generated histories cover multi-step use, and the release artifact on this host passes the suite.
 - **Base:** `d171bbd`, toolchain `nightly-2026-09-15` (pinned; do not change), host x86_64 Alpine (`x86_64-unknown-linux-musl`).
 - **Preflight:** 2026-11-05. Verdict: ready.
-- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`).
+- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1.
 - **Red / parked:** none. Baseline reds are listed in **Baseline**.
-- **Next:** G1.
+- **Next:** G2.
 
 ## Charter
 
@@ -119,14 +119,13 @@ Measured 2026-11-05 at `d171bbd` on this host, under concurrent load from other 
 | `cargo test --no-fail-fast` | 1 flaky red (below; passed on the G0 rerun) | 86–132 s, of which `tmux_modes` takes 55–86 s |
 | `make parity` (`tmux_parity`) | green, 6 tests | 7 s |
 | `tests/support/install-tmux-ref.sh` | green, tmux 3.8 | 10 s |
-| `make lint` | **red**: 10 `deprecated libc::time_t` errors (musl) at `src/server.rs:13221-13245` | 6 s |
+| `make lint` | **red**: 10 `deprecated libc::time_t` errors (musl) at `src/server.rs:13221-13245`; green since G1 | 6 s |
 | focused suite, e.g. `cargo test --test tmux_core_compat` | green | 2 s |
 | `make release && make verify-release` | green; dist `tm` is 1,485,880 bytes (P1 size baseline) | 60 s |
 
 Known red before any change:
 
 - `tmux_signals::stop_signal_restores_the_screen_before_stopping` fails 4 of 5 runs. It waits on `wait_for_quiescence` (a settle wait) and matches the hosted Linux CI failure.
-- `make lint` is red on musl (above).
 - TMUX-9 reproduces 10 of 10: `tm -S S kill-server; tm -S S new-session -d` gives `failed to fill whole buffer`.
 - TMUX-8 reproduces: after `pipe-pane -t S -- true`, a `[sh] <defunct>` child stays under the daemon.
 - `tmux_modes` has 4 tests that each run longer than 60 s.

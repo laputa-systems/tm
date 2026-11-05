@@ -12203,7 +12203,7 @@ fn expand_format_token(body: &str, values: &[(&str, String)]) -> String {
     if let Some(value) = body.strip_prefix("T:") {
         let value = evaluate_format_argument(value, values);
         if value.contains('%') {
-            let now = unsafe { libc::time(std::ptr::null_mut()) };
+            let now = unix_time();
             return format_strftime(now, &value);
         }
         return value;
@@ -13218,7 +13218,7 @@ fn format_regex_replace(
     output
 }
 
-fn format_strftime(timestamp: libc::time_t, format: &str) -> String {
+fn format_strftime(timestamp: i64, format: &str) -> String {
     let Ok(format) = CString::new(format) else {
         return String::new();
     };
@@ -13238,11 +13238,11 @@ fn format_strftime(timestamp: libc::time_t, format: &str) -> String {
     String::from_utf8_lossy(&buffer[..length]).into_owned()
 }
 
-fn format_timestamp(value: &str) -> Option<libc::time_t> {
-    value.trim().parse::<libc::time_t>().ok()
+fn format_timestamp(value: &str) -> Option<i64> {
+    value.trim().parse::<i64>().ok()
 }
 
-fn format_relative_time(timestamp: libc::time_t, now: libc::time_t) -> String {
+fn format_relative_time(timestamp: i64, now: i64) -> String {
     let age = now.saturating_sub(timestamp);
     if age < 0 {
         return String::new();
@@ -13276,11 +13276,11 @@ fn format_time_modifier(body: &str, values: &[(&str, String)]) -> Option<String>
         return Some(format_strftime(timestamp, "%b%y"));
     }
     if body.starts_with("t/r:") {
-        let now = unsafe { libc::time(std::ptr::null_mut()) };
+        let now = unix_time();
         return Some(format_relative_time(timestamp, now));
     }
     if body.starts_with("t/d:") {
-        let now = unsafe { libc::time(std::ptr::null_mut()) };
+        let now = unix_time();
         return Some(now.saturating_sub(timestamp).to_string());
     }
     if body.starts_with("t:") {
