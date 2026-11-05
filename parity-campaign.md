@@ -5,10 +5,10 @@
 - **Goal:** within tm's compiled profile and narrow scope, every behavior advertised as matching tmux 3.8 has evidence that runs both implementations, observes the effect exactly, and passes at the qualified commit. The known CLI and lifecycle mismatches are fixed. Generated histories cover multi-step use, and the release artifact on this host passes the suite.
 - **Base:** `d171bbd`, toolchain `nightly-2026-09-15` (pinned; do not change), host x86_64 Alpine (`x86_64-unknown-linux-musl`).
 - **Preflight:** 2026-11-05. Verdict: ready.
-- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2, G3, O1 (`KNOWN_DIFFERENCES` empty: exact comparison exposed no difference in the existing differential tests).
+- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2, G3, O1 (`KNOWN_DIFFERENCES` empty: exact comparison exposed no difference in the existing differential tests), O2 (raw runner `tests/support/raw_pty.rs`; fixed a resize row-loss mismatch).
 - **Red / parked:** none. Baseline reds are listed in **Baseline**.
-- **Next:** O2, then M1 ∥ L1.
-- **Ruling (affects O2, H2, H3):** ptytest 0.1.1–0.3.0 rejects any escape with an intermediate byte, such as `ESC ( B`, under every profile, so it cannot attach the reference. Differential attached observations use a raw-PTY runner in `tests/support/` (openpty, a reader thread, and the existing `vt100` dev-dependency for screen state); ptytest stays for tm-only scenarios. The upstream ptytest fix is listed under **Needs environment**.
+- **Next:** O2.1–O2.4, mismatches O2 exposed: (1) OSC 52 bytes — tm writes `ESC]52;c;…BEL`, the reference `ESC]52;;…BEL` on `tmux-256color` and ST-terminated on `xterm-256color`; (2) tm's incremental frames lack the sync brackets the reference puts around every frame; (3) `show-options -s terminal-features` omits the `[0]` array index; (4) tm's `capture-pane` trims trailing blank lines the reference keeps. Then C1, C2, M1 ∥ L1, L2, V1.
+- **Ruling (affects O2, H2, H3):** ptytest 0.1.1–0.3.0 rejects any escape with an intermediate byte, such as `ESC ( B`, under every profile, so it cannot attach the reference. Differential attached observations use a raw-PTY runner in `tests/support/` (openpty, a reader thread, and the existing `vt100` dev-dependency for screen state; it answers DA1, without which tmux withholds `?1004h`); ptytest stays for tm-only scenarios. The upstream ptytest fix is listed under **Needs environment**.
 
 ## Charter
 
