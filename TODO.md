@@ -10,15 +10,6 @@ Next: 11
 - **Fix with:** lifecycle-concurrency
 - **Effort:** S
 
-### TMUX-9 · P3 · A command immediately after kill-server can fail with a short read
-
-- **Area:** Lifecycle
-- **Where:** `src/server.rs:224`, `src/server.rs:233`, `src/client.rs:53`
-- **Problem:** `tm kill-server` followed immediately by `tm new-session ...` fails 10/10 with `tm: failed to fill whole buffer` on both this tree and the base checkpoint `af1d5d7`. `connect_or_start` can connect to the old listener before the accept loop notices shutdown and removes the socket; the daemon then exits without answering the request.
-- **Recommendation:** Make `kill-server` wait until the socket no longer accepts, or retry a connect or request that fails with EOF immediately after startup. Cover the restart loop with a test.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** S
-
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
 - **Area:** Status
@@ -28,7 +19,7 @@ Next: 11
 - **Fix with:** reference-parity
 - **Effort:** S
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, and TMUX-7 are closed with tests and
-commits recorded in git history. TMUX-8 and TMUX-9 are open P3s from the final
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, and TMUX-9 are closed with
+tests and commits recorded in git history. TMUX-8 is an open P3 from the final
 review. Add a new entry here only for a reproduced defect that the current
 suites do not cover.
