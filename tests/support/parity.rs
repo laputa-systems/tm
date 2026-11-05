@@ -325,28 +325,20 @@ pub struct KnownDifference {
 
 pub const KNOWN_DIFFERENCES: &[KnownDifference] = &[
     KnownDifference {
-        test: "capture_keeps_trailing_blank_rows",
+        test: "capture_keeps_cells_erased_after_being_written",
         command: &["capture-pane", "-p", "-J", "-t", "S"],
-        parity_row: "capture options",
+        parity_row: "capture of erased cells",
         field: Field::Stdout,
-        tm: "abcdefghijklmnopqrstuvwxy               pad   x             red                 END                                     \n",
-        reference: "abcdefghijklmnopqrstuvwxy\npad   x  \nred   \nEND\n\n",
+        tm: "e\nEND\n\n\n",
+        reference: "e     \nEND\n\n\n",
     },
     KnownDifference {
-        test: "capture_keeps_trailing_blank_rows",
-        command: &["capture-pane", "-p", "-e", "-t", "S"],
-        parity_row: "capture options",
-        field: Field::Stdout,
-        tm: "abcdefghijklmnopqrst\x1b[0m\nuvwxy\x1b[0m\npad   x  \x1b[0m\n\x1b[31mred\x1b[m   \x1b[0m\nEND\x1b[0m\n\n",
-        reference: "abcdefghijklmnopqrst\nuvwxy\npad   x\n\x1b[31mred\x1b[39m\nEND\n\n",
-    },
-    KnownDifference {
-        test: "capture_keeps_trailing_blank_rows",
+        test: "capture_keeps_cells_erased_after_being_written",
         command: &["capture-pane", "-p", "-N", "-t", "S"],
-        parity_row: "capture options",
+        parity_row: "capture of erased cells",
         field: Field::Stdout,
-        tm: "abcdefghijklmnopqrst\nuvwxy               \npad   x             \nred                 \nEND                 \n                    \n",
-        reference: "abcdefghijklmnopqrst\nuvwxy     \npad   x   \nred       \nEND  \n\n",
+        tm: "e    \nEND  \n\n\n",
+        reference: "e         \nEND  \n\n\n",
     },
 ];
 

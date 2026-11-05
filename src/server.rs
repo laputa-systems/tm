@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use vt100::{Color, Parser};
 
+use crate::capture::{CaptureFormat, CaptureStyle, capture_row};
 use crate::config;
 #[cfg(test)]
 use crate::config::ConfigLine;
@@ -8449,12 +8450,27 @@ impl ServerState {
         let last = last.min(base.saturating_add(live_rows).saturating_sub(1));
         let count = last.saturating_sub(first).saturating_add(1);
         let mut output = Vec::new();
-        if escape {
+        if escape || join || preserve_trailing {
+            let format = CaptureFormat {
+                escape,
+                join,
+                preserve_trailing,
+            };
+            let mut style = CaptureStyle::default();
             for index in 0..count {
-                let row =
-                    capture_formatted_row(&mut pane.parser, base, first + index, &pane.raw_output);
-                output.extend_from_slice(&row);
-                if !join && index + 1 < count {
+                let absolute = first + index;
+                let raw_row = escape
+                    .then(|| raw_hyperlink_row(&pane.raw_output, absolute))
+                    .flatten();
+                let (text, wrapped) = match raw_row {
+                    Some(text) => (text, false),
+                    None => {
+                        let row = capture_row(&mut pane.parser, base, absolute, format, &mut style);
+                        (row.text, row.wrapped)
+                    }
+                };
+                output.extend_from_slice(&text);
+                if index + 1 < count && !(join && wrapped) {
                     output.push(b'\n');
                 }
             }
@@ -8462,18 +8478,8 @@ impl ServerState {
             let lines = history.into_iter().chain(live).collect::<Vec<_>>();
             for index in 0..count {
                 let line = &lines[first + index];
-                let line = if preserve_trailing {
-                    line.as_str()
-                } else {
-                    line.trim_end_matches(' ')
-                };
-                output.extend_from_slice(line.as_bytes());
-                if preserve_trailing {
-                    let padding =
-                        usize::from(pane.rect.cols).saturating_sub(format_display_width(line));
-                    output.extend(std::iter::repeat_n(b' ', padding));
-                }
-                if !join && index + 1 < count {
+                output.extend_from_slice(line.trim_end_matches(' ').as_bytes());
+                if index + 1 < count {
                     output.push(b'\n');
                 }
             }
@@ -11059,41 +11065,6 @@ fn render_list_mode_overlay(
         };
         output.extend_from_slice(format!("\x1b[{rows};1H\x1b[K{footer}").as_bytes());
     }
-}
-
-fn capture_formatted_row(
-    parser: &mut Parser,
-    history_rows: usize,
-    row: usize,
-    raw_output: &[u8],
-) -> Vec<u8> {
-    if let Some(raw_row) = raw_hyperlink_row(raw_output, row) {
-        return raw_row;
-    }
-    let saved = parser.screen().scrollback();
-    let (rows, cols) = parser.screen().size();
-    let mut formatted = if row < history_rows {
-        parser
-            .screen_mut()
-            .set_scrollback(history_rows.saturating_sub(row));
-        parser
-            .screen()
-            .rows_formatted(0, cols)
-            .next()
-            .unwrap_or_default()
-    } else {
-        parser.screen_mut().set_scrollback(0);
-        parser
-            .screen()
-            .rows_formatted(0, cols)
-            .nth(row.saturating_sub(history_rows).min(usize::from(rows)))
-            .unwrap_or_default()
-    };
-    parser.screen_mut().set_scrollback(saved);
-    if !formatted.is_empty() {
-        formatted.extend_from_slice(b"\x1b[0m");
-    }
-    formatted
 }
 
 fn raw_hyperlink_row(raw_output: &[u8], target_row: usize) -> Option<Vec<u8>> {

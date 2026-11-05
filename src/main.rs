@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+mod capture;
 mod cells;
 mod client;
 mod command;

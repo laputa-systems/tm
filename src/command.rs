@@ -1666,7 +1666,6 @@ fn parse_capture_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
         }
         index += 1;
     }
-    preserve_trailing |= join;
     Ok(InvocationSpec::plain(Request::CapturePane {
         target,
         start,

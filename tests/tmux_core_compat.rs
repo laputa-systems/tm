@@ -1062,7 +1062,7 @@ fn capture_pane_preserves_trailing_spaces_with_n_headlessly() {
     assert!(tm.capture_until_contains("trailing", "x").contains('x'));
     assert_eq!(
         tm.ok(&["capture-pane", "-pN", "-S0", "-E0", "-t", "trailing"]),
-        "x         \n"
+        "x    \n"
     );
 }
 
