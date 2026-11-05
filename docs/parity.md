@@ -282,6 +282,108 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `select-layout` | `even-vertical` | match | panes stacked with even heights | C4 `tests/tmux_cli_flags.rs::windows_select_layout_flags_match_the_reference` | differential |
 | `select-layout` | `(other layouts)` | rejected | main-horizontal, main-vertical, tiled, mirrored, and custom layout strings | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_layouts_it_does_not_implement`; C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
 | `select-layout` | `(no layout)` | rejected | re-apply the last layout | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_layouts_it_does_not_implement`; C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
+| `list-panes` | `-a` | match | every pane of every session, sessions ordered by name | C5 `tests/tmux_cli_flags.rs::panes_list_panes_flags_match_the_reference` | differential |
+| `list-panes` | `-F` | match | format for each pane | C5 `tests/tmux_cli_flags.rs::panes_list_panes_flags_match_the_reference` | differential |
+| `list-panes` | `-f` | match | print only the panes for which the expanded filter is true (non-empty and not `0`) | C5 `tests/tmux_cli_flags.rs::panes_list_panes_flags_match_the_reference` | differential |
+| `list-panes` | `-s` | match | every pane of the target window's session | C5 `tests/tmux_cli_flags.rs::panes_list_panes_flags_match_the_reference` | differential |
+| `list-panes` | `-t` | match | target window | C5 `tests/tmux_cli_flags.rs::panes_list_panes_flags_match_the_reference` | differential |
+| `list-panes` | `-F (default format)` | tm-only | tm prints `%<id>: <index> <marker>`, with a `<window>.<index>: ` prefix for `-s` and `<session>:<window>.<index>: ` for `-a`; tmux prints geometry and history sizes | C5 `tests/tmux_cli_flags.rs::panes_list_panes_default_format_is_tm_only` | internal |
+| `list-panes` | `-O` | rejected | sort order | C5 `tests/tmux_cli_flags.rs::panes_list_panes_rejects_flags_it_does_not_implement` | internal |
+| `list-panes` | `-r` | rejected | reverse the sort order | C5 `tests/tmux_cli_flags.rs::panes_list_panes_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-b` | match | place the new pane before the target; the new pane is the larger half on odd sizes | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference` | differential |
+| `split-window` | `-c` | match | start directory of the new pane | C5 `tests/tmux_cli_flags.rs::panes_split_window_command_and_format_flags_match_the_reference` | differential |
+| `split-window` | `-d` | match | do not make the new pane active | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference` | differential |
+| `split-window` | `-E` | match | empty pane with no process; a command is an error | C5 `tests/tmux_cli_flags.rs::panes_split_window_command_and_format_flags_match_the_reference` | differential |
+| `split-window` | `-F` | match | format for `-P`; without `-P` nothing is printed | C5 `tests/tmux_cli_flags.rs::panes_split_window_command_and_format_flags_match_the_reference` | differential |
+| `split-window` | `-h` | match | split side by side | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference` | differential |
+| `split-window` | `-l` | match | size in cells or percent, clamped to leave one cell for each pane; invalid sizes fail with `invalid tiled geometry` | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference` | differential |
+| `split-window` | `-p` | match | size as a percentage; `-l` wins when both are given | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference` | differential |
+| `split-window` | `-P` | match | print the new pane; default format `#{session_name}:#{window_index}.#{pane_index}` | C5 `tests/tmux_cli_flags.rs::panes_split_window_command_and_format_flags_match_the_reference` | differential |
+| `split-window` | `-t` | match | target pane | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference`; C5 `tests/tmux_cli_flags.rs::panes_split_window_command_and_format_flags_match_the_reference` | differential |
+| `split-window` | `-v` | match | split top and bottom (the default) | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference` | differential |
+| `split-window` | `-Z` | match | zoom the new pane | C5 `tests/tmux_cli_flags.rs::panes_split_window_size_and_placement_flags_match_the_reference` | differential |
+| `split-window` | `shell-command` | match | one word runs through the shell, several words run directly; `pane_start_command` quotes each word like tmux | C5 `tests/tmux_cli_flags.rs::panes_split_window_command_and_format_flags_match_the_reference` | differential |
+| `split-window` | `-Z (with -d)` | rejected | zoom while keeping the old pane active; tmux sizes the hidden new pane to the whole window | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-B` | rejected | border lines of the new pane | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-e` | rejected | set an environment variable in the new pane | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-f` | rejected | full-width or full-height split of the window root; tm's old implementation overlapped the other panes | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-I` | rejected | forward standard input to the new pane | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-k` | rejected | keep the pane after its command exits | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-m` | rejected | message shown when the pane stays open | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-R` | rejected | inactive border style | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-s` | rejected | pane style | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-S` | rejected | active border style | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-T` | rejected | pane title | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `split-window` | `-W` | rejected | wait until the pane's command exits | C5 `tests/tmux_cli_flags.rs::panes_split_window_rejects_flags_it_does_not_implement` | internal |
+| `new-pane` | `(any flag)` | rejected | create a floating pane; tm has no floating panes and used to run split-window instead | C5 `tests/tmux_cli_flags.rs::panes_new_pane_is_rejected` | internal |
+| `select-pane` | `-D` | match | pane below, wrapping to the top; ties go to the most recently active pane | C5 `tests/tmux_cli_flags.rs::panes_select_pane_navigation_flags_match_the_reference` | differential |
+| `select-pane` | `-d` | match | disable input to the pane | C5 `tests/tmux_cli_flags.rs::panes_select_pane_state_flags_match_the_reference` | differential |
+| `select-pane` | `-e` | match | enable input to the pane | C5 `tests/tmux_cli_flags.rs::panes_select_pane_state_flags_match_the_reference` | differential |
+| `select-pane` | `-L` | match | pane to the left, wrapping to the right | C5 `tests/tmux_cli_flags.rs::panes_select_pane_navigation_flags_match_the_reference` | differential |
+| `select-pane` | `-l` | match | last pane; with `-d` or `-e` it changes the last pane's input without selecting it | C5 `tests/tmux_cli_flags.rs::panes_select_pane_navigation_flags_match_the_reference`; C5 `tests/tmux_cli_flags.rs::panes_select_pane_state_flags_match_the_reference` | differential |
+| `select-pane` | `-M` | match | clear the marked pane | C5 `tests/tmux_cli_flags.rs::panes_select_pane_state_flags_match_the_reference` | differential |
+| `select-pane` | `-m` | match | toggle the mark on the target pane without selecting it | C5 `tests/tmux_cli_flags.rs::panes_select_pane_state_flags_match_the_reference` | differential |
+| `select-pane` | `-R` | match | pane to the right, wrapping to the left | C5 `tests/tmux_cli_flags.rs::panes_select_pane_navigation_flags_match_the_reference` | differential |
+| `select-pane` | `-t` | match | target pane | C5 `tests/tmux_cli_flags.rs::panes_select_pane_navigation_flags_match_the_reference` | differential |
+| `select-pane` | `-T` | match | pane title, expanded as a format; the pane is not selected | C5 `tests/tmux_cli_flags.rs::panes_select_pane_state_flags_match_the_reference` | differential |
+| `select-pane` | `-U` | match | pane above, wrapping to the bottom | C5 `tests/tmux_cli_flags.rs::panes_select_pane_navigation_flags_match_the_reference` | differential |
+| `select-pane` | `-g` | rejected | print the pane style | C5 `tests/tmux_cli_flags.rs::panes_select_pane_rejects_flags_it_does_not_implement` | internal |
+| `select-pane` | `-P` | rejected | set the pane style | C5 `tests/tmux_cli_flags.rs::panes_select_pane_rejects_flags_it_does_not_implement` | internal |
+| `select-pane` | `-Z` | rejected | keep the window zoomed | C5 `tests/tmux_cli_flags.rs::panes_select_pane_rejects_flags_it_does_not_implement` | internal |
+| `select-pane` | `-n` | rejected | tm-only next-pane flag; tmux 3.8 has no such flag | C5 `tests/tmux_cli_flags.rs::panes_select_pane_rejects_flags_it_does_not_implement` | internal |
+| `select-pane` | `-p` | rejected | tm-only previous-pane flag; tmux 3.8 has no such flag | C5 `tests/tmux_cli_flags.rs::panes_select_pane_rejects_flags_it_does_not_implement` | internal |
+| `kill-pane` | `-a` | match | kill every pane of the window except the target | C5 `tests/tmux_cli_flags.rs::panes_kill_pane_flags_match_the_reference` | differential |
+| `kill-pane` | `-f` | match | with `-a`, kill only the panes for which the filter is true; without `-a` it is an error | C5 `tests/tmux_cli_flags.rs::panes_kill_pane_flags_match_the_reference` | differential |
+| `kill-pane` | `-t` | match | target pane; the last pane takes its window with it, and the last window its session | C5 `tests/tmux_cli_flags.rs::panes_kill_pane_flags_match_the_reference` | differential |
+| `kill-pane` | `-K` | rejected | tm-only flag; tmux 3.8 has no such flag | C5 `tests/tmux_cli_flags.rs::panes_kill_pane_rejects_flags_it_does_not_implement` | internal |
+| `kill-pane` | `-F` | rejected | tm-only flag; tmux 3.8 has no such flag | C5 `tests/tmux_cli_flags.rs::panes_kill_pane_rejects_flags_it_does_not_implement` | internal |
+| `break-pane` | `-d` | match | do not select the new window | C5 `tests/tmux_cli_flags.rs::panes_break_pane_flags_match_the_reference` | differential |
+| `break-pane` | `-F` | match | format for `-P` | C5 `tests/tmux_cli_flags.rs::panes_break_pane_flags_match_the_reference` | differential |
+| `break-pane` | `-n` | match | window name; by default the window is named after the pane's command | C5 `tests/tmux_cli_flags.rs::panes_break_pane_flags_match_the_reference` | differential |
+| `break-pane` | `-P` | match | print the new window's pane; default format `#{session_name}:#{window_index}.#{pane_index}` | C5 `tests/tmux_cli_flags.rs::panes_break_pane_flags_match_the_reference` | differential |
+| `break-pane` | `-s` | match | source pane; the default is the marked pane or the current pane | C5 `tests/tmux_cli_flags.rs::panes_break_pane_flags_match_the_reference` | differential |
+| `break-pane` | `-t` | match | destination window index or session; the new window may be in another session, and a window's only pane moves the window | C5 `tests/tmux_cli_flags.rs::panes_break_pane_flags_match_the_reference` | differential |
+| `break-pane` | `-a` | rejected | insert after the target window | C5 `tests/tmux_cli_flags.rs::panes_break_pane_rejects_flags_it_does_not_implement` | internal |
+| `break-pane` | `-b` | rejected | insert before the target window | C5 `tests/tmux_cli_flags.rs::panes_break_pane_rejects_flags_it_does_not_implement` | internal |
+| `break-pane` | `-W` | rejected | turn the pane into a floating pane | C5 `tests/tmux_cli_flags.rs::panes_break_pane_rejects_flags_it_does_not_implement` | internal |
+| `break-pane` | `-x` | rejected | floating pane width | C5 `tests/tmux_cli_flags.rs::panes_break_pane_rejects_flags_it_does_not_implement` | internal |
+| `break-pane` | `-X` | rejected | floating pane x position | C5 `tests/tmux_cli_flags.rs::panes_break_pane_rejects_flags_it_does_not_implement` | internal |
+| `break-pane` | `-y` | rejected | floating pane height | C5 `tests/tmux_cli_flags.rs::panes_break_pane_rejects_flags_it_does_not_implement` | internal |
+| `break-pane` | `-Y` | rejected | floating pane y position | C5 `tests/tmux_cli_flags.rs::panes_break_pane_rejects_flags_it_does_not_implement` | internal |
+| `join-pane` | `-b` | match | place the pane before the target | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-d` | match | do not select the joined pane | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-h` | match | split side by side | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-l` | match | size in cells or percent; invalid sizes fail with `size or position invalid tiled geometry` | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-p` | match | size as a percentage | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-s` | match | source pane, possibly in another session; the default is the marked pane | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-t` | match | target pane | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-v` | match | split top and bottom (the default) | C5 `tests/tmux_cli_flags.rs::panes_join_pane_flags_match_the_reference` | differential |
+| `join-pane` | `-f` | rejected | full-width or full-height split of the window root | C5 `tests/tmux_cli_flags.rs::panes_join_pane_rejects_flags_it_does_not_implement` | internal |
+| `join-pane` | `-s (same window as -t)` | tm-only | tmux re-lays out the window; tm fails with `source and target panes must be in different windows` | C5 `tests/tmux_cli_flags.rs::panes_join_pane_within_one_window_is_tm_only` | internal |
+| `move-pane` | `-b` | match | same as `join-pane -b` | C5 `tests/tmux_cli_flags.rs::panes_move_pane_flags_match_the_reference` | differential |
+| `move-pane` | `-d` | match | same as `join-pane -d` | C5 `tests/tmux_cli_flags.rs::panes_move_pane_flags_match_the_reference` | differential |
+| `move-pane` | `-h` | match | same as `join-pane -h` | C5 `tests/tmux_cli_flags.rs::panes_move_pane_flags_match_the_reference` | differential |
+| `move-pane` | `-l` | match | same as `join-pane -l` | C5 `tests/tmux_cli_flags.rs::panes_move_pane_flags_match_the_reference` | differential |
+| `move-pane` | `-s` | match | same as `join-pane -s` | C5 `tests/tmux_cli_flags.rs::panes_move_pane_flags_match_the_reference` | differential |
+| `move-pane` | `-t` | match | same as `join-pane -t` | C5 `tests/tmux_cli_flags.rs::panes_move_pane_flags_match_the_reference` | differential |
+| `move-pane` | `-v` | match | same as `join-pane -v` | C5 `tests/tmux_cli_flags.rs::panes_move_pane_flags_match_the_reference` | differential |
+| `move-pane` | `-f` | rejected | full-width or full-height split of the window root | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-p` | rejected | not a tmux move-pane flag | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-M` | rejected | move a floating pane with the mouse | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-D` | rejected | move a floating pane down | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-L` | rejected | move a floating pane left | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-P` | rejected | place a floating pane | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-R` | rejected | move a floating pane right | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-U` | rejected | move a floating pane up | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-X` | rejected | floating pane x position | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-Y` | rejected | floating pane y position | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `move-pane` | `-z` | rejected | floating pane z-index | C5 `tests/tmux_cli_flags.rs::panes_move_pane_rejects_flags_it_does_not_implement` | internal |
+| `swap-pane` | `-D` | match | swap with the next pane, wrapping; wins over `-U` and ignores `-s` | C5 `tests/tmux_cli_flags.rs::panes_swap_pane_flags_match_the_reference` | differential |
+| `swap-pane` | `-d` | match | keep the active pane's slot instead of following the swap | C5 `tests/tmux_cli_flags.rs::panes_swap_pane_flags_match_the_reference` | differential |
+| `swap-pane` | `-s` | match | source pane; the default is the marked pane or the current pane, and swapping a pane with itself does nothing | C5 `tests/tmux_cli_flags.rs::panes_swap_pane_flags_match_the_reference` | differential |
+| `swap-pane` | `-t` | match | target pane; the panes may be in different windows or sessions | C5 `tests/tmux_cli_flags.rs::panes_swap_pane_flags_match_the_reference` | differential |
+| `swap-pane` | `-U` | match | swap with the previous pane, wrapping | C5 `tests/tmux_cli_flags.rs::panes_swap_pane_flags_match_the_reference` | differential |
+| `swap-pane` | `-Z` | rejected | keep the window zoomed | C5 `tests/tmux_cli_flags.rs::panes_swap_pane_rejects_flags_it_does_not_implement` | internal |
 
 ## Baseline
 

@@ -70,7 +70,6 @@ impl Layout {
         new_pane: u64,
         axis: Axis,
         before: bool,
-        _full: bool,
         first_size: Option<u16>,
     ) -> bool {
         if matches!(self, Self::Leaf(id) if *id == target) {
@@ -92,8 +91,8 @@ impl Layout {
         match self {
             Self::Leaf(_) => false,
             Self::Split { first, second, .. } => {
-                first.split_with_size(target, new_pane, axis, before, _full, first_size)
-                    || second.split_with_size(target, new_pane, axis, before, _full, first_size)
+                first.split_with_size(target, new_pane, axis, before, first_size)
+                    || second.split_with_size(target, new_pane, axis, before, first_size)
             }
         }
     }
@@ -119,12 +118,7 @@ impl Layout {
             Axis::Horizontal => rect.cols.saturating_sub(1),
             Axis::Vertical => rect.rows.saturating_sub(1),
         };
-        // tmux gives the extra cell to the first side of a horizontal split;
-        // its vertical/full-axis layout keeps the lower side at the floor.
-        let default_first = match split_axis {
-            Axis::Horizontal => available.saturating_add(1) / 2,
-            Axis::Vertical => available / 2,
-        };
+        let default_first = available.saturating_add(1) / 2;
         let current_first = first_size.unwrap_or(default_first).min(available);
         let first_rect = match split_axis {
             Axis::Horizontal => Rect {
@@ -274,7 +268,7 @@ impl Layout {
                 }
                 Axis::Vertical => {
                     let available = rect.rows.saturating_sub(1);
-                    let first_rows = first_size.unwrap_or(available / 2).min(available);
+                    let first_rows = first_size.unwrap_or(available.saturating_add(1) / 2).min(available);
                     let second_rows = available.saturating_sub(first_rows);
                     first.rectangles(
                         Rect {
@@ -334,7 +328,7 @@ impl Layout {
             }
             Axis::Vertical => {
                 let available = rect.rows.saturating_sub(1);
-                let first_rows = first_size.unwrap_or(available / 2).min(available);
+                let first_rows = first_size.unwrap_or(available.saturating_add(1) / 2).min(available);
                 let y = rect.y.saturating_add(first_rows);
                 for x in rect.x..rect.x.saturating_add(rect.cols) {
                     output.push((x, y, *axis));
@@ -427,7 +421,7 @@ impl Layout {
             }
             Axis::Vertical => {
                 let available = rect.rows.saturating_sub(1);
-                let first_rows = first_size.unwrap_or(available / 2).min(available);
+                let first_rows = first_size.unwrap_or(available.saturating_add(1) / 2).min(available);
                 let separator_y = rect.y.saturating_add(first_rows);
                 if y == separator_y && x >= rect.x && x < rect.x.saturating_add(rect.cols) {
                     return Some(LayoutSeparator {
@@ -498,10 +492,7 @@ impl Layout {
             *current_size = Some(first_size.min(available));
             return true;
         }
-        let default_first = match split_axis {
-            Axis::Horizontal => available.saturating_add(1) / 2,
-            Axis::Vertical => available / 2,
-        };
+        let default_first = available.saturating_add(1) / 2;
         let current_first = current_size.unwrap_or(default_first).min(available);
         let first_rect = match split_axis {
             Axis::Horizontal => Rect {
@@ -556,11 +547,8 @@ pub(crate) struct Pane {
     pub output_state: OutputState,
     pub history_floor: usize,
     pub focused: bool,
+    pub active_point: u64,
     pub options: HashMap<String, String>,
-    /// A full split keeps its split-axis size but spans the window on the
-    /// perpendicular axis. This is the non-floating geometry used by
-    /// `split-window -f`.
-    pub full_axis: Option<Axis>,
 }
 
 /// A copy-mode target can display a snapshot from another pane (`copy-mode
@@ -608,8 +596,8 @@ impl Pane {
             output_state: OutputState::default(),
             history_floor: 0,
             focused: false,
+            active_point: 0,
             options: HashMap::new(),
-            full_axis: None,
         }
     }
 
@@ -684,8 +672,8 @@ impl Pane {
             output_state: OutputState::default(),
             history_floor: self.history_floor,
             focused: self.focused,
+            active_point: self.active_point,
             options: self.options.clone(),
-            full_axis: self.full_axis,
         }
     }
 }
@@ -707,7 +695,6 @@ pub(crate) struct Window {
     /// A BEL received while this window was being monitored. Selecting the
     /// window clears the alert for every linked winlink.
     pub bell_alert: bool,
-    pub next_pane_index: u32,
     pub mode_keys: CopyModeKeys,
     pub word_separators: String,
     pub synchronize_panes: bool,
@@ -715,7 +702,8 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    pub(crate) fn new(id: u64, index: u32, name: String, size: Size, pane: Pane) -> Self {
+    pub(crate) fn new(id: u64, index: u32, name: String, size: Size, mut pane: Pane) -> Self {
+        pane.active_point = 1;
         Self {
             id,
             index,
@@ -728,7 +716,6 @@ impl Window {
             zoomed: false,
             bell_alert: false,
             panes: vec![pane],
-            next_pane_index: 1,
             mode_keys: CopyModeKeys::Emacs,
             word_separators: crate::copy_mode::DEFAULT_WORD_SEPARATORS.to_owned(),
             synchronize_panes: false,
@@ -757,7 +744,6 @@ impl Window {
             last_pane: self.last_pane,
             zoomed: self.zoomed,
             bell_alert: self.bell_alert,
-            next_pane_index: self.next_pane_index,
             mode_keys: self.mode_keys,
             word_separators: self.word_separators.clone(),
             synchronize_panes: self.synchronize_panes,
@@ -770,19 +756,7 @@ impl Window {
         self.layout.rectangles(self.layout_rect(), &mut rectangles);
         for pane in &mut self.panes {
             if let Some(rect) = rectangles.get(&pane.id).copied() {
-                pane.rect = match pane.full_axis {
-                    Some(Axis::Horizontal) => Rect {
-                        y: self.origin_y,
-                        rows: self.size.rows,
-                        ..rect
-                    },
-                    Some(Axis::Vertical) => Rect {
-                        x: 0,
-                        cols: self.size.cols,
-                        ..rect
-                    },
-                    None => rect,
-                };
+                pane.rect = rect;
                 if self.zoomed && pane.id == self.active_pane {
                     pane.rect = Rect {
                         x: 0,
@@ -830,6 +804,53 @@ impl Window {
             .map(|pane| pane.id)
     }
 
+    pub(crate) fn activate_pane(&mut self, id: u64) {
+        let point = self.panes.iter().map(|pane| pane.active_point).max().unwrap_or(0) + 1;
+        self.active_pane = id;
+        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == id) {
+            pane.active_point = point;
+        }
+    }
+
+    pub(crate) fn lose_pane(&mut self, lost_id: u64, lost_position: usize) {
+        if self.last_pane == Some(lost_id) {
+            self.last_pane = None;
+        }
+        if self.active_pane != lost_id {
+            return;
+        }
+        let next = self
+            .last_pane
+            .filter(|last| self.pane(*last).is_some())
+            .or_else(|| {
+                lost_position
+                    .checked_sub(1)
+                    .and_then(|position| self.panes.get(position))
+                    .map(|pane| pane.id)
+            })
+            .or_else(|| self.panes.get(lost_position).map(|pane| pane.id));
+        if let Some(next) = next {
+            self.activate_pane(next);
+        }
+    }
+
+    pub(crate) fn renumber_panes(&mut self) {
+        self.panes
+            .iter_mut()
+            .enumerate()
+            .for_each(|(index, pane)| pane.index = index as u32);
+    }
+
+    pub(crate) fn insert_pane(&mut self, relative_to: u64, before: bool, pane: Pane) {
+        let position = self
+            .panes
+            .iter()
+            .position(|existing| existing.id == relative_to)
+            .map_or(self.panes.len(), |at| if before { at } else { at + 1 });
+        self.panes.insert(position, pane);
+        self.renumber_panes();
+    }
+
     pub(crate) fn swap_panes(&mut self, first: u64, second: u64) -> bool {
         let Some(first_index) = self.panes.iter().position(|pane| pane.id == first) else {
             return false;
@@ -838,10 +859,7 @@ impl Window {
             return false;
         };
         self.panes.swap(first_index, second_index);
-        self.panes
-            .iter_mut()
-            .enumerate()
-            .for_each(|(index, pane)| pane.index = index as u32);
+        self.renumber_panes();
         self.layout.swap_ids(first, second);
         true
     }
@@ -1000,7 +1018,7 @@ mod tests {
     #[test]
     fn horizontal_split_allocates_a_separator_and_reuses_all_columns() {
         let mut layout = Layout::Leaf(1);
-        assert!(layout.split_with_size(1, 2, Axis::Horizontal, false, false, None));
+        assert!(layout.split_with_size(1, 2, Axis::Horizontal, false, None));
         let mut rectangles = HashMap::new();
         layout.rectangles(
             Rect {
@@ -1019,7 +1037,7 @@ mod tests {
     #[test]
     fn removing_a_pane_collapses_its_parent_split() {
         let mut layout = Layout::Leaf(1);
-        assert!(layout.split_with_size(1, 2, Axis::Vertical, false, false, None));
+        assert!(layout.split_with_size(1, 2, Axis::Vertical, false, None));
         assert!(layout.remove(2));
         assert_eq!(layout, Layout::Leaf(1));
     }
@@ -1027,8 +1045,8 @@ mod tests {
     #[test]
     fn nested_splits_keep_each_pane_reachable() {
         let mut layout = Layout::Leaf(1);
-        assert!(layout.split_with_size(1, 2, Axis::Horizontal, false, false, None));
-        assert!(layout.split_with_size(2, 3, Axis::Vertical, false, false, None));
+        assert!(layout.split_with_size(1, 2, Axis::Horizontal, false, None));
+        assert!(layout.split_with_size(2, 3, Axis::Vertical, false, None));
         let mut rectangles = HashMap::new();
         layout.rectangles(
             Rect {
@@ -1045,7 +1063,7 @@ mod tests {
     #[test]
     fn separators_follow_split_geometry_and_capture_resize_path() {
         let mut layout = Layout::Leaf(1);
-        assert!(layout.split_with_size(1, 2, Axis::Horizontal, false, false, None));
+        assert!(layout.split_with_size(1, 2, Axis::Horizontal, false, None));
         let rect = Rect {
             x: 0,
             y: 0,
@@ -1073,7 +1091,7 @@ mod tests {
         assert_eq!(rectangles[&2].x, 7);
 
         let mut vertical = Layout::Leaf(3);
-        assert!(vertical.split_with_size(3, 4, Axis::Vertical, false, false, None));
+        assert!(vertical.split_with_size(3, 4, Axis::Vertical, false, None));
         let vertical_rect = Rect {
             x: 0,
             y: 0,
@@ -1081,10 +1099,10 @@ mod tests {
             rows: 8,
         };
         let hit = vertical
-            .separator_at(vertical_rect, 4, 3)
+            .separator_at(vertical_rect, 4, 4)
             .expect("horizontal separator");
         assert_eq!(hit.axis, Axis::Vertical);
-        assert_eq!(hit.coordinate, 3);
+        assert_eq!(hit.coordinate, 4);
         assert!(vertical.set_separator_size(vertical_rect, &hit.path, hit.axis, 2));
         let mut vertical_rectangles = HashMap::new();
         vertical.rectangles(vertical_rect, &mut vertical_rectangles);
@@ -1108,6 +1126,6 @@ mod tests {
             .panes
             .push(Pane::empty(2, 1, Size::new(20, 6)).expect("second resize pane"));
         window.reflow();
-        assert_eq!(window.panes[0].parser.screen().contents(), "line-4\nline-5");
+        assert_eq!(window.panes[0].parser.screen().contents(), "line-3\nline-4\nline-5");
     }
 }

@@ -25,7 +25,8 @@ use crate::copy_mode::{
 use crate::cells::display_column_to_char_index;
 use crate::model::{Axis, CopySource, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
-    ClientMessage, OptionScope, PROTOCOL_VERSION, PaneDirection, Request, ServerMessage,
+    ClientMessage, OptionScope, PROTOCOL_VERSION, PaneDirection, PaneListScope, Request,
+    ServerMessage, WindowStep,
     read_client_message, read_request, read_version, write_server_message, write_version,
 };
 use crate::pty::Pty;
@@ -831,13 +832,14 @@ impl RenderBenchmark {
                         target: Some("render-benchmark:0"),
                         horizontal: true,
                         before: false,
-                        full: false,
                         detached: true,
                         zoom: false,
                         empty: true,
                         split_size: None,
+                        percentage: None,
                         command: &[],
                         cwd: None,
+                        format: None,
                     },
                 )
                 .expect("split render benchmark pane");
@@ -1450,13 +1452,24 @@ struct SplitWindowOptions<'a> {
     target: Option<&'a str>,
     horizontal: bool,
     before: bool,
-    full: bool,
     detached: bool,
     zoom: bool,
     empty: bool,
     split_size: Option<&'a str>,
+    percentage: Option<&'a str>,
     command: &'a [String],
     cwd: Option<&'a str>,
+    format: Option<&'a str>,
+}
+
+struct JoinPaneOptions<'a> {
+    source: Option<&'a str>,
+    target: Option<&'a str>,
+    horizontal: bool,
+    before: bool,
+    detached: bool,
+    split_size: Option<&'a str>,
+    percentage: Option<&'a str>,
 }
 
 struct NewPaneOptions<'a> {
@@ -1893,13 +1906,14 @@ impl ServerState {
             target,
             horizontal,
             before,
-            full,
             detached,
             zoom,
             empty,
             split_size,
+            percentage,
             command,
             cwd,
+            format,
         } = options;
         let (session_index, window_index, target_pane) = self.resolve_pane_target(target)?;
         let session_id = self.sessions[session_index].id;
@@ -1915,15 +1929,20 @@ impl ServerState {
             .map(|pane| pane.rect)
             .ok_or_else(|| "target pane no longer exists".to_owned())?;
         if (horizontal && target_rect.cols < 3) || (!horizontal && target_rect.rows < 3) {
-            return Err("pane is too small to split".to_owned());
+            return Err("no space for a new pane".to_owned());
         }
-        let pane_index = self.sessions[session_index].windows[window_index].next_pane_index;
+        let extent = if horizontal {
+            target_rect.cols
+        } else {
+            target_rect.rows
+        };
+        let first_size = split_first_size(extent, before, split_size, percentage)?;
         let pane_id = self.next_pane_id();
-        let mut pane = self.new_pane(
+        let pane = self.new_pane(
             shared,
             NewPaneOptions {
                 pane_id,
-                index: pane_index,
+                index: 0,
                 size,
                 command,
                 cwd: cwd.or(session_cwd.as_deref()),
@@ -1931,20 +1950,6 @@ impl ServerState {
             },
         )?;
         let window = &mut self.sessions[session_index].windows[window_index];
-        let requested_size =
-            split_size.and_then(|value| parse_split_size(value, horizontal, target_rect));
-        let first_size = requested_size.map(|new_size| {
-            let available = if horizontal {
-                target_rect.cols.saturating_sub(1)
-            } else {
-                target_rect.rows.saturating_sub(1)
-            };
-            if before {
-                new_size.min(available)
-            } else {
-                available.saturating_sub(new_size)
-            }
-        });
         if !window.layout.split_with_size(
             target_pane,
             pane_id,
@@ -1954,31 +1959,25 @@ impl ServerState {
                 Axis::Vertical
             },
             before,
-            full,
             first_size,
         ) {
             pane.pty.kill();
             return Err("target pane is not in the active layout".to_owned());
         }
-        window.next_pane_index += 1;
-        if full {
-            pane.full_axis = Some(if horizontal {
-                Axis::Horizontal
-            } else {
-                Axis::Vertical
-            });
-        }
-        window.panes.push(pane);
-        if !detached || zoom {
+        window.insert_pane(target_pane, before, pane);
+        if !detached {
             window.last_pane = Some(window.active_pane);
-            window.active_pane = pane_id;
+            window.activate_pane(pane_id);
         }
         if zoom {
             window.zoomed = true;
         }
         self.reflow_session(self.sessions[session_index].id);
         self.sync_group_windows(session_index);
-        Ok(format!("%{pane_id}"))
+        match format {
+            Some(format) => self.render_pane(session_index, window_index, pane_id, format),
+            None => Ok(String::new()),
+        }
     }
 
     fn new_pane(
@@ -2004,6 +2003,7 @@ impl ServerState {
             pane.parser = Parser::new(size.rows.max(1), size.cols.max(1), self.history_limit);
             pane.current_path = None;
             pane.start_path = start_path;
+            pane.command_args = command.to_vec();
             return Ok(pane);
         }
         let terminal = self
@@ -3897,7 +3897,7 @@ impl ServerState {
                     .iter_mut()
                     .find(|window| window.index == window_index)
                 {
-                    window.active_pane = pane_id;
+                    window.activate_pane(pane_id);
                 }
             }
         }
@@ -4916,7 +4916,6 @@ impl ServerState {
                 pane_ids[index - 1],
                 pane_ids[index],
                 axis,
-                false,
                 false,
                 Some(first_size),
             ) {
@@ -5997,7 +5996,7 @@ impl ServerState {
         repeat: usize,
     ) -> CommandResult {
         if self.find_pane_location(pane_id).is_none() {
-            return Err(format!("pane not found: %{pane_id}"));
+            return Err(format!("can't find pane: %{pane_id}"));
         }
         let history_limit = self.history_limit;
         let (
@@ -6107,6 +6106,16 @@ impl ServerState {
 
     fn display_message(&self, target: Option<&str>, format: &str) -> CommandResult {
         let (session_index, window_index, pane_id) = self.resolve_pane_target(target)?;
+        self.render_pane(session_index, window_index, pane_id, format)
+    }
+
+    fn render_pane(
+        &self,
+        session_index: usize,
+        window_index: usize,
+        pane_id: u64,
+        format: &str,
+    ) -> CommandResult {
         let session = &self.sessions[session_index];
         let window = &session.windows[window_index];
         let pane = window
@@ -7040,7 +7049,7 @@ impl ServerState {
                         .iter()
                         .any(|pane| pane.id == window.active_pane)
                 {
-                    window.active_pane = window.panes[0].id;
+                    window.activate_pane(window.panes[0].id);
                 }
             }
             session.windows.retain(|window| !window.panes.is_empty());
@@ -7602,60 +7611,75 @@ impl ServerState {
             .join("\n"))
     }
 
-    fn list_panes(&self, target: Option<&str>, format: Option<&str>) -> CommandResult {
-        let (session_index, window_index, _) = self.resolve_pane_target(target)?;
-        let session = &self.sessions[session_index];
-        let window = &self.sessions[session_index].windows[window_index];
-        let session_names = self
-            .sessions
-            .iter()
-            .map(|session| session.name.as_str())
-            .collect::<Vec<_>>()
-            .join("\0");
-        let window_names = session
-            .windows
-            .iter()
-            .map(|window| window.name.as_str())
-            .collect::<Vec<_>>()
-            .join("\0");
-        Ok(window
-            .panes
-            .iter()
-            .map(|pane| {
-                let marker = if pane.id == window.active_pane {
-                    '*'
-                } else {
-                    '-'
-                };
-                match format {
-                    Some(format) => {
-                        let format =
-                            self.expand_context_loops(format, session_index, window_index, pane.id);
-                        format_pane(FormatPaneOptions {
-                            session,
-                            window,
-                            pane,
-                            marked: self.marked_pane == Some(pane.id),
-                            marked_set: self.marked_pane.is_some(),
-                            piped: self.pane_pipes.get(&pane.id).is_some_and(PanePipe::is_open),
-                            mode: pane.copy_mode.as_ref(),
-                            linked_sessions: self.window_link_count(window.id),
-                            group_info: self.session_group_info(session_index),
-                            session_names: &session_names,
-                            window_names: &window_names,
-                            options: &self.global_options,
-                            format: &format,
-                        })
-                    }
-                    None => format!("%{}: {} {}", pane.id, pane.index, marker),
+    fn list_panes(
+        &self,
+        target: Option<&str>,
+        format: Option<&str>,
+        filter: Option<&str>,
+        scope: PaneListScope,
+    ) -> CommandResult {
+        let (target_session, target_window) = self.resolve_window_target(target)?;
+        let mut locations = Vec::new();
+        let mut session_order = (0..self.sessions.len()).collect::<Vec<_>>();
+        session_order.sort_by(|left, right| self.sessions[*left].name.cmp(&self.sessions[*right].name));
+        let window_order = |session_index: usize| {
+            let mut order = (0..self.sessions[session_index].windows.len()).collect::<Vec<_>>();
+            order.sort_by_key(|window| self.sessions[session_index].windows[*window].index);
+            order
+        };
+        match scope {
+            PaneListScope::Window => locations.push((target_session, target_window)),
+            PaneListScope::Session => locations.extend(
+                window_order(target_session)
+                    .into_iter()
+                    .map(|window| (target_session, window)),
+            ),
+            PaneListScope::Server => {
+                for session_index in session_order {
+                    locations.extend(
+                        window_order(session_index)
+                            .into_iter()
+                            .map(|window| (session_index, window)),
+                    );
                 }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"))
+            }
+        }
+        let mut lines = Vec::new();
+        for (session_index, window_index) in locations {
+            let session = &self.sessions[session_index];
+            let window = &session.windows[window_index];
+            for pane in &window.panes {
+                if let Some(filter) = filter {
+                    let expanded = self.render_pane(session_index, window_index, pane.id, filter)?;
+                    if !format_true(&expanded) {
+                        continue;
+                    }
+                }
+                lines.push(match format {
+                    Some(format) => self.render_pane(session_index, window_index, pane.id, format)?,
+                    None => {
+                        let marker = if pane.id == window.active_pane { '*' } else { '-' };
+                        let location = match scope {
+                            PaneListScope::Window => String::new(),
+                            PaneListScope::Session => format!("{}.{}: ", window.index, pane.index),
+                            PaneListScope::Server => {
+                                format!("{}:{}.{}: ", session.name, window.index, pane.index)
+                            }
+                        };
+                        format!("{location}%{}: {} {marker}", pane.id, pane.index)
+                    }
+                });
+            }
+        }
+        Ok(lines.join("\n"))
     }
 
     fn next_window(&mut self, target: Option<&str>) -> CommandResult {
         let session_index = self.resolve_session_target(target)?;
+        self.next_window_of(session_index)
+    }
+
+    fn next_window_of(&mut self, session_index: usize) -> CommandResult {
         let selected_window = {
             let session = &mut self.sessions[session_index];
             if session.windows.len() > 1 {
@@ -7683,6 +7707,10 @@ impl ServerState {
 
     fn previous_window(&mut self, target: Option<&str>) -> CommandResult {
         let session_index = self.resolve_session_target(target)?;
+        self.previous_window_of(session_index)
+    }
+
+    fn previous_window_of(&mut self, session_index: usize) -> CommandResult {
         let selected_window = {
             let session = &mut self.sessions[session_index];
             if session.windows.len() > 1 {
@@ -8049,53 +8077,82 @@ impl ServerState {
         enabled: Option<bool>,
     ) -> CommandResult {
         let (session_index, window_index, pane_id) = self.resolve_pane_target(target)?;
+        let title = match title {
+            Some(title) if !matches!(direction, PaneDirection::Last) && mark.is_none() => {
+                let titled = match direction {
+                    PaneDirection::Left
+                    | PaneDirection::Right
+                    | PaneDirection::Up
+                    | PaneDirection::Down => adjacent_pane(
+                        &self.sessions[session_index].windows[window_index],
+                        pane_id,
+                        direction,
+                    ),
+                    _ => Some(pane_id),
+                };
+                match titled {
+                    Some(titled) => {
+                        Some(self.render_pane(session_index, window_index, titled, &title)?)
+                    }
+                    None => None,
+                }
+            }
+            title => title,
+        };
         let window = &mut self.sessions[session_index].windows[window_index];
-        if matches!(direction, PaneDirection::Last)
-            && target.is_none()
-            && mark.is_none()
-            && title.is_none()
-            && enabled.is_none()
-            && window.last_pane.is_none()
-        {
-            return Err("no last pane".to_owned());
+        if matches!(direction, PaneDirection::Last) {
+            let last = window
+                .last_pane
+                .filter(|last| window.pane(*last).is_some())
+                .or_else(|| {
+                    (window.panes.len() == 2)
+                        .then(|| window.panes.iter().map(|pane| pane.id).find(|id| *id != window.active_pane))
+                        .flatten()
+                })
+                .ok_or_else(|| "no last pane".to_owned())?;
+            if let Some(enabled) = enabled {
+                if let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == last) {
+                    pane.enabled = enabled;
+                }
+                return Ok(String::new());
+            }
+            window.last_pane = Some(window.active_pane);
+            window.activate_pane(last);
+            return Ok(String::new());
         }
-        let current = window
-            .pane(pane_id)
-            .map(|pane| pane.rect)
-            .ok_or_else(|| "target pane no longer exists".to_owned())?;
-        let next = match direction {
-            PaneDirection::Next => next_pane_id(window, pane_id, 1),
-            PaneDirection::Previous => next_pane_id(window, pane_id, -1),
-            PaneDirection::Target => Some(pane_id),
-            PaneDirection::Last => window.last_pane.or(Some(pane_id)),
+        if let Some(mark) = mark {
+            self.marked_pane = if mark && self.marked_pane != Some(pane_id) {
+                Some(pane_id)
+            } else {
+                None
+            };
+            return Ok(String::new());
+        }
+        let selected = match direction {
             PaneDirection::Left
             | PaneDirection::Right
             | PaneDirection::Up
-            | PaneDirection::Down => directional_pane(window, pane_id, current, direction),
+            | PaneDirection::Down => match adjacent_pane(window, pane_id, direction) {
+                Some(found) => found,
+                None => return Ok(String::new()),
+            },
+            _ => pane_id,
         };
-        if let Some(next) = next {
-            if next != window.active_pane {
-                window.last_pane = Some(window.active_pane);
+        if let Some(enabled) = enabled {
+            if let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected) {
+                pane.enabled = enabled;
             }
-            window.active_pane = next;
+            return Ok(String::new());
         }
-        let selected = window.active_pane;
-        if let Some(mark) = mark {
-            if mark {
-                self.marked_pane = Some(selected);
-            } else {
-                self.marked_pane = None;
+        if let Some(title) = title {
+            if let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected) {
+                pane.title = title;
             }
+            return Ok(String::new());
         }
-        if let Some(title) = title
-            && let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected)
-        {
-            pane.title = title;
-        }
-        if let Some(enabled) = enabled
-            && let Some(pane) = window.panes.iter_mut().find(|pane| pane.id == selected)
-        {
-            pane.enabled = enabled;
+        if selected != window.active_pane {
+            window.last_pane = Some(window.active_pane);
+            window.activate_pane(selected);
         }
         Ok(String::new())
     }
@@ -8189,44 +8246,83 @@ impl ServerState {
         detached: bool,
     ) -> CommandResult {
         let (target_session, target_window, target_id) = self.resolve_pane_target(target)?;
-        let source_id = if let Some(source) = source {
-            let (source_session, source_window, source_id) =
-                self.resolve_pane_target(Some(source))?;
-            if source_session != target_session || source_window != target_window {
-                return Err("source and target panes must be in the same window".to_owned());
+        let (source_session, source_window, source_id) = match direction {
+            Some(direction) => {
+                let window = &self.sessions[target_session].windows[target_window];
+                let position = window
+                    .panes
+                    .iter()
+                    .position(|pane| pane.id == target_id)
+                    .ok_or_else(|| "target pane no longer exists".to_owned())?;
+                let count = window.panes.len();
+                let other = match direction {
+                    PaneDirection::Previous => window.panes[(position + count - 1) % count].id,
+                    _ => window.panes[(position + 1) % count].id,
+                };
+                (target_session, target_window, other)
             }
-            source_id
-        } else if let Some(direction) = direction {
-            let window = &self.sessions[target_session].windows[target_window];
-            let position = window
-                .panes
-                .iter()
-                .position(|pane| pane.id == target_id)
-                .ok_or_else(|| "target pane no longer exists".to_owned())?;
-            match direction {
-                PaneDirection::Previous => {
-                    window.panes[(position + window.panes.len() - 1) % window.panes.len()].id
-                }
-                PaneDirection::Next => window.panes[(position + 1) % window.panes.len()].id,
-                _ => return Ok(String::new()),
+            None => {
+                let marked = self.marked_pane.map(|id| format!("%{id}"));
+                self.resolve_pane_target(source.or(marked.as_deref()))?
             }
-        } else if let Some(marked) = self.marked_pane {
-            marked
-        } else {
-            return Err("no marked pane".to_owned());
         };
         if source_id == target_id {
-            return Err("source and target panes must be different".to_owned());
+            return Ok(String::new());
         }
-        let session_id = self.sessions[target_session].id;
-        let window = &mut self.sessions[target_session].windows[target_window];
-        if !window.swap_panes(source_id, target_id) {
-            return Err("unable to swap panes".to_owned());
+        let source_session_id = self.sessions[source_session].id;
+        let target_session_id = self.sessions[target_session].id;
+        if source_session == target_session && source_window == target_window {
+            let window = &mut self.sessions[target_session].windows[target_window];
+            if !window.swap_panes(source_id, target_id) {
+                return Err("unable to swap panes".to_owned());
+            }
+            if !detached {
+                window.activate_pane(target_id);
+            } else if window.active_pane == target_id {
+                window.activate_pane(source_id);
+            }
+            self.reflow_session(target_session_id);
+            return Ok(String::new());
         }
-        if !detached {
-            window.active_pane = target_id;
+        let source_position = self.sessions[source_session].windows[source_window]
+            .panes
+            .iter()
+            .position(|pane| pane.id == source_id)
+            .ok_or_else(|| "source pane no longer exists".to_owned())?;
+        let target_position = self.sessions[target_session].windows[target_window]
+            .panes
+            .iter()
+            .position(|pane| pane.id == target_id)
+            .ok_or_else(|| "target pane no longer exists".to_owned())?;
+        let target_pane = self.sessions[target_session].windows[target_window]
+            .panes
+            .remove(target_position);
+        let source_pane = std::mem::replace(
+            &mut self.sessions[source_session].windows[source_window].panes[source_position],
+            target_pane,
+        );
+        self.sessions[target_session].windows[target_window]
+            .panes
+            .insert(target_position, source_pane);
+        if self.marked_pane.is_some_and(|id| id == source_id || id == target_id) {
+            self.marked_pane = None;
         }
-        self.reflow_session(session_id);
+        for (session, window, outgoing, incoming) in [
+            (source_session, source_window, source_id, target_id),
+            (target_session, target_window, target_id, source_id),
+        ] {
+            let window = &mut self.sessions[session].windows[window];
+            window.renumber_panes();
+            window.layout.remap_ids(&HashMap::from([(outgoing, incoming)]));
+            if window.last_pane == Some(outgoing) {
+                window.last_pane = None;
+            }
+            if !detached || window.active_pane == outgoing {
+                window.activate_pane(incoming);
+            }
+        }
+        self.reflow_session(source_session_id);
+        self.reflow_session(target_session_id);
         Ok(String::new())
     }
 
@@ -8265,8 +8361,7 @@ impl ServerState {
             Some(target) => (target, None),
             None => ("", None),
         };
-        let target_session = self.resolve_session_index(Some(target_session_target))?;
-        let session_id = self.sessions[source_session].id;
+        let target_session = self.resolve_session_target(Some(target_session_target))?;
         let new_index = if let Some(part) = target_window_part {
             let index = part
                 .parse::<u32>()
@@ -8282,8 +8377,36 @@ impl ServerState {
         } else {
             self.next_free_window_index(target_session)
         };
-        if source_session != target_session {
-            return Err("source and target must be in the same session".to_owned());
+        let source_window_id = self.sessions[source_session].windows[source_window].id;
+        if self.sessions[source_session].windows[source_window].panes.len() == 1 {
+            let target_text = format!("{}:{new_index}", self.sessions[target_session].name);
+            self.relink_window(
+                Some(&format!("@{source_window_id}")),
+                Some(&target_text),
+                detached,
+                false,
+                false,
+            )?;
+            let (session_index, window_index) = self
+                .sessions
+                .iter()
+                .enumerate()
+                .find_map(|(session_index, session)| {
+                    session
+                        .windows
+                        .iter()
+                        .position(|window| window.id == source_window_id)
+                        .filter(|_| session.id == self.sessions[target_session].id)
+                        .map(|window_index| (session_index, window_index))
+                })
+                .ok_or_else(|| "moved window no longer exists".to_owned())?;
+            if let Some(name) = name {
+                self.sessions[session_index].windows[window_index].name = name.to_owned();
+            }
+            return match format {
+                Some(format) => self.render_pane(session_index, window_index, source_id, format),
+                None => Ok(String::new()),
+            };
         }
         let pane_position = self.sessions[source_session].windows[source_window]
             .panes
@@ -8294,31 +8417,22 @@ impl ServerState {
             .panes
             .remove(pane_position);
         pane.index = 0;
-        let source_empty = self.sessions[source_session].windows[source_window]
-            .panes
-            .is_empty();
-        let removed_active =
-            self.sessions[source_session].active_window
-                == self.sessions[source_session].windows[source_window].index;
-        let _ = self.sessions[source_session].windows[source_window]
-            .layout
-            .remove(source_id);
-        if source_empty {
-            self.sessions[source_session].windows.remove(source_window);
-            if self.sessions[source_session].windows.is_empty() {
-                self.sessions[source_session].active_window = new_index;
-            } else if removed_active {
-                let index = self.sessions[source_session].windows[0].index;
-                self.sessions[source_session].select_window(index);
-            }
+        let source_session_id = self.sessions[source_session].id;
+        let target_session_id = self.sessions[target_session].id;
+        if self.marked_pane == Some(source_id) {
+            self.marked_pane = None;
         }
+        let source = &mut self.sessions[source_session].windows[source_window];
+        source.renumber_panes();
+        let _ = source.layout.remove(source_id);
+        source.lose_pane(source_id, pane_position);
         let window_size = self.sessions[target_session].size;
         let window_id = self.next_window_id;
         self.next_window_id += 1;
         let window = Window::new(
             window_id,
             new_index,
-            name.unwrap_or("0").to_owned(),
+            name.map_or_else(|| default_window_name(&pane.command_args), str::to_owned),
             window_size,
             pane,
         );
@@ -8326,58 +8440,47 @@ impl ServerState {
         self.sessions[target_session].next_window_index = self.sessions[target_session]
             .next_window_index
             .max(new_index.saturating_add(1));
-        if !detached || removed_active || self.sessions[target_session].windows.len() == 1 {
+        if !detached {
             self.sessions[target_session].select_window(new_index);
         }
-        self.reflow_session(session_id);
-        if let Some(format) = format {
-            let session = &self.sessions[target_session];
-            let window = session
-                .windows
-                .iter()
-                .find(|window| window.index == new_index)
-                .ok_or_else(|| "new window no longer exists".to_owned())?;
-            let pane = window
-                .pane(source_id)
-                .ok_or_else(|| "moved pane no longer exists".to_owned())?;
-            Ok(render_format(
-                format,
-                &[
-                    ("session_name", session.name.clone()),
-                    ("window_index", new_index.to_string()),
-                    ("window_name", window.name.clone()),
-                    ("pane_id", format!("%{}", pane.id)),
-                    ("pane_index", pane.index.to_string()),
-                ],
-            ))
-        } else {
-            Ok(String::new())
+        self.reflow_session(source_session_id);
+        self.reflow_session(target_session_id);
+        match format {
+            Some(format) => {
+                let window_position = self.sessions[target_session]
+                    .windows
+                    .iter()
+                    .position(|window| window.index == new_index)
+                    .ok_or_else(|| "new window no longer exists".to_owned())?;
+                self.render_pane(target_session, window_position, source_id, format)
+            }
+            None => Ok(String::new()),
         }
     }
 
-    fn join_pane(
-        &mut self,
-        source: Option<&str>,
-        target: Option<&str>,
-        horizontal: bool,
-        before: bool,
-        detached: bool,
-        split_size: Option<&str>,
-    ) -> CommandResult {
-        let (source_session, source_window, source_id) = self.resolve_pane_target(source)?;
-        let (target_session, mut target_window, target_id) = self
-            .resolve_pane_target(target)
-            .map_err(|error| match error.strip_prefix("can't find window: ") {
-                Some(rest) => format!("can't find window: {rest}"),
-                None => error,
-            })?;
+    fn join_pane(&mut self, options: JoinPaneOptions<'_>) -> CommandResult {
+        let JoinPaneOptions {
+            source,
+            target,
+            horizontal,
+            before,
+            detached,
+            split_size,
+            percentage,
+        } = options;
+        let marked = self.marked_pane.map(|id| format!("%{id}"));
+        let (source_session, source_window, source_id) =
+            self.resolve_pane_target(source.or(marked.as_deref()))?;
+        let (target_session, target_window, target_id) = self.resolve_pane_target(target)?;
         if source_id == target_id {
             return Err("source and target panes must be different".to_owned());
         }
-        if source_session != target_session || source_window == target_window {
+        if source_session == target_session && source_window == target_window {
             return Err("source and target panes must be in different windows".to_owned());
         }
-        let session_id = self.sessions[target_session].id;
+        let target_session_id = self.sessions[target_session].id;
+        let target_window_id = self.sessions[target_session].windows[target_window].id;
+        let source_session_id = self.sessions[source_session].id;
         let source_window_number = self.sessions[source_session].windows[source_window].index;
         let target_window_number = self.sessions[target_session].windows[target_window].index;
         let source_was_active = self.sessions[source_session].active_window == source_window_number;
@@ -8385,20 +8488,17 @@ impl ServerState {
             .pane(target_id)
             .map(|pane| pane.rect)
             .ok_or_else(|| "target pane no longer exists".to_owned())?;
-        let requested =
-            split_size.and_then(|value| parse_split_size(value, horizontal, target_rect));
-        let available = if horizontal {
-            target_rect.cols.saturating_sub(1)
-        } else {
-            target_rect.rows.saturating_sub(1)
-        };
-        let first_size = requested.map(|requested| {
-            if before {
-                requested.min(available)
+        let first_size = split_first_size(
+            if horizontal {
+                target_rect.cols
             } else {
-                available.saturating_sub(requested)
-            }
-        });
+                target_rect.rows
+            },
+            before,
+            split_size,
+            percentage,
+        )
+        .map_err(|error| format!("size or position {error}"))?;
         let axis = if horizontal {
             Axis::Horizontal
         } else {
@@ -8407,8 +8507,8 @@ impl ServerState {
         let mut preflight = self.sessions[target_session].windows[target_window]
             .layout
             .clone();
-        if !preflight.split_with_size(target_id, source_id, axis, before, false, first_size) {
-            return Err("target pane is not in the active layout".to_owned());
+        if !preflight.split_with_size(target_id, source_id, axis, before, first_size) {
+            return Err("size or position no space for a new pane".to_owned());
         }
         let pane_position = self.sessions[source_session].windows[source_window]
             .panes
@@ -8418,46 +8518,59 @@ impl ServerState {
         let pane = self.sessions[source_session].windows[source_window]
             .panes
             .remove(pane_position);
+        self.sessions[source_session].windows[source_window].renumber_panes();
         let source_empty = self.sessions[source_session].windows[source_window]
             .panes
             .is_empty();
         let _ = self.sessions[source_session].windows[source_window]
             .layout
             .remove(source_id);
+        self.sessions[source_session].windows[source_window].lose_pane(source_id, pane_position);
         if source_empty {
             self.sessions[source_session].windows.remove(source_window);
-            if source_window < target_window {
-                target_window = target_window.saturating_sub(1);
+            if self.sessions[source_session].windows.is_empty() {
+                self.sessions.remove(source_session);
+            } else if source_session == target_session {
+                if source_was_active {
+                    self.sessions[source_session].active_window = target_window_number;
+                    self.sessions[source_session].last_window = None;
+                }
+            } else if source_was_active {
+                self.sessions[source_session].select_after_removing(source_window_number);
             }
-            if source_was_active {
-                // The source window disappears when its last pane is joined.
-                // Keep the session's active-window invariant true; tmux leaves
-                // the destination window selected in this situation.
-                self.sessions[target_session].active_window = target_window_number;
-                self.sessions[target_session].last_window = None;
+            if let Some(session) = self.sessions.iter_mut().find(|session| session.id == source_session_id)
+                && session.renumber_windows
+            {
+                renumber_session_windows(session);
             }
         }
         let pane_id = pane.id;
+        let target_session = self
+            .sessions
+            .iter()
+            .position(|session| session.id == target_session_id)
+            .ok_or_else(|| "target session no longer exists".to_owned())?;
+        let target_window = self.sessions[target_session]
+            .windows
+            .iter()
+            .position(|window| window.id == target_window_id)
+            .ok_or_else(|| "target window no longer exists".to_owned())?;
         let window = &mut self.sessions[target_session].windows[target_window];
-        let pane_index = window.next_pane_index;
-        if !window.layout.split_with_size(
-            target_id,
-            pane_id,
-            axis,
-            before,
-            false,
-            first_size,
-        ) {
-            return Err("target pane is not in the active layout".to_owned());
+        if !window.layout.split_with_size(target_id, pane_id, axis, before, first_size) {
+            return Err("size or position no space for a new pane".to_owned());
         }
-        let mut pane = pane;
-        pane.index = pane_index;
-        window.next_pane_index += 1;
-        window.panes.push(pane);
+        window.insert_pane(target_id, before, pane);
+        if self.marked_pane == Some(pane_id) {
+            self.marked_pane = None;
+        }
+        let window = &mut self.sessions[target_session].windows[target_window];
         if !detached {
-            window.active_pane = pane_id;
+            window.activate_pane(pane_id);
+            let index = window.index;
+            self.sessions[target_session].select_window(index);
         }
-        self.reflow_session(session_id);
+        self.reflow_session(target_session_id);
+        self.reflow_session(source_session_id);
         Ok(String::new())
     }
 
@@ -8550,9 +8663,8 @@ impl ServerState {
             let window = &mut self.sessions[session_index].windows[window_index];
             window.layout = crate::model::Layout::Leaf(pane_id);
             window.panes.push(pane);
-            window.active_pane = pane_id;
+            window.activate_pane(pane_id);
             window.last_pane = None;
-            window.next_pane_index = 1;
             let respawned_index = window.index;
             self.sessions[session_index].select_window(respawned_index);
             self.reflow_session(session_id);
@@ -8622,13 +8734,25 @@ impl ServerState {
         let session_id = self.sessions[session_index].id;
         let linked_window =
             self.window_link_count(self.sessions[session_index].windows[window_index].id) > 1;
-        if all || filter.is_some() {
-            let ids = self.sessions[session_index].windows[window_index]
-                .panes
-                .iter()
-                .filter(|pane| pane.id != pane_id && pane_filter(pane, filter))
-                .map(|pane| pane.id)
-                .collect::<Vec<_>>();
+        if all {
+            let mut ids = Vec::new();
+            for pane in &self.sessions[session_index].windows[window_index].panes {
+                if pane.id == pane_id {
+                    continue;
+                }
+                let keep = match filter {
+                    Some(filter) => format_true(&self.render_pane(
+                        session_index,
+                        window_index,
+                        pane.id,
+                        filter,
+                    )?),
+                    None => true,
+                };
+                if keep {
+                    ids.push(pane.id);
+                }
+            }
             for id in &ids {
                 self.pane_pipes.remove(id);
             }
@@ -8642,10 +8766,11 @@ impl ServerState {
                     let _ = window.layout.remove(*id);
                 }
             }
+            window.renumber_panes();
             if window.panes.is_empty() {
                 self.sessions[session_index].windows.remove(window_index);
             } else {
-                window.active_pane = pane_id;
+                window.activate_pane(pane_id);
             }
             self.reflow_session(session_id);
             return Ok(String::new());
@@ -8673,9 +8798,8 @@ impl ServerState {
             return Ok(String::new());
         }
         let _ = window.layout.remove(pane_id);
-        if window.active_pane == pane_id {
-            window.active_pane = window.panes[0].id;
-        }
+        window.renumber_panes();
+        window.lose_pane(pane_id, position);
         self.reflow_session(session_id);
         Ok(String::new())
     }
@@ -9466,7 +9590,7 @@ impl ServerState {
         {
             return self
                 .find_pane_location(id)
-                .ok_or_else(|| format!("pane not found: %{id}"));
+                .ok_or_else(|| format!("can't find pane: %{id}"));
         }
         if let Some(id) = target
             .strip_prefix('%')
@@ -9474,7 +9598,7 @@ impl ServerState {
         {
             return self
                 .find_pane_location(id)
-                .ok_or_else(|| format!("pane not found: %{id}"));
+                .ok_or_else(|| format!("can't find pane: %{id}"));
         }
         if matches!(target, "~" | "{marked}") {
             let id = self
@@ -9501,17 +9625,17 @@ impl ServerState {
         } else if let Ok(index) = token.parse::<u32>() {
             window
                 .pane_for_index(index)
-                .ok_or_else(|| format!("pane not found: {token}"))?
+                .ok_or_else(|| format!("can't find pane: {token}"))?
         } else if token == "+" {
             next_pane_id(window, window.active_pane, 1)
-                .ok_or_else(|| format!("pane not found: {token}"))?
+                .ok_or_else(|| format!("can't find pane: {token}"))?
         } else if token == "-" {
             next_pane_id(window, window.active_pane, -1)
-                .ok_or_else(|| format!("pane not found: {token}"))?
+                .ok_or_else(|| format!("can't find pane: {token}"))?
         } else if token == "!" {
             window
                 .last_pane
-                .ok_or_else(|| format!("pane not found: {token}"))?
+                .ok_or_else(|| format!("can't find pane: {token}"))?
         } else if matches!(
             token,
             "{top-left}"
@@ -9528,87 +9652,39 @@ impl ServerState {
                 | "{right-of}"
         ) {
             let selected = match token {
-                "{up-of}" => directional_pane(
-                    window,
-                    window.active_pane,
+                "{up-of}" => adjacent_pane(window, window.active_pane, PaneDirection::Up),
+                "{down-of}" => adjacent_pane(window, window.active_pane, PaneDirection::Down),
+                "{left-of}" => adjacent_pane(window, window.active_pane, PaneDirection::Left),
+                "{right-of}" => adjacent_pane(window, window.active_pane, PaneDirection::Right),
+                _ => {
+                    let (columns, rows) = (i32::from(window.size.cols), i32::from(window.size.rows));
+                    let (x, y) = match token {
+                        "{top-left}" => (0, 0),
+                        "{top-right}" => (columns - 1, 0),
+                        "{bottom-left}" => (0, rows - 1),
+                        "{bottom-right}" => (columns - 1, rows - 1),
+                        "{top}" => (columns / 2, 0),
+                        "{bottom}" => (columns / 2, rows - 1),
+                        "{left}" => (0, rows / 2),
+                        _ => (columns - 1, rows / 2),
+                    };
                     window
-                        .pane(window.active_pane)
-                        .map(|pane| pane.rect)
-                        .unwrap_or_default(),
-                    PaneDirection::Up,
-                ),
-                "{down-of}" => directional_pane(
-                    window,
-                    window.active_pane,
-                    window
-                        .pane(window.active_pane)
-                        .map(|pane| pane.rect)
-                        .unwrap_or_default(),
-                    PaneDirection::Down,
-                ),
-                "{left-of}" => directional_pane(
-                    window,
-                    window.active_pane,
-                    window
-                        .pane(window.active_pane)
-                        .map(|pane| pane.rect)
-                        .unwrap_or_default(),
-                    PaneDirection::Left,
-                ),
-                "{right-of}" => directional_pane(
-                    window,
-                    window.active_pane,
-                    window
-                        .pane(window.active_pane)
-                        .map(|pane| pane.rect)
-                        .unwrap_or_default(),
-                    PaneDirection::Right,
-                ),
-                "{top-left}" => window
-                    .panes
-                    .iter()
-                    .min_by_key(|pane| (pane.rect.y, pane.rect.x))
-                    .map(|pane| pane.id),
-                "{top-right}" => window
-                    .panes
-                    .iter()
-                    .min_by_key(|pane| (pane.rect.y, std::cmp::Reverse(pane.rect.x)))
-                    .map(|pane| pane.id),
-                "{bottom-left}" => window
-                    .panes
-                    .iter()
-                    .max_by_key(|pane| (pane.rect.y, std::cmp::Reverse(pane.rect.x)))
-                    .map(|pane| pane.id),
-                "{bottom-right}" => window
-                    .panes
-                    .iter()
-                    .max_by_key(|pane| (pane.rect.y, pane.rect.x))
-                    .map(|pane| pane.id),
-                "{top}" => window
-                    .panes
-                    .iter()
-                    .min_by_key(|pane| (pane.rect.y, pane.rect.x))
-                    .map(|pane| pane.id),
-                "{bottom}" => window
-                    .panes
-                    .iter()
-                    .max_by_key(|pane| (pane.rect.y, std::cmp::Reverse(pane.rect.x)))
-                    .map(|pane| pane.id),
-                "{left}" => window
-                    .panes
-                    .iter()
-                    .min_by_key(|pane| (pane.rect.x, pane.rect.y))
-                    .map(|pane| pane.id),
-                "{right}" => window
-                    .panes
-                    .iter()
-                    .min_by_key(|pane| (std::cmp::Reverse(pane.rect.x), pane.rect.y))
-                    .map(|pane| pane.id),
-                _ => None,
+                        .panes
+                        .iter()
+                        .find(|pane| {
+                            let left = i32::from(pane.rect.x);
+                            let top = i32::from(pane.rect.y) - i32::from(window.origin_y);
+                            x >= left
+                                && x <= left + i32::from(pane.rect.cols)
+                                && y >= top
+                                && y <= top + i32::from(pane.rect.rows)
+                        })
+                        .map(|pane| pane.id)
+                }
             };
-            selected.ok_or_else(|| format!("pane not found: {token}"))?
+            selected.ok_or_else(|| format!("can't find pane: {token}"))?
         } else {
-            return Err(format!("pane not found: {token}"));
+            return Err(format!("can't find pane: {token}"));
         };
         Ok((session_index, window_index, pane_id))
     }
@@ -11631,36 +11707,51 @@ fn execute_request_inner(
             target,
             horizontal,
             before,
-            full,
             detached,
             zoom,
             empty,
             size,
+            percentage,
             command,
             cwd,
+            format,
         } => state.split_window(
             shared,
             SplitWindowOptions {
                 target: target.as_deref(),
                 horizontal,
                 before,
-                full,
                 detached,
                 zoom,
                 empty,
                 split_size: size.as_deref(),
+                percentage: percentage.as_deref(),
                 command: &command,
                 cwd: cwd.as_deref(),
+                format: format.as_deref(),
             },
         ),
         Request::ListWindows { target, format } => {
             state.list_windows(target.as_deref(), format.as_deref())
         }
-        Request::ListPanes { target, format } => {
-            state.list_panes(target.as_deref(), format.as_deref())
-        }
-        Request::SelectWindow { target, last: false } => state.select_window(&target),
-        Request::SelectWindow { target, last: true } => state.select_last_window_of(&target),
+        Request::ListPanes {
+            target,
+            format,
+            filter,
+            scope,
+        } => state.list_panes(target.as_deref(), format.as_deref(), filter.as_deref(), scope),
+        Request::SelectWindow { target, step } => match step {
+            WindowStep::Exact => state.select_window(&target),
+            WindowStep::Last => state.select_last_window_of(&target),
+            WindowStep::Next => {
+                let (session_index, _) = state.resolve_window_target(Some(&target))?;
+                state.next_window_of(session_index)
+            }
+            WindowStep::Previous => {
+                let (session_index, _) = state.resolve_window_target(Some(&target))?;
+                state.previous_window_of(session_index)
+            }
+        },
         Request::SelectLayout { target, layout } => {
             if !matches!(layout.as_str(), "even-horizontal" | "even-vertical") {
                 return Err(format!("unsupported layout {layout} for select-layout"));
@@ -11753,14 +11844,16 @@ fn execute_request_inner(
             before,
             detached,
             size,
-        } => state.join_pane(
-            source.as_deref(),
-            target.as_deref(),
+            percentage,
+        } => state.join_pane(JoinPaneOptions {
+            source: source.as_deref(),
+            target: target.as_deref(),
             horizontal,
             before,
             detached,
-            size.as_deref(),
-        ),
+            split_size: size.as_deref(),
+            percentage: percentage.as_deref(),
+        }),
         Request::RespawnPane {
             target,
             command,
@@ -12525,13 +12618,44 @@ fn unix_time() -> i64 {
     unsafe { libc::time(std::ptr::null_mut()) }
 }
 
-fn parse_split_size(value: &str, horizontal: bool, target: Rect) -> Option<u16> {
-    if let Some(percent) = value.strip_suffix('%') {
-        let percent = percent.parse::<u16>().ok()?.min(100);
-        let length = if horizontal { target.cols } else { target.rows };
-        return Some((u32::from(length).saturating_mul(u32::from(percent)) / 100) as u16);
+fn split_first_size(
+    extent: u16,
+    before: bool,
+    size: Option<&str>,
+    percentage: Option<&str>,
+) -> Result<Option<u16>, String> {
+    let invalid = |cause: &str| format!("invalid tiled geometry {cause}");
+    let number = |text: &str, minimum: i64, maximum: i64| -> Result<i64, String> {
+        let value = text.parse::<i64>().map_err(|_| invalid("invalid"))?;
+        if value < minimum {
+            Err(invalid("too small"))
+        } else if value > maximum {
+            Err(invalid("too large"))
+        } else {
+            Ok(value)
+        }
+    };
+    let total = i64::from(extent);
+    let requested = if let Some(size) = size {
+        if size.is_empty() {
+            return Err(invalid("empty"));
+        }
+        Some(match size.strip_suffix('%') {
+            Some(digits) => total * number(digits, 0, 1000)? / 100,
+            None => number(size, 0, i64::from(i32::MAX))?,
+        })
+    } else if let Some(percentage) = percentage {
+        Some(total * number(percentage, 0, 100)? / 100)
+    } else {
+        return Ok(None);
+    };
+    let second = match requested {
+        Some(size) if before => total - size - 1,
+        Some(size) => size,
+        None => unreachable!("an absent size returned above"),
     }
-    value.parse::<u16>().ok()
+    .clamp(1, (total - 2).max(1));
+    Ok(Some(u16::try_from(total - 1 - second).unwrap_or(0)))
 }
 
 fn render_format(format: &str, values: &[(&str, String)]) -> String {
@@ -12571,10 +12695,7 @@ fn expand_format(format: &str, values: &[(&str, String)]) -> String {
             index += 2;
             continue;
         }
-        if format[index..].starts_with("#,")
-            || format[index..].starts_with("#:")
-            || format[index..].starts_with("#}")
-        {
+        if format[index..].starts_with("#,") || format[index..].starts_with("#}") {
             output.push(format.as_bytes()[index + 1] as char);
             index += 2;
             continue;
@@ -14079,17 +14200,62 @@ fn pane_content_for_format(pane: &Pane) -> String {
         .join("\n")
 }
 
-fn pane_filter(pane: &Pane, filter: Option<&str>) -> bool {
-    let Some(filter) = filter else {
-        return true;
-    };
-    if let Some(inner) = filter
-        .strip_prefix("#{==:#{pane_id},")
-        .and_then(|value| value.strip_suffix('}'))
-    {
-        return format!("%{}", pane.id) == inner;
+fn stringify_argv(arguments: &[String]) -> String {
+    arguments
+        .iter()
+        .map(|argument| escape_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn escape_argument(argument: &str) -> String {
+    const DOUBLE_QUOTED: &[char] = &[' ', '#', '\'', ';', '$', '{', '}', '%'];
+    const SINGLE_QUOTED: &[char] = &[' ', '"'];
+    if argument.is_empty() {
+        return "''".to_owned();
     }
-    true
+    let quote = if argument.contains(DOUBLE_QUOTED) {
+        Some('"')
+    } else if argument.contains(SINGLE_QUOTED) {
+        Some('\'')
+    } else {
+        None
+    };
+    let mut characters = argument.chars();
+    if let (Some(only), None) = (characters.next(), characters.next())
+        && only != ' '
+        && (quote.is_some() || only == '~')
+    {
+        return format!("\\{only}");
+    }
+    let mut escaped = String::new();
+    for character in argument.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' if quote == Some('"') => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\t' => escaped.push_str("\\t"),
+            '\r' => escaped.push_str("\\r"),
+            character if character.is_control() => {
+                let mut bytes = [0; 4];
+                for byte in character.encode_utf8(&mut bytes).bytes() {
+                    escaped.push_str(&format!("\\{byte:03o}"));
+                }
+            }
+            character => escaped.push(character),
+        }
+    }
+    match quote {
+        Some('\'') => format!("'{escaped}'"),
+        Some(quote) if escaped.starts_with('~') => format!("{quote}\\{escaped}{quote}"),
+        Some(quote) => format!("{quote}{escaped}{quote}"),
+        None if escaped.starts_with('~') => format!("\\{escaped}"),
+        None => escaped,
+    }
+}
+
+fn format_true(expanded: &str) -> bool {
+    !expanded.is_empty() && expanded != "0"
 }
 
 fn renumber_session_windows(session: &mut Session) {
@@ -14418,7 +14584,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
                 .to_string(),
         ),
         ("pane_current_command", pane.command.clone()),
-        ("pane_start_command", pane.command.clone()),
+        ("pane_start_command", stringify_argv(&pane.command_args)),
         (
             "pane_start_command_list",
             pane.command_args
@@ -15572,44 +15738,59 @@ impl ServerState {
     }
 }
 
-fn directional_pane(
-    window: &Window,
-    current_id: u64,
-    current: Rect,
-    direction: PaneDirection,
-) -> Option<u64> {
-    let center_x = u32::from(current.x) + u32::from(current.cols) / 2;
-    let center_y = u32::from(current.y) + u32::from(current.rows) / 2;
-    window
+fn adjacent_pane(window: &Window, current_id: u64, direction: PaneDirection) -> Option<u64> {
+    let current = window.pane(current_id)?.rect;
+    let relative = |rect: Rect| {
+        (
+            i32::from(rect.x),
+            i32::from(rect.y) - i32::from(window.origin_y),
+            i32::from(rect.cols),
+            i32::from(rect.rows),
+        )
+    };
+    let (x, y, columns, rows) = relative(current);
+    let (window_columns, window_rows) = (i32::from(window.size.cols), i32::from(window.size.rows));
+    let vertical = matches!(direction, PaneDirection::Up | PaneDirection::Down);
+    let edge = match direction {
+        PaneDirection::Up if y == 0 => window_rows + 1,
+        PaneDirection::Up => y,
+        PaneDirection::Down if y + rows + 1 >= window_rows => 0,
+        PaneDirection::Down => y + rows + 1,
+        PaneDirection::Left if x == 0 => window_columns + 1,
+        PaneDirection::Left => x,
+        PaneDirection::Right if x + columns + 1 >= window_columns => 0,
+        _ => x + columns + 1,
+    };
+    let (low, high) = if vertical { (x, x + columns) } else { (y, y + rows) };
+    let candidates = window
         .panes
         .iter()
         .filter(|pane| pane.id != current_id)
-        .filter(|pane| match direction {
-            PaneDirection::Left => pane.rect.x + pane.rect.cols <= current.x,
-            PaneDirection::Right => pane.rect.x >= current.x + current.cols,
-            PaneDirection::Up => pane.rect.y + pane.rect.rows <= current.y,
-            PaneDirection::Down => pane.rect.y >= current.y + current.rows,
-            _ => false,
+        .filter(|pane| {
+            let (other_x, other_y, other_columns, other_rows) = relative(pane.rect);
+            let (start, extent, near, far) = if vertical {
+                (other_x, other_columns, other_y, other_y + other_rows)
+            } else {
+                (other_y, other_rows, other_x, other_x + other_columns)
+            };
+            let touches = match direction {
+                PaneDirection::Up | PaneDirection::Left => far + 1 == edge,
+                _ => near == edge,
+            };
+            let end = start + extent - 1;
+            touches
+                && ((start < low && end > high)
+                    || (start >= low && start <= high)
+                    || (end >= low && end <= high))
         })
-        .filter(|pane| match direction {
-            PaneDirection::Left | PaneDirection::Right => {
-                center_y >= u32::from(pane.rect.y)
-                    && center_y < u32::from(pane.rect.y + pane.rect.rows)
-            }
-            PaneDirection::Up | PaneDirection::Down => {
-                center_x >= u32::from(pane.rect.x)
-                    && center_x < u32::from(pane.rect.x + pane.rect.cols)
-            }
-            _ => false,
-        })
-        .min_by_key(|pane| match direction {
-            PaneDirection::Left => current.x.saturating_sub(pane.rect.x + pane.rect.cols),
-            PaneDirection::Right => pane.rect.x.saturating_sub(current.x + current.cols),
-            PaneDirection::Up => current.y.saturating_sub(pane.rect.y + pane.rect.rows),
-            PaneDirection::Down => pane.rect.y.saturating_sub(current.y + current.rows),
-            _ => 0,
-        })
-        .map(|pane| pane.id)
+        .collect::<Vec<_>>();
+    let mut best: Option<&Pane> = None;
+    for pane in candidates {
+        if best.is_none_or(|current| pane.active_point > current.active_point) {
+            best = Some(pane);
+        }
+    }
+    best.map(|pane| pane.id)
 }
 
 fn next_pane_id(window: &Window, current_id: u64, delta: isize) -> Option<u64> {
@@ -15678,13 +15859,14 @@ mod tests {
                     target: Some("zzz:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split zzz session");
@@ -16040,13 +16222,14 @@ mod tests {
                     target: Some("panes:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split panes session");
@@ -16191,13 +16374,14 @@ mod tests {
                     target: Some("render-split:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split render session");
@@ -16376,13 +16560,14 @@ mod tests {
                     target: Some("mouse-resize:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split mouse resize session");
@@ -16433,13 +16618,14 @@ mod tests {
                     target: Some("mouse-pass-through:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split mouse pass-through session");
@@ -16492,13 +16678,14 @@ mod tests {
                     target: Some("top-status-mouse:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split top status mouse session");
@@ -16603,13 +16790,14 @@ mod tests {
                     target: Some("exited-reflow:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split exited reflow session");
@@ -16656,13 +16844,14 @@ mod tests {
                             target: Some("mode-kill:0"),
                             horizontal: true,
                             before: false,
-                            full: false,
                             detached: false,
                             zoom: false,
                             empty: true,
                             split_size: None,
+                            percentage: None,
                             command: &[],
                             cwd: None,
+                            format: None,
                         },
                     )
                     .expect("split mode-kill pane");
@@ -16758,13 +16947,14 @@ mod tests {
                         target: Some("sync:0"),
                         horizontal: true,
                         before: false,
-                        full: false,
                         detached: false,
                         zoom: false,
                         empty: false,
                         split_size: None,
+                        percentage: None,
                         command: &right,
                         cwd: None,
+                        format: None,
                     },
                 )
                 .expect("split sync window");
@@ -17040,13 +17230,14 @@ mod tests {
                     target: Some("render-source:0"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split source render session");
@@ -19912,13 +20103,14 @@ bind -r Right next-window
                     target: Some("mouse-select:"),
                     horizontal: true,
                     before: false,
-                    full: false,
                     detached: false,
                     zoom: false,
                     empty: true,
                     split_size: None,
+                    percentage: None,
                     command: &[],
                     cwd: None,
+                    format: None,
                 },
             )
             .expect("split mouse selection session");

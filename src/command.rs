@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use crate::model::Size;
-use crate::protocol::{OptionScope, PaneDirection, Request};
+use crate::protocol::{OptionScope, PaneDirection, PaneListScope, Request, WindowStep};
 use crate::server::socket_path;
 
 pub(crate) struct Invocation {
@@ -50,15 +50,13 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("has-session" | "has") => parse_has_session(&arguments[index + 1..])?,
         Some("kill-session" | "kill") => parse_kill_session(&arguments[index + 1..])?,
         Some("new-window" | "neww") => parse_new_window(&arguments[index + 1..])?,
-        Some("split-window" | "splitw" | "split" | "new-pane" | "newp") => {
-            parse_split_window(&arguments[index + 1..])?
-        }
+        Some("split-window" | "splitw" | "split") => parse_split_window(&arguments[index + 1..])?,
+        Some("new-pane" | "newp") => parse_new_pane(&arguments[index + 1..])?,
         Some("resize-pane" | "resizep") => parse_resize_pane(&arguments[index + 1..])?,
         Some("swap-pane" | "swapp") => parse_swap_pane(&arguments[index + 1..])?,
         Some("break-pane" | "breakp") => parse_break_pane(&arguments[index + 1..])?,
-        Some("join-pane" | "joinp" | "move-pane" | "movep") => {
-            parse_join_pane(&arguments[index + 1..])?
-        }
+        Some("join-pane" | "joinp") => parse_join_pane("join-pane", &arguments[index + 1..])?,
+        Some("move-pane" | "movep") => parse_join_pane("move-pane", &arguments[index + 1..])?,
         Some("respawn-pane" | "respawnp") => parse_respawn(&arguments[index + 1..], false)?,
         Some("respawn-window" | "respawnw") => parse_respawn_window(&arguments[index + 1..])?,
         Some("clear-history" | "clearhist") => InvocationSpec::plain(Request::ClearHistory {
@@ -252,7 +250,7 @@ fn parse_new_window(arguments: &[String]) -> Result<InvocationSpec, String> {
     let command = flags.positional.to_vec();
     let empty = flags.has('E');
     let (command, empty) = if command.len() == 1 && command[0].is_empty() {
-        (Vec::new(), true)
+        (command, true)
     } else {
         if empty && !command.is_empty() {
             return Err("command cannot be given for empty pane".to_owned());
@@ -274,75 +272,53 @@ fn parse_new_window(arguments: &[String]) -> Result<InvocationSpec, String> {
     }))
 }
 
+fn parse_new_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
+    scan_flags("new-pane", arguments, "", 0)?;
+    Err("unsupported command new-pane".to_owned())
+}
+
 fn parse_split_window(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut cwd = None;
-    let mut horizontal = false;
-    let mut before = false;
-    let mut full = false;
-    let mut detached = false;
-    let mut zoom = false;
-    let mut size = None;
-    let mut empty = false;
-    let (command, _) = parse_common_tail(arguments, |flag, value| match flag {
-        "-t" => {
-            target = Some(value.to_owned());
-            Ok(())
+    let flags = scan_flags(
+        "split-window",
+        arguments,
+        "bB:c:de:EfF:hIkl:m:p:PR:s:S:t:T:vWZ",
+        usize::MAX,
+    )?;
+    for (flag, name) in [('B', "-B"), ('e', "-e"), ('f', "-f"), ('I', "-I"), ('k', "-k"), ('m', "-m"), ('R', "-R"), ('s', "-s"), ('S', "-S"), ('T', "-T"), ('W', "-W")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "split-window"));
         }
-        "-c" => {
-            cwd = Some(value.to_owned());
-            Ok(())
-        }
-        "-h" => {
-            horizontal = true;
-            Ok(())
-        }
-        "-v" => Ok(()),
-        "-d" => {
-            detached = true;
-            Ok(())
-        }
-        "-b" => {
-            before = true;
-            Ok(())
-        }
-        "-f" => {
-            full = true;
-            Ok(())
-        }
-        "-Z" => {
-            zoom = true;
-            Ok(())
-        }
-        "-l" => {
-            size = Some(value.to_owned());
-            Ok(())
-        }
-        "-E" => {
-            empty = true;
-            Ok(())
-        }
-        other => Err(format!("unknown split-window option: {other}")),
-    })?;
+    }
+    if flags.has('Z') && flags.has('d') {
+        return Err(unsupported_flag("-Z (with -d)", "split-window"));
+    }
+    let format = flags.has('P').then(|| {
+        flags
+            .value('F')
+            .unwrap_or("#{session_name}:#{window_index}.#{pane_index}")
+            .to_owned()
+    });
+    let command = flags.positional.to_vec();
     let (command, empty) = if command.len() == 1 && command[0].is_empty() {
-        (Vec::new(), true)
+        (command, true)
     } else {
-        if empty && !command.is_empty() {
+        if flags.has('E') && !command.is_empty() {
             return Err("command cannot be given for empty pane".to_owned());
         }
-        (command, empty)
+        (command, flags.has('E'))
     };
     Ok(InvocationSpec::plain(Request::SplitWindow {
-        target,
-        horizontal,
-        before,
-        full,
-        detached,
+        target: flags.value('t').map(str::to_owned),
+        horizontal: flags.has('h'),
+        before: flags.has('b'),
+        detached: flags.has('d'),
         empty,
-        zoom,
-        size,
+        zoom: flags.has('Z'),
+        size: flags.value('l').map(str::to_owned),
+        percentage: flags.value('p').map(str::to_owned),
         command,
-        cwd,
+        cwd: flags.value('c').map(str::to_owned),
+        format,
     }))
 }
 
@@ -441,21 +417,18 @@ fn parse_select_window(arguments: &[String]) -> Result<InvocationSpec, String> {
     if flags.has('T') {
         return Err(unsupported_flag("-T", "select-window"));
     }
-    let target = flags.value('t').map(str::to_owned);
-    Ok(InvocationSpec::plain(if flags.has('n') {
-        Request::NextWindow { target }
+    let step = if flags.has('n') {
+        WindowStep::Next
     } else if flags.has('p') {
-        Request::PreviousWindow { target }
+        WindowStep::Previous
     } else if flags.has('l') {
-        Request::SelectWindow {
-            target: target.unwrap_or_default(),
-            last: true,
-        }
+        WindowStep::Last
     } else {
-        Request::SelectWindow {
-            target: target.unwrap_or_default(),
-            last: false,
-        }
+        WindowStep::Exact
+    };
+    Ok(InvocationSpec::plain(Request::SelectWindow {
+        target: flags.value('t').unwrap_or_default().to_owned(),
+        step,
     }))
 }
 
@@ -467,7 +440,7 @@ fn last_window_request(session: Option<&str>) -> Request {
             target.split_once(':').map_or(target, |(session, _)| session)
         ),
     };
-    Request::SelectWindow { target, last: false }
+    Request::SelectWindow { target, step: WindowStep::Exact }
 }
 
 fn parse_session_window_navigation(
@@ -580,65 +553,65 @@ fn parse_list_windows(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_list_panes(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut format = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-a" | "-s" => {}
-            "-f" => {
-                index += 1;
-                let _ = argument(arguments, index, "-f")?;
-            }
-            value => return Err(format!("unknown list-panes option: {value}")),
+    let flags = scan_flags("list-panes", arguments, "aF:f:O:rst:", 0)?;
+    for (flag, name) in [('O', "-O"), ('r', "-r")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "list-panes"));
         }
-        index += 1;
     }
-    Ok(InvocationSpec::plain(Request::ListPanes { target, format }))
+    let scope = if flags.has('a') {
+        PaneListScope::Server
+    } else if flags.has('s') {
+        PaneListScope::Session
+    } else {
+        PaneListScope::Window
+    };
+    Ok(InvocationSpec::plain(Request::ListPanes {
+        target: flags.value('t').map(str::to_owned),
+        format: flags.value('F').map(str::to_owned),
+        filter: flags.value('f').map(str::to_owned),
+        scope,
+    }))
 }
 
 fn parse_select_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut direction = PaneDirection::Target;
-    let mut mark = None;
-    let mut title = None;
-    let mut enabled = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-L" => direction = PaneDirection::Left,
-            "-R" => direction = PaneDirection::Right,
-            "-U" => direction = PaneDirection::Up,
-            "-D" => direction = PaneDirection::Down,
-            "-l" => direction = PaneDirection::Last,
-            "-n" => direction = PaneDirection::Next,
-            "-p" => direction = PaneDirection::Previous,
-            "-m" => mark = Some(true),
-            "-M" => mark = Some(false),
-            "-d" => enabled = Some(false),
-            "-e" => enabled = Some(true),
-            "-T" => {
-                index += 1;
-                title = Some(argument(arguments, index, "-T")?.to_owned());
-            }
-            value => return Err(format!("unknown select-pane option: {value}")),
+    let flags = scan_flags("select-pane", arguments, "DdegLlMmP:RT:t:UZ", 0)?;
+    for (flag, name) in [('g', "-g"), ('P', "-P"), ('Z', "-Z")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "select-pane"));
         }
-        index += 1;
     }
+    let direction = if flags.has('l') {
+        PaneDirection::Last
+    } else if flags.has('m') || flags.has('M') {
+        PaneDirection::Target
+    } else if flags.has('L') {
+        PaneDirection::Left
+    } else if flags.has('R') {
+        PaneDirection::Right
+    } else if flags.has('U') {
+        PaneDirection::Up
+    } else if flags.has('D') {
+        PaneDirection::Down
+    } else {
+        PaneDirection::Target
+    };
+    let marking = !flags.has('l') && (flags.has('m') || flags.has('M'));
+    let mark = marking.then(|| !flags.has('M'));
+    let enabled = if marking {
+        None
+    } else if flags.has('e') {
+        Some(true)
+    } else if flags.has('d') {
+        Some(false)
+    } else {
+        None
+    };
+    let title = (!marking && !flags.has('l') && enabled.is_none())
+        .then(|| flags.value('T').map(str::to_owned))
+        .flatten();
     Ok(InvocationSpec::plain(Request::SelectPane {
-        target,
+        target: flags.value('t').map(str::to_owned),
         direction,
         mark,
         title,
@@ -647,35 +620,14 @@ fn parse_select_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_kill_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut all = false;
-    let mut filter = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-a" => all = true,
-            "-f" => {
-                index += 1;
-                filter = Some(argument(arguments, index, "-f")?.to_owned());
-            }
-            "-K" | "-F" => {
-                if arguments[index] == "-F" {
-                    index += 1;
-                    let _ = argument(arguments, index, "-F")?;
-                }
-            }
-            value => return Err(format!("unknown kill-pane option: {value}")),
-        }
-        index += 1;
+    let flags = scan_flags("kill-pane", arguments, "af:t:", 0)?;
+    if flags.value('f').is_some() && !flags.has('a') {
+        return Err("-f only valid with -a".to_owned());
     }
     Ok(InvocationSpec::plain(Request::KillPane {
-        target,
-        all,
-        filter,
+        target: flags.value('t').map(str::to_owned),
+        all: flags.has('a'),
+        filter: flags.value('f').map(str::to_owned),
     }))
 }
 
@@ -756,116 +708,65 @@ fn parse_resize_value(value: &str) -> Result<(u16, bool), String> {
 }
 
 fn parse_swap_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut source = None;
-    let mut target = None;
-    let mut direction = None;
-    let mut detached = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-U" => direction = Some(PaneDirection::Previous),
-            "-D" => direction = Some(PaneDirection::Next),
-            "-d" => detached = true,
-            "-Z" => {}
-            value => return Err(format!("unknown swap-pane option: {value}")),
-        }
-        index += 1;
+    let flags = scan_flags("swap-pane", arguments, "dDs:t:UZ", 0)?;
+    if flags.has('Z') {
+        return Err(unsupported_flag("-Z", "swap-pane"));
     }
+    let direction = if flags.has('D') {
+        Some(PaneDirection::Next)
+    } else if flags.has('U') {
+        Some(PaneDirection::Previous)
+    } else {
+        None
+    };
     Ok(InvocationSpec::plain(Request::SwapPane {
-        source,
-        target,
+        source: flags.value('s').map(str::to_owned),
+        target: flags.value('t').map(str::to_owned),
         direction,
-        detached,
+        detached: flags.has('d'),
     }))
 }
 
 fn parse_break_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut source = None;
-    let mut target = None;
-    let mut name = None;
-    let mut detached = false;
-    let mut format = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-n" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-n")?.to_owned());
-            }
-            "-d" => detached = true,
-            "-P" => {
-                format = Some("#{window_index}:#{pane_id}".to_owned());
-            }
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            value => return Err(format!("unknown break-pane option: {value}")),
+    let flags = scan_flags("break-pane", arguments, "abdPF:n:s:t:Wx:X:y:Y:", 0)?;
+    for (flag, name) in [('a', "-a"), ('b', "-b"), ('W', "-W"), ('x', "-x"), ('X', "-X"), ('y', "-y"), ('Y', "-Y")] {
+        if flags.has(flag) {
+            return Err(unsupported_flag(name, "break-pane"));
         }
-        index += 1;
     }
+    let format = flags.has('P').then(|| {
+        flags
+            .value('F')
+            .unwrap_or("#{session_name}:#{window_index}.#{pane_index}")
+            .to_owned()
+    });
     Ok(InvocationSpec::plain(Request::BreakPane {
-        source,
-        target,
-        name,
-        detached,
+        source: flags.value('s').map(str::to_owned),
+        target: flags.value('t').map(str::to_owned),
+        name: flags.value('n').map(str::to_owned),
+        detached: flags.has('d'),
         format,
     }))
 }
 
-fn parse_join_pane(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut source = None;
-    let mut target = None;
-    let mut horizontal = false;
-    let mut before = false;
-    let mut detached = false;
-    let mut size = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-s" => {
-                index += 1;
-                source = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-h" => horizontal = true,
-            "-v" => {}
-            "-b" => before = true,
-            "-d" => detached = true,
-            "-l" => {
-                index += 1;
-                size = Some(argument(arguments, index, "-l")?.to_owned());
-            }
-            value => return Err(format!("unknown join-pane option: {value}")),
-        }
-        index += 1;
+fn parse_join_pane(command: &str, arguments: &[String]) -> Result<InvocationSpec, String> {
+    let accepted = if command == "move-pane" {
+        "bdfhvl:s:t:"
+    } else {
+        "bdfhvp:l:s:t:"
+    };
+    let flags = scan_flags(command, arguments, accepted, 0)?;
+    if flags.has('f') {
+        return Err(unsupported_flag("-f", command));
     }
     Ok(InvocationSpec::plain(Request::JoinPane {
-        source,
-        target,
-        horizontal,
-        before,
-        detached,
-        size,
+        source: flags.value('s').map(str::to_owned),
+        target: flags.value('t').map(str::to_owned),
+        horizontal: flags.has('h'),
+        before: flags.has('b'),
+        detached: flags.has('d'),
+        size: flags.value('l').map(str::to_owned),
+        percentage: flags.value('p').map(str::to_owned),
     }))
 }
 
@@ -2140,7 +2041,10 @@ mod tests {
     #[test]
     fn select_window_navigation_forms_map_to_window_requests() {
         let next = parse(&["select-window".to_owned(), "-n".to_owned()]).expect("next");
-        assert!(matches!(next.request, Request::NextWindow { target: None }));
+        assert!(matches!(
+            next.request,
+            Request::SelectWindow { target, step: WindowStep::Next } if target.is_empty()
+        ));
         let previous = parse(&[
             "selectw".to_owned(),
             "-p".to_owned(),
@@ -2150,12 +2054,12 @@ mod tests {
         .expect("previous");
         assert!(matches!(
             previous.request,
-            Request::PreviousWindow { target: Some(target) } if target == "S:"
+            Request::SelectWindow { target, step: WindowStep::Previous } if target == "S:"
         ));
         let last = parse(&["last-window".to_owned()]).expect("last");
         assert!(matches!(
             last.request,
-            Request::SelectWindow { target, last: false } if target == "!"
+            Request::SelectWindow { target, step: WindowStep::Exact } if target == "!"
         ));
         assert!(parse(&["kill-window".to_owned(), "-f".to_owned()]).is_err());
     }

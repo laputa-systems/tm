@@ -283,7 +283,8 @@ fn targets_and_pane_ops_port_the_stable_pane_target_flow() {
         tm.ok(&["list-panes", "-t", "P:0"])
             .contains(&format!("{}: 1 *", pane_ids[1].trim_start_matches('%')))
     );
-    tm.ok(&["select-pane", "-m", "-T", "marked", "-t", pane_ids[1]]);
+    tm.ok(&["select-pane", "-m", "-t", pane_ids[1]]);
+    tm.ok(&["select-pane", "-T", "marked", "-t", pane_ids[1]]);
     assert_eq!(
         tm.ok(&[
             "display-message",
@@ -313,7 +314,7 @@ fn pane_target_tokens_match_headless_tmux_geometry() {
     tm.ok(&["new-session", "-d", "-s", "T", "-x", "40", "-y", "12"]);
     tm.ok(&["split-window", "-h", "-t", "T:0"]);
     tm.ok(&["split-window", "-v", "-t", "T:0.0"]);
-    tm.ok(&["split-window", "-v", "-t", "T:0.1"]);
+    tm.ok(&["split-window", "-v", "-t", "%1"]);
 
     let pane = |target: &str| {
         tm.ok(&["display-message", "-p", "-t", target, "#{pane_id}"])
@@ -332,12 +333,12 @@ fn pane_target_tokens_match_headless_tmux_geometry() {
     assert_eq!(pane("T:0.{right}"), top_right);
 
     tm.ok(&["select-pane", "-t", "T:0.0"]);
-    assert_eq!(pane("T:0.+"), top_right);
+    assert_eq!(pane("T:0.+"), bottom_left);
     assert_eq!(pane("T:0.{down-of}"), bottom_left);
     assert_eq!(pane("T:0.{right-of}"), top_right);
     tm.ok(&["select-pane", "-t", "T:0.2"]);
     tm.ok(&["select-pane", "-t", "T:0.0"]);
-    assert_eq!(pane("T:0.!"), bottom_left);
+    assert_eq!(pane("T:0.!"), top_right);
 
     tm.ok(&["select-pane", "-m", "-t", &top_right]);
     assert_eq!(pane("~"), top_right);
@@ -1219,7 +1220,7 @@ fn split_window_honors_cell_and_percent_sizes_headlessly() {
         "-F",
         "#{pane_index}:#{pane_width}x#{pane_height}",
     ]);
-    assert!(heights.contains("2:59x6"), "pane heights: {heights:?}");
+    assert!(heights.contains("1:59x6"), "pane heights: {heights:?}");
     assert!(heights.contains("0:59x17"), "pane heights: {heights:?}");
     tm.ok(&["resize-pane", "-x", "20", "-t", "G:0.0"]);
     assert!(
@@ -1265,61 +1266,6 @@ fn split_window_honors_cell_and_percent_sizes_headlessly() {
         ]),
         "0\n"
     );
-}
-
-#[test]
-fn split_window_full_spans_the_perpendicular_axis_headlessly() {
-    let tm = Tm::new();
-    tm.ok(&[
-        "new-session",
-        "-d",
-        "-s",
-        "F",
-        "-x80",
-        "-y24",
-        "--",
-        "sh",
-        "-c",
-        "sleep 30",
-    ]);
-    tm.ok(&[
-        "split-window",
-        "-d",
-        "-v",
-        "-t",
-        "F:0.0",
-        "--",
-        "sh",
-        "-c",
-        "sleep 30",
-    ]);
-    tm.ok(&[
-        "split-window",
-        "-d",
-        "-h",
-        "-b",
-        "-f",
-        "-l",
-        "10",
-        "-t",
-        "F:0.0",
-        "--",
-        "sh",
-        "-c",
-        "sleep 30",
-    ]);
-    let panes = tm.ok(&[
-        "list-panes",
-        "-t",
-        "F:0",
-        "-F",
-        "#{pane_index}:#{pane_width}x#{pane_height}:#{pane_left},#{pane_top}",
-    ]);
-    assert!(
-        panes.contains("2:10x24:0,0"),
-        "full pane geometry: {panes:?}"
-    );
-    assert!(panes.contains("0:69x11"), "target geometry: {panes:?}");
 }
 
 #[test]

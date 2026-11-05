@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0004;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0005;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -51,13 +51,14 @@ pub(crate) enum Request {
         target: Option<String>,
         horizontal: bool,
         before: bool,
-        full: bool,
         detached: bool,
         empty: bool,
         zoom: bool,
         size: Option<String>,
+        percentage: Option<String>,
         command: Vec<String>,
         cwd: Option<String>,
+        format: Option<String>,
     },
     ListWindows {
         target: Option<String>,
@@ -66,10 +67,12 @@ pub(crate) enum Request {
     ListPanes {
         target: Option<String>,
         format: Option<String>,
+        filter: Option<String>,
+        scope: PaneListScope,
     },
     SelectWindow {
         target: String,
-        last: bool,
+        step: WindowStep,
     },
     SelectLayout {
         target: Option<String>,
@@ -242,6 +245,7 @@ pub(crate) enum Request {
         before: bool,
         detached: bool,
         size: Option<String>,
+        percentage: Option<String>,
     },
     RespawnPane {
         target: Option<String>,
@@ -323,6 +327,21 @@ pub(crate) enum Request {
         background: bool,
         target: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneListScope {
+    Window,
+    Session,
+    Server,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowStep {
+    Exact,
+    Last,
+    Next,
+    Previous,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,40 +467,58 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             target,
             horizontal,
             before,
-            full,
             detached,
             empty,
             zoom,
             size,
+            percentage,
             command,
             cwd,
+            format,
         } => {
             payload.push(7);
             put_optional_string(&mut payload, target);
             put_bool(&mut payload, *horizontal);
             put_bool(&mut payload, *before);
-            put_bool(&mut payload, *full);
             put_bool(&mut payload, *detached);
             put_bool(&mut payload, *empty);
             put_bool(&mut payload, *zoom);
             put_optional_string(&mut payload, size);
+            put_optional_string(&mut payload, percentage);
             put_strings(&mut payload, command)?;
             put_optional_string(&mut payload, cwd);
+            put_optional_string(&mut payload, format);
         }
         Request::ListWindows { target, format } => {
             payload.push(8);
             put_optional_string(&mut payload, target);
             put_optional_string(&mut payload, format);
         }
-        Request::ListPanes { target, format } => {
+        Request::ListPanes {
+            target,
+            format,
+            filter,
+            scope,
+        } => {
             payload.push(9);
             put_optional_string(&mut payload, target);
             put_optional_string(&mut payload, format);
+            put_optional_string(&mut payload, filter);
+            payload.push(match scope {
+                PaneListScope::Window => 1,
+                PaneListScope::Session => 2,
+                PaneListScope::Server => 3,
+            });
         }
-        Request::SelectWindow { target, last } => {
+        Request::SelectWindow { target, step } => {
             payload.push(10);
             put_string(&mut payload, target);
-            put_bool(&mut payload, *last);
+            payload.push(match step {
+                WindowStep::Exact => 1,
+                WindowStep::Last => 2,
+                WindowStep::Next => 3,
+                WindowStep::Previous => 4,
+            });
         }
         Request::SendPrefix { target } => {
             payload.push(42);
@@ -750,6 +787,7 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             before,
             detached,
             size,
+            percentage,
         } => {
             payload.push(36);
             put_optional_string(&mut payload, source);
@@ -758,6 +796,7 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_bool(&mut payload, *before);
             put_bool(&mut payload, *detached);
             put_optional_string(&mut payload, size);
+            put_optional_string(&mut payload, percentage);
         }
         Request::RespawnPane {
             target,
@@ -1007,13 +1046,14 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
             target: decoder.optional_string()?,
             horizontal: decoder.bool()?,
             before: decoder.bool()?,
-            full: decoder.bool()?,
             detached: decoder.bool()?,
             empty: decoder.bool()?,
             zoom: decoder.bool()?,
             size: decoder.optional_string()?,
+            percentage: decoder.optional_string()?,
             command: decoder.strings()?,
             cwd: decoder.optional_string()?,
+            format: decoder.optional_string()?,
         },
         8 => Request::ListWindows {
             target: decoder.optional_string()?,
@@ -1022,10 +1062,23 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         9 => Request::ListPanes {
             target: decoder.optional_string()?,
             format: decoder.optional_string()?,
+            filter: decoder.optional_string()?,
+            scope: match decoder.byte()? {
+                1 => PaneListScope::Window,
+                2 => PaneListScope::Session,
+                3 => PaneListScope::Server,
+                _ => return Err(invalid_data("unknown pane list scope")),
+            },
         },
         10 => Request::SelectWindow {
             target: decoder.string()?,
-            last: decoder.bool()?,
+            step: match decoder.byte()? {
+                1 => WindowStep::Exact,
+                2 => WindowStep::Last,
+                3 => WindowStep::Next,
+                4 => WindowStep::Previous,
+                _ => return Err(invalid_data("unknown window step")),
+            },
         },
         42 => Request::SendPrefix {
             target: decoder.optional_string()?,
@@ -1192,6 +1245,7 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
             before: decoder.bool()?,
             detached: decoder.bool()?,
             size: decoder.optional_string()?,
+            percentage: decoder.optional_string()?,
         },
         37 => Request::RespawnPane {
             target: decoder.optional_string()?,
@@ -1659,13 +1713,14 @@ mod tests {
             target: Some("work:1.2".to_owned()),
             horizontal: true,
             before: false,
-            full: false,
             detached: false,
             empty: false,
             zoom: false,
             size: None,
+            percentage: None,
             command: vec!["printf".to_owned(), "a\tb".to_owned()],
             cwd: Some("/tmp".to_owned()),
+            format: None,
         };
         let bytes = encode_request(&request).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
@@ -1885,6 +1940,8 @@ mod tests {
         fn direction(&mut self) -> PaneDirection;
         fn opt_direction(&mut self) -> Option<PaneDirection>;
         fn opt_scope(&mut self) -> Option<OptionScope>;
+        fn pane_list_scope(&mut self) -> PaneListScope;
+        fn window_step(&mut self) -> WindowStep;
     }
 
     const DIRECTIONS: [PaneDirection; 8] = [
@@ -1903,6 +1960,19 @@ mod tests {
         OptionScope::Session,
         OptionScope::Window,
         OptionScope::Pane,
+    ];
+
+    const PANE_LIST_SCOPES: [PaneListScope; 3] = [
+        PaneListScope::Window,
+        PaneListScope::Session,
+        PaneListScope::Server,
+    ];
+
+    const WINDOW_STEPS: [WindowStep; 4] = [
+        WindowStep::Exact,
+        WindowStep::Last,
+        WindowStep::Next,
+        WindowStep::Previous,
     ];
 
     struct Canonical {
@@ -1970,6 +2040,14 @@ mod tests {
             self.calls += 1;
             self.toggle().then(|| SCOPES[self.calls % SCOPES.len()])
         }
+        fn pane_list_scope(&mut self) -> PaneListScope {
+            self.calls += 1;
+            PANE_LIST_SCOPES[self.calls % PANE_LIST_SCOPES.len()]
+        }
+        fn window_step(&mut self) -> WindowStep {
+            self.calls += 1;
+            WINDOW_STEPS[self.calls % WINDOW_STEPS.len()]
+        }
     }
 
     struct Random(u64);
@@ -2033,6 +2111,12 @@ mod tests {
         fn opt_scope(&mut self) -> Option<OptionScope> {
             self.flag().then(|| SCOPES[self.below(SCOPES.len())])
         }
+        fn pane_list_scope(&mut self) -> PaneListScope {
+            PANE_LIST_SCOPES[self.below(PANE_LIST_SCOPES.len())]
+        }
+        fn window_step(&mut self) -> WindowStep {
+            WINDOW_STEPS[self.below(WINDOW_STEPS.len())]
+        }
     }
 
     fn build(variant: usize, source: &mut impl Source) -> Request {
@@ -2080,13 +2164,14 @@ mod tests {
                 target: source.opt_text(),
                 horizontal: source.flag(),
                 before: source.flag(),
-                full: source.flag(),
                 detached: source.flag(),
                 empty: source.flag(),
                 zoom: source.flag(),
                 size: source.opt_text(),
+                percentage: source.opt_text(),
                 command: source.texts(),
                 cwd: source.opt_text(),
+                format: source.opt_text(),
         },
         7 => Request::ListWindows {
                 target: source.opt_text(),
@@ -2095,10 +2180,12 @@ mod tests {
         8 => Request::ListPanes {
                 target: source.opt_text(),
                 format: source.opt_text(),
+                filter: source.opt_text(),
+                scope: source.pane_list_scope(),
         },
         9 => Request::SelectWindow {
                 target: source.text(),
-                last: source.flag(),
+                step: source.window_step(),
         },
         10 => Request::SelectLayout {
                 target: source.opt_text(),
@@ -2271,6 +2358,7 @@ mod tests {
                 before: source.flag(),
                 detached: source.flag(),
                 size: source.opt_text(),
+                percentage: source.opt_text(),
         },
         41 => Request::RespawnPane {
                 target: source.opt_text(),
@@ -2461,7 +2549,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_0004;
+    const GOLDEN_VERSION: u32 = 0x544d_0005;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
@@ -2470,10 +2558,10 @@ mod tests {
         "0700000004020000007431",
         "09000000050102000000743200",
         "3000000006010200000074320001010001020000007438000101020000000300000074313203000000c3a9090103000000743134",
-        "29000000070102000000743200010100010100020000000300000074313003000000c3a9090103000000743132",
+        "3700000007010200000074320001010001010200000074390103000000743131020000000300000074313203000000c3a909010300000074313400",
         "09000000080102000000743200",
-        "09000000090102000000743200",
-        "080000000a02000000743101",
+        "110000000901020000007432000102000000743501",
+        "080000000a02000000743103",
         "0e0000003901020000007432020000007433",
         "080000000b01020000007432",
         "080000000c01020000007432",
@@ -2504,7 +2592,7 @@ mod tests {
         "10000000210102000000743204fcffffff000101",
         "0c000000220102000000743200010600",
         "18000000230102000000743200010200000074350001020000007438",
-        "1300000024010200000074320001010001020000007438",
+        "140000002401020000007432000101000102000000743800",
         "2300000025010200000074320200000002000000743303000000c3a90901020000007435000101",
         "080000002601020000007432",
         "140000001a01020000007432020000007433020000007434",

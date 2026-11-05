@@ -991,6 +991,19 @@ mod windows {
                 &[&["select-window", "-n", "-t", "S"], &["select-window", "-n", "-t", "S"], &["select-window", "-n", "-t", "S"]],
                 &[&["select-window", "-p", "-t", "S"]],
                 &[&["select-window", "-n", "-t", "T"]],
+                &[&["select-window", "-n", "-t", "two"]],
+                &[&["select-window", "-n", "-t", "2"]],
+                &[&["select-window", "-n", "-t", "S:2"]],
+                &[&["select-window", "-p", "-t", "S:2"]],
+                &[&["select-window", "-p", "-t", "three"]],
+                &[&["select-window", "-p", "-t", "S:1"]],
+                &[&["select-window", "-n", "-t", "S:9"]],
+                &[&["select-window", "-n", "-t", "nosuch"]],
+                &[&["select-window", "-n", "-t", "9"]],
+                &[&["new-session", "-d", "-s", "2", "--", "sleep", "300"], &["select-window", "-n", "-t", "2"]],
+                &[&["new-session", "-d", "-s", "two", "--", "sleep", "300"], &["select-window", "-p", "-t", "two"]],
+                &[&["select-window", "-n", "-t", "T:1"]],
+                &[&["select-window", "-p", "-t", "$0"]],
                 &[&["select-window", "-l", "-t", "S"]],
                 &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "S"]],
                 &[&["select-window", "-t", "S:3"], &["select-window", "-l", "-t", "S:2"]],
@@ -1271,5 +1284,564 @@ mod windows {
         ] {
             assert_window_rejected("new-window", flag, arguments);
         }
+    }
+}
+
+mod panes {
+    use super::*;
+
+    fn fixture(label: &str) -> Pair {
+        let pair = Pair::new(label);
+        pair.start("S");
+        for mux in pair.both() {
+            mux.ok(&["split-window", "-d", "-h", "-t", "S:1", "--", "sleep", "300"]);
+            mux.ok(&["split-window", "-d", "-v", "-t", "S:1.1", "--", "sleep", "300"]);
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "two", "--", "sleep", "300"]);
+            mux.ok(&["new-window", "-d", "-t", "S", "-n", "three", "--", "sleep", "300"]);
+        }
+        pair.start("T");
+        pair
+    }
+
+    fn pane_topology(mux: &Mux) -> String {
+        let mut text = String::new();
+        for session in sorted_lines(mux, &["list-sessions", "-F", "#{session_name}"]) {
+            text.push_str(&format!(
+                "windows {session} {:?}\n",
+                sorted_lines(
+                    mux,
+                    &[
+                        "list-windows",
+                        "-t",
+                        &session,
+                        "-F",
+                        "#{window_index} #{window_name} #{window_panes} #{window_active}",
+                    ],
+                )
+            ));
+        }
+        text.push_str(&mux.body(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pane_width}x#{pane_height}@#{pane_left},#{pane_top} #{pane_active} #{pane_start_command} #{pane_input_off} #{pane_marked}",
+        ]));
+        text
+    }
+
+    fn probe(test: &str, label: &str, steps: &[&[&str]]) {
+        let pair = fixture("pan");
+        for arguments in steps {
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+            assert_eq!(
+                observation_difference(
+                    &format!("{test}: {label}: topology after {arguments:?}"),
+                    &pane_topology(&pair.tm),
+                    &pane_topology(&pair.reference)
+                ),
+                None
+            );
+        }
+    }
+
+    fn probes(test: &str, cases: &[&[&[&str]]]) {
+        for steps in cases {
+            probe(test, &format!("{steps:?}"), steps);
+        }
+    }
+
+    fn assert_pane_rejected(command: &str, flag: &str, arguments: &[&str]) {
+        let pair = fixture("panrej");
+        let before = pane_topology(&pair.tm);
+        let output = pair.tm.run(arguments);
+        assert!(!output.status.success(), "{arguments:?} succeeded");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("tm: unsupported flag {flag} for {command}\n"),
+            "{arguments:?}"
+        );
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+        assert_eq!(pane_topology(&pair.tm), before, "{arguments:?} changed the topology");
+    }
+
+    #[test]
+    fn panes_list_panes_flags_match_the_reference() {
+        probes(
+            "panes_list_panes_flags_match_the_reference",
+            &[
+                &[&["list-panes", "-F", "#{pane_index} #{pane_id} #{pane_active}"]],
+                &[&["list-panes", "-t", "S:2", "-F", "#{window_name} #{pane_id}"]],
+                &[&["list-panes", "-t", "S:1", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-t", "S", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-t", "two", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-t", "T", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-t", "nosuch", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-s", "-F", "#{window_index}.#{pane_index} #{pane_id}"]],
+                &[&["list-panes", "-s", "-t", "S:3", "-F", "#{window_index}.#{pane_index} #{pane_id}"]],
+                &[&["list-panes", "-s", "-t", "T", "-F", "#{window_index}.#{pane_index} #{pane_id}"]],
+                &[&["list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_id}"]],
+                &[&["list-panes", "-a", "-t", "T", "-F", "#{session_name} #{pane_id}"]],
+                &[&["list-panes", "-a", "-t", "nosuch", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-as", "-F", "#{session_name} #{pane_id}"]],
+                &[&["list-panes", "-f", "#{pane_active}", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-f", "#{==:#{pane_index},1}", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-a", "-f", "#{==:#{window_name},two}", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-f", "0", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-f", "", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-f", "x", "-F", "#{pane_id}"]],
+                &[&["list-panes", "-F"]],
+                &[&["list-panes", "extra"]],
+                &[&["list-panes", "-t"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_list_panes_default_format_is_tm_only() {
+        let pair = fixture("panlisdef");
+        let tm = pair.tm.body(&["list-panes", "-a"]);
+        let reference = pair.reference.body(&["list-panes", "-a"]);
+        assert_eq!(tm.lines().count(), reference.lines().count());
+        assert!(tm.starts_with("S:1.0: %0: 0 "), "{tm}");
+        assert!(reference.starts_with("S:1.0: [40x24] [history 0/10000, "), "{reference}");
+        let session = pair.tm.body(&["list-panes", "-s", "-t", "S:1"]);
+        assert!(session.starts_with("1.0: %0: 0 "), "{session}");
+    }
+
+    #[test]
+    fn panes_list_panes_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-O", &["list-panes", "-O", "name"][..]),
+            ("-r", &["list-panes", "-r"][..]),
+        ] {
+            assert_pane_rejected("list-panes", flag, arguments);
+        }
+    }
+
+    fn split_with(flags: &[&'static str]) -> Vec<&'static str> {
+        [&["split-window"][..], flags, &["--", "sleep", "300"]].concat()
+    }
+
+    fn probe_split_cases(test: &str, cases: Vec<Vec<Vec<&str>>>) {
+        for steps in &cases {
+            let steps = steps.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            probe(test, &format!("{steps:?}"), &steps);
+        }
+    }
+
+    #[test]
+    fn panes_split_window_size_and_placement_flags_match_the_reference() {
+        let cases: Vec<Vec<Vec<&str>>> = vec![
+            vec![split_with(&["-t", "S:2"])],
+            vec![split_with(&["-t", "S:2"]), split_with(&["-t", "S:2"]), split_with(&["-t", "S:2"]), split_with(&["-t", "S:2"])],
+            vec![split_with(&["-t", "S:2", "-h"]), split_with(&["-t", "S:2", "-h"]), split_with(&["-t", "S:2", "-h"])],
+            vec![split_with(&["-t", "S:2", "-b"]), split_with(&["-t", "S:2", "-b"]), split_with(&["-t", "S:2", "-b"])],
+            vec![split_with(&["-t", "S:2", "-hb"]), split_with(&["-t", "S:2", "-hb"])],
+            vec![split_with(&["-t", "S:2", "-v"])],
+            vec![split_with(&["-t", "S:1.1"]), split_with(&["-t", "S:1.0"]), split_with(&["-t", "S:1.3", "-b"])],
+            vec![split_with(&["-t", "S:1.0", "-d"])],
+            vec![split_with(&["-t", "S:2", "-l", "5"])],
+            vec![split_with(&["-t", "S:2", "-l", "30%"])],
+            vec![split_with(&["-t", "S:2", "-h", "-l", "30%"])],
+            vec![split_with(&["-t", "S:2", "-b", "-l", "7"])],
+            vec![split_with(&["-t", "S:2", "-p", "30"])],
+            vec![split_with(&["-t", "S:2", "-p", "30", "-b"])],
+            vec![split_with(&["-t", "S:2", "-l", "3", "-p", "50"])],
+            vec![split_with(&["-t", "S:2", "-l", "0"])],
+            vec![split_with(&["-t", "S:2", "-l", "500"])],
+            vec![split_with(&["-t", "S:2", "-l", "abc"])],
+            vec![split_with(&["-t", "S:2", "-p", "101"])],
+            vec![split_with(&["-t", "S:2", "-p", "x"])],
+            vec![split_with(&["-t", "S:2", "-l"])],
+            vec![split_with(&["-t", "S:2", "-Z"])],
+            vec![split_with(&["-t", "S:1.0", "-Z"])],
+        ];
+        probe_split_cases("panes_split_window_size_and_placement_flags_match_the_reference", cases);
+    }
+
+    #[test]
+    fn panes_split_window_command_and_format_flags_match_the_reference() {
+        let cases: Vec<Vec<Vec<&str>>> = vec![
+            vec![split_with(&["-t", "S:2", "-c", "/tmp"])],
+            vec![split_with(&["-t", "S:2", "-P"])],
+            vec![split_with(&["-t", "S:2", "-P", "-F", "#{pane_id} #{pane_index} #{pane_width}"])],
+            vec![split_with(&["-t", "S:2", "-F", "#{pane_id}"])],
+            vec![split_with(&["-t", "S:2", "-dP"])],
+            vec![vec!["split-window", "-t", "S:2", "sleep 300"]],
+            vec![vec!["split-window", "-t", "S:2", "sleep", "300"]],
+            vec![vec!["split-window", "-t", "S:2", "sh", "-c", "sleep 300"]],
+            vec![vec!["split-window", "-t", "S:2", "sleep 300; echo \"a b\""]],
+            vec![vec!["split-window", "-t", "S:2", "sleep", "30#0"]],
+            vec![vec!["split-window", "-t", "S:2", "-E"]],
+            vec![vec!["split-window", "-t", "S:2", ""]],
+            vec![vec!["split-window", "-t", "S:2", "-E", "sleep", "300"]],
+            vec![vec!["split-window", "-t", "S:2", "-E", "-P", "-F", "#{pane_start_command}|#{pane_dead}"]],
+            vec![vec!["split-window", "-t", "S:2", "-P", "-F", "#{pane_start_command}", "sleep 300"]],
+            vec![vec!["split-window", "-t", "S:2", "-P", "-F", "#{pane_start_command}", "sleep", "it's a", "300"]],
+            vec![split_with(&["-t", "nosuch"])],
+            vec![split_with(&["-t", "S:9"])],
+            vec![split_with(&["-t", "S:2.5"])],
+            vec![split_with(&["-t", "%3"])],
+            vec![split_with(&["-t", "T"])],
+            vec![vec!["split-window", "-t"]],
+            vec![split_with(&[])],
+            vec![split_with(&["-dh"]), split_with(&["-dh"]), split_with(&["-dh"]), split_with(&["-dh"])],
+            vec![split_with(&["-h", "-t", "S:1.0"]), split_with(&["-h", "-t", "S:1.0"]), split_with(&["-h", "-t", "S:1.0"]), split_with(&["-h", "-t", "S:1.0"]), split_with(&["-h", "-t", "S:1.0"])],
+        ];
+        probe_split_cases("panes_split_window_command_and_format_flags_match_the_reference", cases);
+    }
+
+    #[test]
+    fn panes_split_window_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-B", &["split-window", "-B", "single", "-t", "S:2"][..]),
+            ("-e", &["split-window", "-e", "A=1", "-t", "S:2"][..]),
+            ("-f", &["split-window", "-f", "-t", "S:2"][..]),
+            ("-Z (with -d)", &["split-window", "-dZ", "-t", "S:1.0"][..]),
+            ("-I", &["split-window", "-I", "-t", "S:2"][..]),
+            ("-k", &["split-window", "-k", "-t", "S:2"][..]),
+            ("-m", &["split-window", "-m", "gone", "-t", "S:2"][..]),
+            ("-R", &["split-window", "-R", "fg=red", "-t", "S:2"][..]),
+            ("-s", &["split-window", "-s", "fg=red", "-t", "S:2"][..]),
+            ("-S", &["split-window", "-S", "fg=red", "-t", "S:2"][..]),
+            ("-T", &["split-window", "-T", "title", "-t", "S:2"][..]),
+            ("-W", &["split-window", "-W", "-t", "S:2"][..]),
+            ("-x", &["split-window", "-x", "10", "-t", "S:2"][..]),
+        ] {
+            assert_pane_rejected("split-window", flag, arguments);
+        }
+    }
+
+    #[test]
+    fn panes_new_pane_is_rejected() {
+        let pair = fixture("pannew");
+        let before = pane_topology(&pair.tm);
+        for arguments in [
+            &["new-pane", "-t", "S:2"][..],
+            &["newp", "-L", "-t", "S:2"][..],
+            &["new-pane"][..],
+        ] {
+            let output = pair.tm.run(arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert!(output.stdout.is_empty(), "{arguments:?}");
+            assert_eq!(pane_topology(&pair.tm), before, "{arguments:?}");
+        }
+        assert_pane_rejected("new-pane", "-t", &["new-pane", "-t", "S:2"]);
+    }
+
+    #[test]
+    fn panes_kill_pane_flags_match_the_reference() {
+        probes(
+            "panes_kill_pane_flags_match_the_reference",
+            &[
+                &[&["kill-pane", "-t", "S:1.1"]],
+                &[&["kill-pane", "-t", "S:1.0"], &["kill-pane", "-t", "S:1.0"]],
+                &[&["kill-pane", "-t", "S:1.2"]],
+                &[&["select-pane", "-t", "S:1.2"], &["kill-pane", "-t", "S:1.2"]],
+                &[&["select-pane", "-t", "S:1.1"], &["kill-pane"]],
+                &[&["kill-pane", "-a", "-t", "S:1.1"]],
+                &[&["kill-pane", "-a", "-t", "S:1.0"]],
+                &[&["kill-pane", "-a"]],
+                &[&["kill-pane", "-a", "-t", "S:2"]],
+                &[&["kill-pane", "-a", "-f", "#{==:#{pane_index},2}", "-t", "S:1.0"]],
+                &[&["kill-pane", "-a", "-f", "#{pane_active}", "-t", "S:1.0"]],
+                &[&["kill-pane", "-a", "-f", "0", "-t", "S:1.0"]],
+                &[&["kill-pane", "-a", "-f", "1", "-t", "S:1.0"]],
+                &[&["kill-pane", "-f", "1", "-t", "S:1.0"]],
+                &[&["kill-pane", "-t", "S:2"]],
+                &[&["kill-pane", "-t", "S:2"], &["kill-pane", "-t", "S:2"]],
+                &[&["kill-pane", "-t", "T"]],
+                &[&["kill-pane", "-t", "nosuch"]],
+                &[&["kill-pane", "-t", "S:1.9"]],
+                &[&["kill-pane", "-t", "%2"]],
+                &[&["kill-pane", "-t"]],
+                &[&["kill-pane", "extra"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_kill_pane_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-K", &["kill-pane", "-K", "-t", "S:1.1"][..]),
+            ("-F", &["kill-pane", "-F", "x", "-t", "S:1.1"][..]),
+        ] {
+            assert_pane_rejected("kill-pane", flag, arguments);
+        }
+    }
+
+    #[test]
+    fn panes_select_pane_navigation_flags_match_the_reference() {
+        let title = "panes_select_pane_navigation_flags_match_the_reference";
+        probes(
+            title,
+            &[
+                &[&["select-pane", "-t", "S:1.1"]],
+                &[&["select-pane", "-t", "S:1.2"], &["select-pane", "-t", "S:1.0"]],
+                &[&["select-pane", "-t", "%2"]],
+                &[&["select-pane", "-t", "S:2"]],
+                &[&["select-pane", "-t", "T"]],
+                &[&["select-pane", "-t", "nosuch"]],
+                &[&["select-pane", "-t", "S:1.9"]],
+                &[&["select-pane", "-t"]],
+                &[&["select-pane"]],
+                &[&["select-pane", "-L", "-t", "S:1.1"]],
+                &[&["select-pane", "-R", "-t", "S:1.0"]],
+                &[&["select-pane", "-t", "S:1.2"], &["select-pane", "-R", "-t", "S:1.0"]],
+                &[&["select-pane", "-t", "S:1.1"], &["select-pane", "-R", "-t", "S:1.0"]],
+                &[&["select-pane", "-U", "-t", "S:1.2"]],
+                &[&["select-pane", "-D", "-t", "S:1.1"]],
+                &[&["select-pane", "-L", "-t", "S:1.0"]],
+                &[&["select-pane", "-R", "-t", "S:1.1"]],
+                &[&["select-pane", "-U", "-t", "S:1.1"]],
+                &[&["select-pane", "-D", "-t", "S:1.2"]],
+                &[&["select-pane", "-U", "-t", "S:1.0"]],
+                &[&["select-pane", "-D", "-t", "S:2"]],
+                &[&["select-pane", "-L", "-R", "-t", "S:1.1"]],
+                &[&["select-pane", "-DR", "-t", "S:1.1"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_select_pane_state_flags_match_the_reference() {
+        let title = "panes_select_pane_state_flags_match_the_reference";
+        probes(
+            title,
+            &[
+                &[&["select-pane", "-l"]],
+                &[&["select-pane", "-l", "-t", "S:2"]],
+                &[&["select-pane", "-t", "S:1.1"], &["select-pane", "-l"]],
+                &[&["select-pane", "-t", "S:1.1"], &["select-pane", "-t", "S:1.2"], &["select-pane", "-l"], &["select-pane", "-l"]],
+                &[&["split-window", "-d", "-t", "S:2", "--", "sleep", "300"], &["select-pane", "-l", "-t", "S:2"]],
+                &[&["select-pane", "-t", "S:1.1"], &["select-pane", "-l", "-d"]],
+                &[&["select-pane", "-t", "S:1.1"], &["select-pane", "-l", "-d"], &["select-pane", "-l", "-e"]],
+                &[&["select-pane", "-t", "S:1.1"], &["select-pane", "-l", "-m"]],
+                &[&["select-pane", "-t", "S:1.1"], &["select-pane", "-l", "-T", "x"]],
+                &[&["select-pane", "-m", "-t", "S:1.1"]],
+                &[&["select-pane", "-m", "-t", "S:1.1"], &["select-pane", "-m", "-t", "S:1.1"]],
+                &[&["select-pane", "-m", "-t", "S:1.1"], &["select-pane", "-m", "-t", "S:1.2"]],
+                &[&["select-pane", "-m", "-t", "S:1.1"], &["select-pane", "-M", "-t", "S:1.2"]],
+                &[&["select-pane", "-M"]],
+                &[&["select-pane", "-mM", "-t", "S:1.1"]],
+                &[&["select-pane", "-m", "-L", "-t", "S:1.1"]],
+                &[&["select-pane", "-m", "-d", "-t", "S:1.1"]],
+                &[&["select-pane", "-d", "-t", "S:1.1"]],
+                &[&["select-pane", "-d", "-t", "S:1.1"], &["select-pane", "-e", "-t", "S:1.1"]],
+                &[&["select-pane", "-e", "-t", "S:1.1"]],
+                &[&["select-pane", "-d", "-e", "-t", "S:1.1"]],
+                &[&["select-pane", "-d", "-L", "-t", "S:1.1"]],
+                &[&["select-pane", "-e", "-R", "-t", "S:1.0"]],
+                &[&["select-pane", "-d", "-T", "x", "-t", "S:1.1"]],
+                &[&["select-pane", "-T", "x", "-t", "S:1.1"], &["display-message", "-p", "-t", "S:1.1", "#{pane_title}|#{pane_index}"]],
+                &[&["select-pane", "-T", "a b", "-L", "-t", "S:1.1"], &["display-message", "-p", "-t", "S:1.0", "#{pane_title}|#{pane_active}"], &["display-message", "-p", "-t", "S:1.1", "#{pane_active}"]],
+                &[&["select-pane", "-T", "#{pane_index}", "-t", "S:1.2"], &["display-message", "-p", "-t", "S:1.2", "#{pane_title}"]],
+                &[&["select-pane", "-T", "", "-t", "S:1.1"], &["display-message", "-p", "-t", "S:1.1", "[#{pane_title}]"]],
+                &[&["select-pane", "-T"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_select_pane_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-g", &["select-pane", "-g", "-t", "S:1.1"][..]),
+            ("-P", &["select-pane", "-P", "fg=red", "-t", "S:1.1"][..]),
+            ("-Z", &["select-pane", "-Z", "-t", "S:1.1"][..]),
+            ("-n", &["select-pane", "-n", "-t", "S:1.1"][..]),
+            ("-p", &["select-pane", "-p", "-t", "S:1.1"][..]),
+        ] {
+            assert_pane_rejected("select-pane", flag, arguments);
+        }
+    }
+
+    #[test]
+    fn panes_break_pane_flags_match_the_reference() {
+        probes(
+            "panes_break_pane_flags_match_the_reference",
+            &[
+                &[&["break-pane", "-s", "S:1.1"]],
+                &[&["break-pane", "-s", "S:1.2"], &["break-pane", "-s", "S:1.0"]],
+                &[&["break-pane", "-d", "-s", "S:1.1"]],
+                &[&["break-pane"]],
+                &[&["select-pane", "-t", "S:1.2"], &["break-pane"]],
+                &[&["break-pane", "-n", "moved", "-s", "S:1.1"]],
+                &[&["break-pane", "-n", "", "-s", "S:1.1"]],
+                &[&["break-pane", "-P", "-s", "S:1.1"]],
+                &[&["break-pane", "-P", "-F", "#{window_index} #{window_name} #{pane_id} #{pane_index}", "-s", "S:1.1"]],
+                &[&["break-pane", "-F", "#{window_index}", "-s", "S:1.1"]],
+                &[&["break-pane", "-dP", "-s", "S:1.2"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "S:7"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "7"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "S:2"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "S:"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "S"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "T:"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "T:5"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "nosuch:"]],
+                &[&["break-pane", "-s", "S:2.0"]],
+                &[&["break-pane", "-s", "S:2.0", "-t", "S:9"]],
+                &[&["break-pane", "-s", "T:1", "-t", "S:"]],
+                &[&["break-pane", "-d", "-n", "kept", "-s", "T:1", "-t", "S:8"]],
+                &[&["break-pane", "-s", "S:1.1", "-t", "T:"], &["break-pane", "-s", "T:2.0", "-t", "S:5"]],
+                &[&["break-pane", "-s", "nosuch"]],
+                &[&["break-pane", "-s", "S:1.9"]],
+                &[&["break-pane", "-s", "%2"]],
+                &[&["break-pane", "-s"]],
+                &[&["break-pane", "extra"]],
+                &[&["split-window", "-d", "-t", "S:2", "sh", "-c", "sleep 300"], &["break-pane", "-s", "S:2.1"]],
+                &[&["split-window", "-d", "-t", "S:2", "sleep 300"], &["break-pane", "-s", "S:2.1"]],
+                &[&["split-window", "-d", "-t", "S:2", "/bin/sleep", "300"], &["break-pane", "-s", "S:2.1"]],
+                &[&["split-window", "-d", "-t", "S:2"], &["break-pane", "-s", "S:2.1"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_break_pane_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-a", &["break-pane", "-a", "-s", "S:1.1"][..]),
+            ("-b", &["break-pane", "-b", "-s", "S:1.1"][..]),
+            ("-W", &["break-pane", "-W", "-s", "S:1.1"][..]),
+            ("-x", &["break-pane", "-x", "10", "-s", "S:1.1"][..]),
+            ("-X", &["break-pane", "-X", "10", "-s", "S:1.1"][..]),
+            ("-y", &["break-pane", "-y", "10", "-s", "S:1.1"][..]),
+            ("-Y", &["break-pane", "-Y", "10", "-s", "S:1.1"][..]),
+        ] {
+            assert_pane_rejected("break-pane", flag, arguments);
+        }
+    }
+
+    #[test]
+    fn panes_join_pane_flags_match_the_reference() {
+        probes(
+            "panes_join_pane_flags_match_the_reference",
+            &[
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.0"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.2"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.0", "-h"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.0", "-v"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-b"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-hb"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-d"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-l", "5"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-l", "30%"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-hl", "10"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-b", "-l", "5"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-p", "30"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-p", "x"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-l", "x"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-l", "0"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "-l", "99"]],
+                &[&["join-pane", "-s", "S:1.2", "-t", "S:2"]],
+                &[&["join-pane", "-s", "S:1.2", "-t", "S:2", "-h"]],
+                &[&["join-pane", "-s", "S:1.0", "-t", "S:2"]],
+                &[&["join-pane", "-s", "S:1.1", "-t", "S:1.1"]],
+                &[&["join-pane", "-s", "T:1", "-t", "S:2"]],
+                &[&["join-pane", "-s", "S:2", "-t", "T:1"]],
+                &[&["join-pane", "-s", "S:2", "-t", "nosuch"]],
+                &[&["join-pane", "-s", "nosuch", "-t", "S:1"]],
+                &[&["join-pane", "-s", "S:2"]],
+                &[&["join-pane", "-t", "S:1.1"]],
+                &[&["join-pane"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:3"], &["join-pane", "-s", "S:2", "-t", "S:1"]],
+                &[&["select-pane", "-m", "-t", "S:2"], &["join-pane", "-t", "S:1.1"]],
+                &[&["join-pane", "-s", "S:2", "-t", "S:1.1", "extra"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_join_pane_within_one_window_is_tm_only() {
+        let pair = fixture("panjoin");
+        let before = pane_topology(&pair.tm);
+        let output = pair.tm.run(&["join-pane", "-s", "S:1.0", "-t", "S:1.1"]);
+        assert!(!output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "tm: source and target panes must be in different windows\n"
+        );
+        assert_eq!(pane_topology(&pair.tm), before);
+        assert!(pair.reference.run(&["join-pane", "-s", "S:1.0", "-t", "S:1.1"]).status.success());
+    }
+
+    #[test]
+    fn panes_join_pane_rejects_flags_it_does_not_implement() {
+        assert_pane_rejected("join-pane", "-f", &["join-pane", "-f", "-s", "S:2", "-t", "S:1.1"]);
+    }
+
+    #[test]
+    fn panes_move_pane_flags_match_the_reference() {
+        probes(
+            "panes_move_pane_flags_match_the_reference",
+            &[
+                &[&["move-pane", "-s", "S:2", "-t", "S:1.1"]],
+                &[&["movep", "-s", "S:2", "-t", "S:1.1", "-hb"]],
+                &[&["move-pane", "-s", "S:2", "-t", "S:1.1", "-d", "-l", "5"]],
+                &[&["move-pane", "-s", "S:2", "-t", "S:1.1", "-v"]],
+                &[&["move-pane", "-s", "S:1.1", "-t", "S:2"]],
+                &[&["move-pane", "-s", "nosuch", "-t", "S:2"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_move_pane_rejects_flags_it_does_not_implement() {
+        for (flag, arguments) in [
+            ("-f", &["move-pane", "-f", "-s", "S:2", "-t", "S:1.1"][..]),
+            ("-p", &["move-pane", "-p", "30", "-s", "S:2", "-t", "S:1.1"][..]),
+            ("-M", &["move-pane", "-M", "-s", "S:2", "-t", "S:1.1"][..]),
+            ("-D", &["move-pane", "-D", "1", "-t", "S:1.1"][..]),
+            ("-L", &["move-pane", "-L", "1", "-t", "S:1.1"][..]),
+            ("-P", &["move-pane", "-P", "top", "-t", "S:1.1"][..]),
+            ("-R", &["move-pane", "-R", "1", "-t", "S:1.1"][..]),
+            ("-U", &["move-pane", "-U", "1", "-t", "S:1.1"][..]),
+            ("-X", &["move-pane", "-X", "1", "-t", "S:1.1"][..]),
+            ("-Y", &["move-pane", "-Y", "1", "-t", "S:1.1"][..]),
+            ("-z", &["move-pane", "-z", "1", "-t", "S:1.1"][..]),
+        ] {
+            assert_pane_rejected("move-pane", flag, arguments);
+        }
+    }
+
+    #[test]
+    fn panes_swap_pane_flags_match_the_reference() {
+        probes(
+            "panes_swap_pane_flags_match_the_reference",
+            &[
+                &[&["swap-pane", "-s", "S:1.1", "-t", "S:1.2"]],
+                &[&["swap-pane", "-s", "S:1.0", "-t", "S:1.2"]],
+                &[&["swap-pane", "-s", "S:1.2", "-t", "S:1.0"]],
+                &[&["swap-pane", "-d", "-s", "S:1.1", "-t", "S:1.2"]],
+                &[&["swap-pane", "-s", "S:1.1", "-t", "S:1.1"]],
+                &[&["swap-pane", "-D"]],
+                &[&["swap-pane", "-U"]],
+                &[&["swap-pane", "-D", "-t", "S:1.2"]],
+                &[&["swap-pane", "-U", "-t", "S:1.0"]],
+                &[&["swap-pane", "-U", "-t", "S:1.1"]],
+                &[&["swap-pane", "-dD", "-t", "S:1.0"]],
+                &[&["swap-pane", "-D", "-U", "-t", "S:1.1"]],
+                &[&["swap-pane", "-D", "-s", "S:1.0", "-t", "S:1.1"]],
+                &[&["swap-pane", "-s", "S:1.0", "-t", "S:2"]],
+                &[&["swap-pane", "-s", "S:2", "-t", "S:1.1"]],
+                &[&["swap-pane", "-d", "-s", "S:2", "-t", "S:1.1"]],
+                &[&["swap-pane", "-s", "T:1", "-t", "S:1.1"]],
+                &[&["swap-pane", "-s", "S:1.1", "-t", "T:1"]],
+                &[&["swap-pane", "-s", "nosuch", "-t", "S:1.1"]],
+                &[&["swap-pane", "-t", "S:1.1"]],
+                &[&["swap-pane", "-s", "S:1.1"]],
+                &[&["swap-pane"]],
+                &[&["select-pane", "-m", "-t", "S:1.2"], &["swap-pane", "-t", "S:1.0"]],
+                &[&["select-pane", "-m", "-t", "S:2"], &["swap-pane", "-t", "S:1.0"]],
+                &[&["select-pane", "-m", "-t", "S:1.2"], &["swap-pane", "-t", "S:1.2"]],
+                &[&["swap-pane", "-s", "S:1.1", "-t", "S:1.2", "extra"]],
+            ],
+        );
+    }
+
+    #[test]
+    fn panes_swap_pane_rejects_flags_it_does_not_implement() {
+        assert_pane_rejected("swap-pane", "-Z", &["swap-pane", "-Z", "-s", "S:1.1", "-t", "S:1.2"]);
     }
 }
