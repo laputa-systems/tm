@@ -92,6 +92,7 @@ fn relative_window_targets_match_reference() {
         mux.ok(&["new-window", "-d", "-t", "B", "-n", "b3"]);
     }
     parity::compare_commands(
+        "relative_window_targets_match_reference",
         &tm,
         &reference,
         &[
@@ -154,6 +155,7 @@ fn break_and_join_preflight_matches_reference() {
         mux.ok(&["split-window", "-h", "-t", "join:1"]);
     }
     parity::compare_commands(
+        "break_and_join_preflight_matches_reference",
         &tm,
         &reference,
         &[
@@ -236,7 +238,8 @@ fn pane_input_bytes_match_reference() {
     for mux in [&tm, &reference] {
         mux.capture_until("parity", "READY", Duration::from_secs(3));
     }
-    parity::compare_commands(&tm, &reference, &[&["send-keys", "-t", "parity", "a", "b", "Enter"]]);
+    parity::compare_commands(
+        "pane_input_bytes_match_reference", &tm, &reference, &[&["send-keys", "-t", "parity", "a", "b", "Enter"]]);
     let tm_capture = tm.capture_until("parity", "61", Duration::from_secs(3));
     let reference_capture =
         reference.capture_until("parity", "61", Duration::from_secs(3));

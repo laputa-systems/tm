@@ -23,8 +23,8 @@ fn create_session(mux: &Mux, session: &str, width: &str, height: &str) {
     ]);
 }
 
-fn compare(tm: &Mux, reference: &Mux, commands: &[&[&str]]) {
-    parity::compare_commands(tm, reference, commands);
+fn compare(test: &str, tm: &Mux, reference: &Mux, commands: &[&[&str]]) {
+    parity::compare_commands(test, tm, reference, commands);
 }
 
 #[test]
@@ -43,6 +43,7 @@ fn even_layouts_match_reference_for_two_to_five_panes() {
                 mux.ok(&["select-layout", "-t", &session, "even-horizontal"]);
             }
             compare(
+                "even_layouts_match_reference_for_two_to_five_panes",
                 &tm,
                 &reference,
                 &[
@@ -70,6 +71,7 @@ fn even_layouts_match_reference_for_two_to_five_panes() {
                 mux.ok(&["select-layout", "-t", &session, "even-vertical"]);
             }
             compare(
+                "even_layouts_match_reference_for_two_to_five_panes",
                 &tm,
                 &reference,
                 &[
@@ -103,6 +105,7 @@ fn layout_recomputes_after_border_resize_and_middle_close() {
         mux.ok(&["select-layout", "-t", "R", "even-horizontal"]);
     }
     compare(
+        "layout_recomputes_after_border_resize_and_middle_close",
         &tm,
         &reference,
         &[
@@ -114,6 +117,7 @@ fn layout_recomputes_after_border_resize_and_middle_close() {
         mux.ok(&["select-layout", "-t", "R", "even-horizontal"]);
     }
     compare(
+        "layout_recomputes_after_border_resize_and_middle_close",
         &tm,
         &reference,
         &[
@@ -136,6 +140,7 @@ fn pane_navigation_and_last_targets_match_reference() {
         mux.ok(&["new-window", "-d", "-t", "N", "-n", "second"]);
     }
     compare(
+        "pane_navigation_and_last_targets_match_reference",
         &tm,
         &reference,
         &[
@@ -166,6 +171,7 @@ fn zoom_and_unzoom_match_reference_geometry() {
         mux.ok(&["select-layout", "-t", "Z", "even-horizontal"]);
     }
     compare(
+        "zoom_and_unzoom_match_reference_geometry",
         &tm,
         &reference,
         &[

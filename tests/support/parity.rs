@@ -1,3 +1,6 @@
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -71,12 +74,8 @@ impl Mux {
         std::fs::create_dir_all(&root).expect("create reference scratch");
         let home = root.join("home");
         std::fs::create_dir_all(&home).expect("create reference home");
-        let binary = std::env::var_os("TMUX_REF")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join(".work/ref/tmux-3.8/bin/tmux")
-            });
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".work/ref/tmux-3.8/bin/tmux");
         assert!(
             binary.is_file(),
             "missing tmux 3.8 reference at {}; run tests/support/install-tmux-ref.sh",
@@ -194,9 +193,9 @@ impl Mux {
     pub fn outcome(&self, arguments: &[&str]) -> Outcome {
         let output = self.run(arguments);
         Outcome {
-            success: output.status.success(),
-            stdout: normalize(&String::from_utf8_lossy(&output.stdout), self),
-            stderr: normalize(&String::from_utf8_lossy(&output.stderr), self),
+            status: ExitStatus::of(output.status),
+            stdout: normalize(&output.stdout, self),
+            stderr: normalize(&output.stderr, self),
         }
     }
 
@@ -241,62 +240,172 @@ impl Drop for Mux {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct Outcome {
-    pub success: bool,
-    pub stdout: String,
-    pub stderr: String,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExitStatus {
+    Code(i32),
+    Signal(i32),
 }
 
-pub fn assert_outcomes_match(label: &str, tm: &Outcome, reference: &Outcome) {
-    assert_eq!(
-        tm.success, reference.success,
-        "{label}: exit status differs\n tm: {:?}\nref: {:?}",
-        tm, reference
-    );
-    assert_eq!(
-        tm.stdout, reference.stdout,
-        "{label}: stdout differs\n tm: {:?}\nref: {:?}",
-        tm, reference
-    );
-    if !tm.success {
-        assert_eq!(
-            tm.stderr, reference.stderr,
-            "{label}: stderr differs\n tm: {:?}\nref: {:?}",
-            tm, reference
-        );
+impl ExitStatus {
+    fn of(status: std::process::ExitStatus) -> Self {
+        match (status.code(), status.signal()) {
+            (Some(code), _) => Self::Code(code),
+            (None, Some(signal)) => Self::Signal(signal),
+            (None, None) => panic!("exit status {status:?} has neither code nor signal"),
+        }
     }
 }
 
-pub fn compare_commands(tm: &Mux, reference: &Mux, commands: &[&[&str]]) {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Outcome {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Field {
+    Status,
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Difference {
+    pub field: Field,
+    pub tm: String,
+    pub reference: String,
+}
+
+fn lossy(bytes: &[u8]) -> String {
+    format!("{:?}", String::from_utf8_lossy(bytes))
+}
+
+pub fn first_difference(tm: &Outcome, reference: &Outcome) -> Option<Difference> {
+    if tm.status != reference.status {
+        return Some(Difference {
+            field: Field::Status,
+            tm: format!("{:?}", tm.status),
+            reference: format!("{:?}", reference.status),
+        });
+    }
+    if tm.stdout != reference.stdout {
+        return Some(Difference {
+            field: Field::Stdout,
+            tm: lossy(&tm.stdout),
+            reference: lossy(&reference.stdout),
+        });
+    }
+    if tm.stderr != reference.stderr {
+        return Some(Difference {
+            field: Field::Stderr,
+            tm: lossy(&tm.stderr),
+            reference: lossy(&reference.stderr),
+        });
+    }
+    None
+}
+
+pub fn observation_difference<T: std::fmt::Debug + PartialEq>(
+    what: &str,
+    tm: &T,
+    reference: &T,
+) -> Option<String> {
+    (tm != reference).then(|| format!("{what} differ\n tm: {tm:?}\nref: {reference:?}"))
+}
+
+pub struct KnownDifference {
+    pub test: &'static str,
+    pub command: &'static [&'static str],
+    pub parity_row: &'static str,
+    pub field: Field,
+    pub tm: &'static str,
+    pub reference: &'static str,
+}
+
+pub const KNOWN_DIFFERENCES: &[KnownDifference] = &[];
+
+pub fn check_command(
+    known: &[KnownDifference],
+    test: &str,
+    arguments: &[&str],
+    tm: &Outcome,
+    reference: &Outcome,
+) -> Result<(), String> {
+    let listed = known
+        .iter()
+        .find(|entry| entry.test == test && entry.command == arguments);
+    let observed = first_difference(tm, reference);
+    match (listed, observed) {
+        (None, None) => Ok(()),
+        (None, Some(difference)) => Err(format!(
+            "{test} {arguments:?}: {:?} differs\n tm: {}\nref: {}",
+            difference.field, difference.tm, difference.reference
+        )),
+        (Some(entry), None) => Err(format!(
+            "{test} {arguments:?}: now matches the reference; remove its KNOWN_DIFFERENCES entry ({})",
+            entry.parity_row
+        )),
+        (Some(entry), Some(difference)) => {
+            if difference.field == entry.field
+                && difference.tm == format!("{:?}", entry.tm)
+                && difference.reference == format!("{:?}", entry.reference)
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{test} {arguments:?}: difference no longer matches its KNOWN_DIFFERENCES entry ({})\n tm: {}\nref: {}",
+                    entry.parity_row, difference.tm, difference.reference
+                ))
+            }
+        }
+    }
+}
+
+pub fn compare_commands(test: &str, tm: &Mux, reference: &Mux, commands: &[&[&str]]) {
     for arguments in commands {
-        let label = format!("{arguments:?}");
-        assert_outcomes_match(
-            &label,
+        if let Err(message) = check_command(
+            KNOWN_DIFFERENCES,
+            test,
+            arguments,
             &tm.outcome(arguments),
             &reference.outcome(arguments),
-        );
+        ) {
+            panic!("{message}");
+        }
     }
 }
 
-pub fn normalize(value: &str, mux: &Mux) -> String {
-    let mut output = value
-        .strip_prefix("tmux: ")
-        .or_else(|| value.strip_prefix("tm: "))
-        .unwrap_or(value)
-        .replace(mux.socket.to_string_lossy().as_ref(), "<socket>")
-        .replace(mux.root.to_string_lossy().as_ref(), "<root>")
-        .replace(mux.home.to_string_lossy().as_ref(), "<home>");
-    for (needle, replacement) in [
-        ("tmux 3.8", "tmux <version>"),
-        ("tm ", "tm "),
-    ] {
-        output = output.replace(needle, replacement);
+fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() {
+        return haystack.to_vec();
+    }
+    let mut output = Vec::with_capacity(haystack.len());
+    let mut index = 0;
+    while index < haystack.len() {
+        if haystack[index..].starts_with(needle) {
+            output.extend_from_slice(replacement);
+            index += needle.len();
+        } else {
+            output.push(haystack[index]);
+            index += 1;
+        }
     }
     output
 }
 
-fn run_with_deadline(mut command: Command, timeout: Duration) -> Result<Output, String> {
+pub fn normalize(value: &[u8], mux: &Mux) -> Vec<u8> {
+    let value = value
+        .strip_prefix(b"tmux: ")
+        .or_else(|| value.strip_prefix(b"tm: "))
+        .unwrap_or(value);
+    let output = replace_bytes(value, mux.socket.as_os_str().as_bytes(), b"<socket>");
+    let output = replace_bytes(&output, mux.root.as_os_str().as_bytes(), b"<root>");
+    let output = replace_bytes(&output, mux.home.as_os_str().as_bytes(), b"<home>");
+    replace_bytes(&output, b"tmux 3.8", b"tmux <version>")
+}
+
+pub fn run_with_deadline(mut command: Command, timeout: Duration) -> Result<Output, String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -304,14 +413,12 @@ fn run_with_deadline(mut command: Command, timeout: Duration) -> Result<Output, 
     let mut child = command
         .spawn()
         .map_err(|error| format!("spawn {:?}: {error}", command.get_program()))?;
+    let stdout = drain(child.stdout.take().expect("piped stdout"));
+    let stderr = drain(child.stderr.take().expect("piped stderr"));
     let deadline = Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|error| format!("collect output: {error}"));
-            }
+            Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -324,5 +431,27 @@ fn run_with_deadline(mut command: Command, timeout: Duration) -> Result<Output, 
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
             Err(error) => return Err(format!("wait for command: {error}")),
         }
-    }
+    };
+    Ok(Output {
+        status,
+        stdout: join_drain(stdout)?,
+        stderr: join_drain(stderr)?,
+    })
+}
+
+fn drain<R: Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_drain(
+    handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> Result<Vec<u8>, String> {
+    handle
+        .join()
+        .map_err(|_| "output reader panicked".to_owned())?
+        .map_err(|error| format!("read command output: {error}"))
 }

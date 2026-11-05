@@ -99,6 +99,7 @@ fn base_index_renumbering_and_window_lifecycle_match_reference() {
         mux.ok(&["kill-window", "-t", "S:2"]);
     }
     parity::compare_commands(
+        "base_index_renumbering_and_window_lifecycle_match_reference",
         &tm,
         &reference,
         &[

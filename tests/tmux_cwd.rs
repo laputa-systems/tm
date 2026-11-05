@@ -63,6 +63,7 @@ fn foreground_shell_cwd_matches_reference() {
     create_cwd_session(&reference, "S", &directory, None);
     assert_eq!(wait_path(&tm, "S", &directory), directory);
     parity::compare_commands(
+        "foreground_shell_cwd_matches_reference",
         &tm,
         &reference,
         &[&[
@@ -132,6 +133,7 @@ fn split_binding_inherits_the_pane_current_path() {
 
     reference.ok(&["split-window", "-h", "-c", &directory, "-t", "S"]);
     parity::compare_commands(
+        "split_binding_inherits_the_pane_current_path",
         &tm,
         &reference,
         &[&["list-panes", "-t", "S", "-F", "#{pane_current_path}"]],
