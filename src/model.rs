@@ -895,21 +895,21 @@ fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
 
     let width = cols.min(old_cols);
     let bottom_offset = old_rows.saturating_sub(rows);
-    let bottom_has_content = screen
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let blank_rows_below_cursor = screen
         .rows(0, old_cols)
-        .skip(usize::from(bottom_offset))
-        .any(|row| !row.trim().is_empty());
-    // A client attach can briefly grow a pane and then shrink it back to the
-    // session size. In that case the newly appended rows are blank, so keep
-    // the top of the screen; genuine pane splits with a live prompt have
-    // content at the bottom and should keep the newest rows instead.
-    let keep_from = if bottom_has_content { bottom_offset } else { 0 };
+        .skip(usize::from(cursor_row) + 1)
+        .collect::<Vec<_>>()
+        .iter()
+        .rev()
+        .take_while(|row| row.trim().is_empty())
+        .count();
+    let keep_from = usize::from(bottom_offset).saturating_sub(blank_rows_below_cursor);
     let saved_rows = screen
         .rows_formatted(0, width)
-        .skip(usize::from(keep_from))
+        .skip(keep_from)
         .take(usize::from(rows))
         .collect::<Vec<_>>();
-    let (cursor_row, cursor_col) = screen.cursor_position();
     let cursor_hidden = screen.hide_cursor();
     let attributes = screen.attributes_formatted();
 
@@ -922,7 +922,7 @@ fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
         redraw.extend_from_slice(b"\x1b[K");
     }
     let mapped_row = usize::from(cursor_row)
-        .saturating_sub(usize::from(keep_from))
+        .saturating_sub(keep_from)
         .min(usize::from(rows.saturating_sub(1)));
     let mapped_col = cursor_col.min(cols.saturating_sub(1));
     redraw.extend_from_slice(

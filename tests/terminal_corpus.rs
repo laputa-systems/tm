@@ -3,14 +3,14 @@
 #[path = "support/parity.rs"]
 #[allow(dead_code)]
 mod parity;
-#[path = "support/pty_harness.rs"]
+#[path = "support/raw_pty.rs"]
 #[allow(dead_code)]
-mod pty_harness;
+mod raw_pty;
 
 use std::time::Duration;
 
 use parity::{Mux, Scratch};
-use ptytest::Size;
+use raw_pty::RawClient;
 
 fn fixture_session(mux: &Mux) {
     mux.ok(&[
@@ -67,19 +67,46 @@ fn pane_terminal_and_set_titles_match_the_reference() {
         reference_term.trim_end_matches('\n')
     );
 
-    let tm_title = pty_harness::spawn_attached_with_profile(
-        &tm,
-        "title-tm",
-        &["attach-session", "-t", "S"],
-        Size::new(60, 8).expect("size"),
-        ptytest::ProtocolProfile::xterm_minimal_v1(),
-    );
-    let mut tm_title = tm_title;
-    pty_harness::wait_for_text(&mut tm_title, "READY", Duration::from_secs(3));
-    assert!(!tm_title
-        .raw_output()
-        .windows(12)
-        .any(|window| window == b"TITLE_MARKER"));
+    for mux in [&tm, &reference] {
+        let mut client = RawClient::spawn(mux, "title", &["attach-session", "-t", "S"], 8, 60);
+        client.wait_for_text("READY", Duration::from_secs(5));
+        mux.ok(&["send-keys", "-t", "S", "x"]);
+        client.wait_for_text("x", Duration::from_secs(5));
+        let stream = client.bytes_since(raw_pty::Mark::default());
+        assert_eq!(client.count(b"TITLE_MARKER"), 0, "{:?}", mux.implementation());
+        assert_eq!(client.count(b"\x1b]0;"), 0, "{:?}", mux.implementation());
+        assert_eq!(client.count(b"\x1b]2;"), 0, "{:?}", mux.implementation());
+        assert!(!stream.is_empty());
+        client.detach();
+    }
+}
+
+#[test]
+fn attach_one_row_smaller_than_the_window_keeps_pane_content_like_the_reference() {
+    let scratch = Scratch::new("corpus-shrink");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let mut captures = Vec::new();
+    for mux in [&tm, &reference] {
+        mux.ok(&[
+            "new-session", "-d", "-s", "S", "-x", "80", "-y", "8", "--", "sh", "-c",
+            "printf 'alpha\\nbeta\\n'; sleep 30",
+        ]);
+        mux.capture_until("S", "beta", Duration::from_secs(5));
+        let mut client = RawClient::spawn(mux, "shrink", &["attach-session", "-t", "S"], 8, 80);
+        client.wait_for_text("beta", Duration::from_secs(5));
+        let rows: Vec<String> = client.screen_text().lines().take(2).map(|line| line.trim_end().to_owned()).collect();
+        captures.push((
+            rows,
+            mux.ok(&["capture-pane", "-p", "-S", "-", "-t", "S"])
+                .trim_end_matches('\n')
+                .to_owned(),
+        ));
+        client.detach();
+    }
+    assert_eq!(captures[0].0, ["alpha", "beta"]);
+    assert_eq!(parity::observation_difference("attached rows", &captures[0].0, &captures[1].0), None);
+    assert_eq!(parity::observation_difference("pane history", &captures[0].1, &captures[1].1), None);
 }
 
 #[test]
