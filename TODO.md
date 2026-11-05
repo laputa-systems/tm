@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 30
+Next: 33
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -51,7 +51,7 @@ suites do not cover.
 
 - **Area:** Layout
 - **Where:** `src/model.rs` `Layout::resize`
-- **Problem:** tm lays panes out as a binary tree and moves only the border of the nearest enclosing split. tmux keeps one list of siblings and passes the remaining change on to the next siblings, so `resize-pane -R`, `-L`, `-x` in a row of three panes ends with different widths.
+- **Problem:** tm lays panes out as a binary tree and moves only the border of the nearest enclosing split. tmux keeps one list of siblings and passes the remaining change on to the next siblings, so `resize-pane -R`, `-L`, `-x` in a row of three panes ends with different widths. The same tree gives a removed middle pane's space to the previous sibling where tmux gives it to the next (`kill-pane`, `break-pane`, `join-pane -s` in a window of three panes). `tests/tmux_histories.rs` `Exclusion::PaneRemovalFromWindowWithThreeOrMorePanes` stops generating them.
 - **Recommendation:** Resize over the flattened sibling run of the same axis, with a differential probe for rows of three and four panes.
 - **Fix with:** reference-parity
 - **Effort:** M
@@ -171,4 +171,31 @@ suites do not cover.
 - **Problem:** Commands run from bindings use these parsers, which accept flags the command line now rejects. No compiled binding uses them.
 - **Recommendation:** Route bound commands through `crate::command::parse` or delete the parsers with the unused request fields.
 - **Fix with:** delete
+- **Effort:** S
+
+### TMUX-30 · P3 · A window moved to a session of another size is resized to it
+
+- **Area:** Layout
+- **Where:** `src/server.rs` `relink_window`, `break_pane`, `reflow_session`
+- **Problem:** tm sizes every window to its session, so `move-window`, `swap-window` and `break-pane` between detached sessions of different sizes resize the moved window. tmux keeps the window's size until a client attaches.
+- **Recommendation:** Give a window its own size and resize it only for attached clients, with a differential history of cross-session moves between sessions of different sizes. `tests/tmux_histories.rs` `Exclusion::SessionSizeVariation` stops generating them.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-31 · P3 · Malformed targets are parsed differently from tmux
+
+- **Area:** Targets
+- **Where:** `src/server.rs` `resolve_session_index`, `resolve_window_target`, `resolve_pane_target`
+- **Problem:** tm splits `a.b.c` at the last dot where tmux splits at the first, strips a leading `=` from error text, accepts `::` as a session, reads `a:b:c` and `zz:zz.zz` as a session named `a:b:c` or `zz:zz.zz`, resolves a bare `-` or `+` to a different window than tmux, and words `@`, `@x`, and `..` errors for a different object (`can't find pane: @x` against tmux's `can't find window: @x`).
+- **Recommendation:** Replace the three resolvers with one parser that follows tmux's `cmd_find_target` grammar, with a differential probe per malformed shape. `tests/tmux_histories.rs` `Exclusion::MalformedTargetGrammar` lists the shapes it stops generating.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-32 · P3 · A relative window slot places new and moved windows differently
+
+- **Area:** Windows
+- **Where:** `src/server.rs` `relink_window`, `new_window`, `break_pane`
+- **Problem:** `new-window`, `move-window` and `break-pane` with a `+N` or `-N` slot (for example `move-window -a -s c:x -t c:+`) moves window `x` after the window at `+`; tmux leaves it at index 2 where tm moves it to 3, because tmux resolves a `+N` or `-N` target to an index without a window and does not shuffle.
+- **Recommendation:** Treat an offset target that names no window like an absent index in `relink_window`, with a differential probe for `-a` and `-b` with `+N` and `-N`. `tests/tmux_histories.rs` `Exclusion::RelativeWindowPlacement` stops generating the shape; the relative targets also leave other window state (such as the last-window flag) different afterwards.
+- **Fix with:** reference-parity
 - **Effort:** S
