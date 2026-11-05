@@ -219,6 +219,74 @@ intentional difference. `tests/parity_contract.rs` validates the table.
 | `refresh-client` | `-t` | match | target client; the default is the most recently active client | C3 `tests/tmux_cli_flags.rs::sessions_refresh_client_flags_match_the_reference` | differential |
 | `refresh-client` | `refresh` | match | alias of `refresh-client` | C3 `tests/tmux_cli_flags.rs::sessions_tm_only_aliases_run_the_canonical_command` | differential |
 | `refresh-client` | `refreshc` | tm-only | alias that tmux 3.8 lacks | C3 `tests/tmux_cli_flags.rs::sessions_tm_only_aliases_run_the_canonical_command` | internal |
+| `new-window` | `-a` | match | insert after the target window, shifting only the contiguous run of windows after it | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-b` | match | insert before the target window; wins over `-a` | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-c` | match | start directory of the new pane | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-d` | match | do not make the new window current | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-e` | rejected | set an environment variable in the new pane | C4 `tests/tmux_cli_flags.rs::windows_new_window_rejects_flags_it_does_not_implement` | internal |
+| `new-window` | `-E` | match | empty pane with no process; a command is an error | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-F` | match | format for `-P`; without `-P` nothing is printed | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-I` | rejected | tm-only index flag; tmux takes the index from `-t` | C4 `tests/tmux_cli_flags.rs::windows_new_window_rejects_flags_it_does_not_implement` | internal |
+| `new-window` | `-k` | match | destroy an existing window at the target index | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-n` | match | window name | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-P` | match | print the new window; default format `#{session_name}:#{window_index}.#{pane_index}` | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-S` | match | select the window at the target index or with the `-n` name instead of creating one | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `-t` | match | target index: number, name, `+n`, `-n`, `!`, `^`, `$`, or empty for the next free index | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `new-window` | `shell-command` | match | one word runs through the shell, several words run directly; the window is named after the command's basename | C4 `tests/tmux_cli_flags.rs::windows_new_window_flags_match_the_reference` | differential |
+| `kill-window` | `-a` | match | kill every window except the target, then renumber | C4 `tests/tmux_cli_flags.rs::windows_kill_window_flags_match_the_reference` | differential |
+| `kill-window` | `-f` | rejected | filter format for `-a` | C4 `tests/tmux_cli_flags.rs::windows_kill_window_rejects_flags_it_does_not_implement` | internal |
+| `kill-window` | `-t` | match | target window; killing the current window selects the last window, else the previous one | C4 `tests/tmux_cli_flags.rs::windows_kill_window_flags_match_the_reference` | differential |
+| `select-window` | `-l` | match | select the last window of the target session | C4 `tests/tmux_cli_flags.rs::windows_select_window_flags_match_the_reference` | differential |
+| `select-window` | `-n` | match | select the next window of the target session | C4 `tests/tmux_cli_flags.rs::windows_select_window_flags_match_the_reference` | differential |
+| `select-window` | `-p` | match | select the previous window of the target session | C4 `tests/tmux_cli_flags.rs::windows_select_window_flags_match_the_reference` | differential |
+| `select-window` | `-T` | rejected | switch to the last window when the target is already current | C4 `tests/tmux_cli_flags.rs::windows_select_window_rejects_flags_it_does_not_implement` | internal |
+| `select-window` | `-t` | match | target window | C4 `tests/tmux_cli_flags.rs::windows_select_window_flags_match_the_reference` | differential |
+| `next-window` | `-a` | rejected | move to the next window with an alert | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_reject_flags_they_do_not_implement` | internal |
+| `next-window` | `-t` | match | target session | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_flags_match_the_reference` | differential |
+| `previous-window` | `-a` | rejected | move to the previous window with an alert | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_reject_flags_they_do_not_implement` | internal |
+| `previous-window` | `-t` | match | target session | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_flags_match_the_reference` | differential |
+| `last-window` | `-t` | match | target session | C4 `tests/tmux_cli_flags.rs::windows_next_previous_and_last_window_flags_match_the_reference` | differential |
+| `link-window` | `-a` | rejected | link after the target window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_reject_flags_they_do_not_implement` | internal |
+| `link-window` | `-b` | rejected | link before the target window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_reject_flags_they_do_not_implement` | internal |
+| `link-window` | `-d` | match | do not select the linked window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
+| `link-window` | `-k` | match | destroy an existing window at the target index | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
+| `link-window` | `-s` | match | source window; the default is the current window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
+| `link-window` | `-t` | match | target index or session | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
+| `unlink-window` | `-k` | match | unlink even when the window is linked only here | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
+| `unlink-window` | `-t` | match | target window | C4 `tests/tmux_cli_flags.rs::windows_link_and_unlink_window_flags_match_the_reference` | differential |
+| `move-window` | `-a` | match | move after the target window, shifting only the contiguous run of windows after it | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
+| `move-window` | `-b` | rejected | move before the target window | C4 `tests/tmux_cli_flags.rs::windows_move_window_rejects_flags_it_does_not_implement` | internal |
+| `move-window` | `-d` | match | do not select the moved window | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
+| `move-window` | `-k` | match | destroy an existing window at the target index | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
+| `move-window` | `-r` | match | renumber the windows of the target session | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
+| `move-window` | `-s` | match | source window; the default is the current window | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
+| `move-window` | `-t` | match | target index or session | C4 `tests/tmux_cli_flags.rs::windows_move_window_flags_match_the_reference` | differential |
+| `swap-window` | `-d` | match | select the swapped windows' indexes in both sessions | C4 `tests/tmux_cli_flags.rs::windows_swap_window_flags_match_the_reference` | differential |
+| `swap-window` | `-r` | rejected | accepted and ignored before C4; tmux has no such flag | C4 `tests/tmux_cli_flags.rs::windows_swap_window_rejects_flags_it_does_not_implement` | internal |
+| `swap-window` | `-s` | match | source window; the default is the current window | C4 `tests/tmux_cli_flags.rs::windows_swap_window_flags_match_the_reference` | differential |
+| `swap-window` | `-t` | match | target window; windows may be in different sessions | C4 `tests/tmux_cli_flags.rs::windows_swap_window_flags_match_the_reference` | differential |
+| `rotate-window` | `-D` | match | rotate panes down | C4 `tests/tmux_cli_flags.rs::windows_rotate_window_flags_match_the_reference` | differential |
+| `rotate-window` | `-t` | match | target window | C4 `tests/tmux_cli_flags.rs::windows_rotate_window_flags_match_the_reference` | differential |
+| `rotate-window` | `-U` | match | rotate panes up | C4 `tests/tmux_cli_flags.rs::windows_rotate_window_flags_match_the_reference` | differential |
+| `rotate-window` | `-Z` | rejected | keep the window zoomed | C4 `tests/tmux_cli_flags.rs::windows_rotate_window_rejects_flags_it_does_not_implement` | internal |
+| `rename-window` | `-t` | match | target window | C4 `tests/tmux_cli_flags.rs::windows_rename_window_flags_match_the_reference` | differential |
+| `rename-window` | `new-name` | match | exactly one name argument | C4 `tests/tmux_cli_flags.rs::windows_rename_window_flags_match_the_reference` | differential |
+| `respawn-window` | `-c` | match | start directory | C4 `tests/tmux_cli_flags.rs::windows_respawn_window_flags_match_the_reference` | differential |
+| `respawn-window` | `-d` | rejected | accepted and ignored before C4; tmux has no such flag | C4 `tests/tmux_cli_flags.rs::windows_respawn_window_rejects_flags_it_does_not_implement` | internal |
+| `respawn-window` | `-e` | rejected | set an environment variable in the pane | C4 `tests/tmux_cli_flags.rs::windows_respawn_window_rejects_flags_it_does_not_implement` | internal |
+| `respawn-window` | `-E` | rejected | respawn into an empty pane; tmux then drops the window | C4 `tests/tmux_cli_flags.rs::windows_respawn_window_rejects_flags_it_does_not_implement` | internal |
+| `respawn-window` | `-k` | match | respawn a window whose panes still run; the window becomes current | C4 `tests/tmux_cli_flags.rs::windows_respawn_window_flags_match_the_reference` | differential |
+| `respawn-window` | `-t` | match | target window | C4 `tests/tmux_cli_flags.rs::windows_respawn_window_flags_match_the_reference` | differential |
+| `respawn-window` | `shell-command` | match | command for the respawned pane | C4 `tests/tmux_cli_flags.rs::windows_respawn_window_flags_match_the_reference` | differential |
+| `select-layout` | `-E` | rejected | spread the panes evenly | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
+| `select-layout` | `-n` | rejected | next preset layout | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
+| `select-layout` | `-o` | rejected | undo the last layout change | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
+| `select-layout` | `-p` | rejected | previous preset layout | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
+| `select-layout` | `-t` | match | target pane; the layout applies to its window | C4 `tests/tmux_cli_flags.rs::windows_select_layout_flags_match_the_reference` | differential |
+| `select-layout` | `even-horizontal` | match | panes side by side with even widths | C4 `tests/tmux_cli_flags.rs::windows_select_layout_flags_match_the_reference` | differential |
+| `select-layout` | `even-vertical` | match | panes stacked with even heights | C4 `tests/tmux_cli_flags.rs::windows_select_layout_flags_match_the_reference` | differential |
+| `select-layout` | `(other layouts)` | rejected | main-horizontal, main-vertical, tiled, mirrored, and custom layout strings | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_layouts_it_does_not_implement`; C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
+| `select-layout` | `(no layout)` | rejected | re-apply the last layout | C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_layouts_it_does_not_implement`; C4 `tests/tmux_cli_flags.rs::windows_select_layout_rejects_flags_it_does_not_implement` | internal |
 
 ## Baseline
 
