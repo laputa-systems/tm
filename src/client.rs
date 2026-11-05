@@ -20,6 +20,25 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     let request = invocation.request;
     let attach = invocation.attach;
     let starts_server = matches!(request, crate::protocol::Request::NewSession { .. });
+    if attach && starts_server && !stdin_is_terminal() {
+        return Err(NOT_A_TERMINAL.to_owned());
+    }
+    if let crate::protocol::Request::Attach { target, .. } = &request
+        && !stdin_is_terminal()
+    {
+        find_session(&socket, target.as_deref().unwrap_or_default())?;
+        return Err(NOT_A_TERMINAL.to_owned());
+    }
+    if let crate::protocol::Request::NewSession {
+        name: Some(name),
+        detached: true,
+        attach_existing: true,
+        ..
+    } = &request
+        && find_session(&socket, &format!("={name}")).is_ok()
+    {
+        return attach_loop(&socket, Some(format!("={name}")));
+    }
     let frame = encode_request(&request).map_err(|error| error.to_string())?;
     let mut stream = connect_or_start(&socket, starts_server)?;
     send_request(&mut stream, &socket, &frame)?;
@@ -54,6 +73,27 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         _ => None,
     };
     attach_loop(&socket, target)
+}
+
+const NOT_A_TERMINAL: &str = "open terminal failed: not a terminal";
+
+fn stdin_is_terminal() -> bool {
+    // SAFETY: isatty only inspects file descriptor 0.
+    unsafe { libc::isatty(0) == 1 }
+}
+
+fn find_session(socket: &std::path::Path, target: &str) -> Result<(), String> {
+    let mut stream = connect_or_start(socket, false)?;
+    let frame = encode_request(&crate::protocol::Request::HasSession {
+        target: target.to_owned(),
+    })
+    .map_err(|error| error.to_string())?;
+    send_request(&mut stream, socket, &frame)?;
+    match read_server_message(&mut stream).map_err(|error| error.to_string())? {
+        ServerMessage::Response { ok: true, .. } => Ok(()),
+        ServerMessage::Response { body, .. } => Err(body),
+        _ => Err("server returned an invalid command response".to_owned()),
+    }
 }
 
 fn protocol_mismatch(socket: &std::path::Path) -> String {
@@ -141,6 +181,9 @@ fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream,
 }
 
 fn attach_loop(socket: &std::path::Path, target: Option<String>) -> Result<(), String> {
+    if !stdin_is_terminal() {
+        return Err(NOT_A_TERMINAL.to_owned());
+    }
     let mut stream = UnixStream::connect(socket).map_err(|error| error.to_string())?;
     let size = terminal::size();
     let term = std::env::var("TERM").unwrap_or_default();
@@ -252,8 +295,13 @@ fn start_signal_thread(
 fn attach_stream(mut stream: UnixStream, size: Size) -> Result<(), String> {
     let signals = attach_signals();
     block_signals(&signals)?;
-    let mut raw =
-        RawTerminal::enter().map_err(|error| format!("enter raw terminal mode: {error}"))?;
+    let mut raw = RawTerminal::enter().map_err(|error| {
+        if error.raw_os_error() == Some(libc::ENOTTY) {
+            NOT_A_TERMINAL.to_owned()
+        } else {
+            format!("enter raw terminal mode: {error}")
+        }
+    })?;
     let alive = Arc::new(AtomicBool::new(true));
     let writer = Arc::new(Mutex::new(
         stream.try_clone().map_err(|error| error.to_string())?,

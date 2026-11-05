@@ -122,7 +122,7 @@ fn session_ops_port_the_tmux_session_lifecycle() {
         ]),
         "$3:printed:1\n"
     );
-    assert_eq!(tm.ok(&["new-session", "-A", "-d", "-s", "printed"]), "");
+    tm.fail(&["new-session", "-A", "-d", "-s", "printed"]);
     assert!(tm.ok(&["has-session", "-t", "S1"]).is_empty());
     tm.fail(&["new-session", "-d", "-s", "S1"]);
 

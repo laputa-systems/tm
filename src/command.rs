@@ -43,14 +43,11 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("attach-session" | "attach" | "a") => parse_attach(&arguments[index + 1..])?,
         Some("detach-client" | "detach") => parse_detach_client(&arguments[index + 1..])?,
         Some("switch-client" | "switchc") => parse_switch_client(&arguments[index + 1..])?,
-        Some("refresh-client" | "refreshc") => parse_refresh_client(&arguments[index + 1..])?,
+        Some("refresh-client" | "refresh" | "refreshc") => parse_refresh_client(&arguments[index + 1..])?,
         Some("run-shell" | "run") => parse_run_shell(&arguments[index + 1..])?,
         Some("list-sessions" | "ls") => parse_list_sessions(&arguments[index + 1..])?,
         Some("list-clients" | "lsc") => parse_list_clients(&arguments[index + 1..])?,
-        Some("has-session" | "has") => {
-            let target = required_target(&arguments[index + 1..])?;
-            InvocationSpec::plain(Request::HasSession { target })
-        }
+        Some("has-session" | "has") => parse_has_session(&arguments[index + 1..])?,
         Some("kill-session" | "kill") => parse_kill_session(&arguments[index + 1..])?,
         Some("new-window" | "neww") => parse_new_window(&arguments[index + 1..])?,
         Some("split-window" | "splitw" | "split" | "new-pane" | "newp") => {
@@ -86,11 +83,11 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
             target: optional_target(&arguments[index + 1..])?,
         }),
         Some("rename-session" | "rename") => {
-            let (target, name) = target_and_name(&arguments[index + 1..])?;
+            let (target, name) = target_and_name("rename-session", &arguments[index + 1..])?;
             InvocationSpec::plain(Request::RenameSession { target, name })
         }
         Some("rename-window" | "renamew") => {
-            let (target, name) = target_and_name(&arguments[index + 1..])?;
+            let (target, name) = target_and_name("rename-window", &arguments[index + 1..])?;
             InvocationSpec::plain(Request::RenameWindow { target, name })
         }
         Some("kill-window" | "killw") => parse_kill_window(&arguments[index + 1..])?,
@@ -122,7 +119,10 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Invocation, String> {
         Some("set-environment" | "setenv") => parse_set_environment(&arguments[index + 1..])?,
         Some("show-environment" | "showenv") => parse_show_environment(&arguments[index + 1..])?,
         Some("pipe-pane" | "pipep") => parse_pipe_pane(&arguments[index + 1..])?,
-        Some("kill-server") => InvocationSpec::plain(Request::KillServer),
+        Some("kill-server") => {
+            scan_flags("kill-server", &arguments[index + 1..], "", 0)?;
+            InvocationSpec::plain(Request::KillServer)
+        }
         Some("help" | "-h" | "--help") => return Err(usage().to_owned()),
         Some(unknown) => return Err(format!("unknown command: {unknown}\n\n{}", usage())),
     };
@@ -166,90 +166,32 @@ fn default_new_session() -> InvocationSpec {
 }
 
 fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut name = None;
-    let mut window_name = None;
-    let mut cwd = current_dir();
-    let mut detached = false;
-    let mut attach_existing = false;
-    let mut group_target = None;
-    let mut format = None;
-    let mut command = Vec::new();
+    let flags = scan_flags("new-session", arguments, "Ac:dEF:n:Ps:t:x:y:", usize::MAX)?;
+    let detached = flags.has('d');
+    let attach_existing = flags.has('A');
+    if attach_existing && flags.value('s').is_none() {
+        return Err(unsupported_flag("-A", "new-session"));
+    }
+    let format = flags
+        .has('P')
+        .then(|| flags.value('F').unwrap_or("#{session_name}:").to_owned());
     let mut size = Size::new(80, 24);
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-d" => detached = true,
-            "-A" => attach_existing = true,
-            "-t" => {
-                index += 1;
-                group_target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-P" => format = Some("#{session_name}".to_owned()),
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-s" => {
-                index += 1;
-                name = Some(argument(arguments, index, "-s")?.to_owned());
-            }
-            value if value.starts_with("-ds") && value.len() > 3 => {
-                detached = true;
-                name = Some(value[3..].to_owned());
-            }
-            value if value.starts_with("-s") && value.len() > 2 => {
-                name = Some(value[2..].to_owned());
-            }
-            "-n" => {
-                index += 1;
-                window_name = Some(argument(arguments, index, "-n")?.to_owned());
-            }
-            "-E" => {}
-            value if value.starts_with("-n") && value.len() > 2 => {
-                window_name = Some(value[2..].to_owned());
-            }
-            "-c" => {
-                index += 1;
-                cwd = Some(argument(arguments, index, "-c")?.to_owned());
-            }
-            "-x" => {
-                index += 1;
-                size.cols = parse_dimension(argument(arguments, index, "-x")?, "-x")?;
-            }
-            "-y" => {
-                index += 1;
-                size.rows = parse_dimension(argument(arguments, index, "-y")?, "-y")?;
-            }
-            value if value.starts_with("-x") && value.len() > 2 => {
-                size.cols = parse_dimension(&value[2..], "-x")?;
-            }
-            value if value.starts_with("-y") && value.len() > 2 => {
-                size.rows = parse_dimension(&value[2..], "-y")?;
-            }
-            "--" => command.extend_from_slice(&arguments[index + 1..]),
-            value if value.starts_with('-') => {
-                return Err(format!("unknown new-session option: {value}"));
-            }
-            _ => {
-                command.extend_from_slice(&arguments[index..]);
-                break;
-            }
-        }
-        if arguments.get(index).is_some_and(|value| value == "--") {
-            break;
-        }
-        index += 1;
+    if let Some(value) = flags.value('x') {
+        size.cols = parse_dimension(value, "-x")?;
+    }
+    if let Some(value) = flags.value('y') {
+        size.rows = parse_dimension(value, "-y")?;
     }
     Ok(InvocationSpec {
         request: Request::NewSession {
-            name,
+            name: flags.value('s').map(str::to_owned),
             detached,
             attach_existing,
-            group_target,
+            group_target: flags.value('t').map(str::to_owned),
             format,
-            window_name,
-            command,
-            cwd,
+            window_name: flags.value('n').map(str::to_owned),
+            command: flags.positional.to_vec(),
+            cwd: flags.value('c').map(str::to_owned).or_else(current_dir),
             size,
         },
         attach: !detached,
@@ -257,40 +199,11 @@ fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_attach(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut size = crate::terminal::size();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-x" => {
-                index += 1;
-                size.cols = parse_dimension(argument(arguments, index, "-x")?, "-x")?;
-            }
-            "-y" => {
-                index += 1;
-                size.rows = parse_dimension(argument(arguments, index, "-y")?, "-y")?;
-            }
-            value if value.starts_with("-x") && value.len() > 2 => {
-                size.cols = parse_dimension(&value[2..], "-x")?;
-            }
-            value if value.starts_with("-y") && value.len() > 2 => {
-                size.rows = parse_dimension(&value[2..], "-y")?;
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown attach option: {value}"));
-            }
-            value => target = Some(value.to_owned()),
-        }
-        index += 1;
-    }
+    let flags = scan_flags("attach-session", arguments, "Et:", 0)?;
     Ok(InvocationSpec {
         request: Request::Attach {
-            target: target.clone(),
-            size,
+            target: flags.value('t').map(str::to_owned),
+            size: crate::terminal::size(),
             term: std::env::var("TERM").unwrap_or_default(),
         },
         attach: true,
@@ -308,28 +221,11 @@ fn parse_dimension(value: &str, flag: &str) -> Result<u16, String> {
 }
 
 fn parse_kill_session(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut all = false;
-    let mut force = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-a" => all = true,
-            "-C" => {}
-            "-f" => force = true,
-            value if !value.starts_with('-') => target = Some(value.to_owned()),
-            value => return Err(format!("unknown kill-session option: {value}")),
-        }
-        index += 1;
-    }
-    if force && !all {
-        return Err("-f only valid with -a".to_owned());
-    }
-    Ok(InvocationSpec::plain(Request::KillSession { target, all }))
+    let flags = scan_flags("kill-session", arguments, "at:", 0)?;
+    Ok(InvocationSpec::plain(Request::KillSession {
+        target: flags.value('t').map(str::to_owned),
+        all: flags.has('a'),
+    }))
 }
 
 fn parse_kill_window(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -523,119 +419,53 @@ fn parse_split_window(arguments: &[String]) -> Result<InvocationSpec, String> {
 }
 
 fn parse_list_sessions(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut format = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-f" | "-a" => {
-                if arguments[index] == "-f" {
-                    index += 1;
-                    let _ = argument(arguments, index, "-f")?;
-                }
-            }
-            value => return Err(format!("unknown list-sessions option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(InvocationSpec::plain(Request::ListSessions { format }))
+    let flags = scan_flags("list-sessions", arguments, "F:", 0)?;
+    Ok(InvocationSpec::plain(Request::ListSessions {
+        format: flags.value('F').map(str::to_owned),
+    }))
 }
 
 fn parse_list_clients(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut format = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-F" => {
-                index += 1;
-                format = Some(argument(arguments, index, "-F")?.to_owned());
-            }
-            "-f" => {
-                index += 1;
-                let _ = argument(arguments, index, "-f")?;
-            }
-            value => return Err(format!("unknown list-clients option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(InvocationSpec::plain(Request::ListClients { format }))
+    let flags = scan_flags("list-clients", arguments, "F:", 0)?;
+    Ok(InvocationSpec::plain(Request::ListClients {
+        format: flags.value('F').map(str::to_owned),
+    }))
 }
 
 fn parse_detach_client(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut all = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-a" => all = true,
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown detach-client option: {value}"));
-            }
-            value => target = Some(value.to_owned()),
-        }
-        index += 1;
-    }
-    Ok(InvocationSpec::plain(Request::DetachClient { target, all }))
+    let flags = scan_flags("detach-client", arguments, "at:", 0)?;
+    Ok(InvocationSpec::plain(Request::DetachClient {
+        target: flags.value('t').map(str::to_owned),
+        all: flags.has('a'),
+    }))
 }
 
 fn parse_switch_client(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut client = None;
-    let mut session = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-c" => {
-                index += 1;
-                client = Some(argument(arguments, index, "-c")?.to_owned());
-            }
-            "-t" => {
-                index += 1;
-                session = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "--" => {
-                if session.is_none() {
-                    session = arguments.get(index + 1).cloned();
-                }
-                break;
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown switch-client option: {value}"));
-            }
-            value => session = Some(value.to_owned()),
-        }
-        index += 1;
+    let flags = scan_flags("switch-client", arguments, "c:t:", 0)?;
+    let session = flags
+        .value('t')
+        .ok_or_else(|| "switch-client requires a target session".to_owned())?;
+    if session == "=" || session.contains([':', '.', '%']) {
+        return Err(format!("unsupported target {session} for switch-client"));
     }
     Ok(InvocationSpec::plain(Request::SwitchClient {
-        client,
-        session: session.ok_or_else(|| "switch-client requires a target session".to_owned())?,
+        client: flags.value('c').map(str::to_owned),
+        session: session.to_owned(),
     }))
 }
 
 fn parse_refresh_client(arguments: &[String]) -> Result<InvocationSpec, String> {
-    let mut target = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(argument(arguments, index, "-t")?.to_owned());
-            }
-            "-S" | "-l" | "-r" => {}
-            value if value.starts_with('-') => {
-                return Err(format!("unknown refresh-client option: {value}"));
-            }
-            value => target = Some(value.to_owned()),
-        }
-        index += 1;
-    }
-    Ok(InvocationSpec::plain(Request::RefreshClient { target }))
+    let flags = scan_flags("refresh-client", arguments, "t:", 0)?;
+    Ok(InvocationSpec::plain(Request::RefreshClient {
+        target: flags.value('t').map(str::to_owned),
+    }))
+}
+
+fn parse_has_session(arguments: &[String]) -> Result<InvocationSpec, String> {
+    let flags = scan_flags("has-session", arguments, "t:", 0)?;
+    Ok(InvocationSpec::plain(Request::HasSession {
+        target: flags.value('t').unwrap_or_default().to_owned(),
+    }))
 }
 
 fn parse_run_shell(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -2194,29 +2024,13 @@ where
     Ok((command, false))
 }
 
-fn target_and_name(arguments: &[String]) -> Result<(Option<String>, String), String> {
-    let mut target = None;
-    let mut positional = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        if arguments[index] == "-t" {
-            index += 1;
-            target = Some(argument(arguments, index, "-t")?.to_owned());
-        } else if arguments[index] == "--" {
-            positional.extend_from_slice(&arguments[index + 1..]);
-            break;
-        } else if arguments[index].starts_with('-') {
-            return Err(format!("unknown option: {}", arguments[index]));
-        } else {
-            positional.push(arguments[index].clone());
-        }
-        index += 1;
-    }
-    let name = positional
+fn target_and_name(command: &str, arguments: &[String]) -> Result<(Option<String>, String), String> {
+    let flags = scan_flags(command, arguments, "t:", 1)?;
+    let name = flags
+        .positional
         .first()
-        .cloned()
-        .ok_or_else(|| "a name is required".to_owned())?;
-    Ok((target, name))
+        .ok_or_else(|| format!("command {command}: too few arguments (need at least 1)"))?;
+    Ok((flags.value('t').map(str::to_owned), name.clone()))
 }
 
 fn parse_send_prefix(arguments: &[String]) -> Result<InvocationSpec, String> {
@@ -2255,8 +2069,78 @@ fn optional_target(arguments: &[String]) -> Result<Option<String>, String> {
     Ok(target)
 }
 
-fn required_target(arguments: &[String]) -> Result<String, String> {
-    optional_target(arguments)?.ok_or_else(|| "-t target is required".to_owned())
+pub(crate) fn unsupported_flag(flag: &str, command: &str) -> String {
+    format!("unsupported flag {flag} for {command}")
+}
+
+struct ScannedFlags<'a> {
+    found: Vec<(char, Option<&'a str>)>,
+    positional: &'a [String],
+}
+
+impl<'a> ScannedFlags<'a> {
+    fn has(&self, flag: char) -> bool {
+        self.found.iter().any(|(found, _)| *found == flag)
+    }
+
+    fn value(&self, flag: char) -> Option<&'a str> {
+        self.found
+            .iter()
+            .rev()
+            .find(|(found, _)| *found == flag)
+            .and_then(|(_, value)| *value)
+    }
+}
+
+fn scan_flags<'a>(
+    command: &str,
+    arguments: &'a [String],
+    accepted: &str,
+    most_positional: usize,
+) -> Result<ScannedFlags<'a>, String> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = arguments[index].as_str();
+        if argument == "--" {
+            index += 1;
+            break;
+        }
+        let Some(letters) = argument.strip_prefix('-').filter(|letters| !letters.is_empty())
+        else {
+            break;
+        };
+        index += 1;
+        for (offset, flag) in letters.char_indices() {
+            let takes_value = accepted
+                .find(flag)
+                .map(|at| accepted[at + flag.len_utf8()..].starts_with(':'))
+                .ok_or_else(|| unsupported_flag(&format!("-{flag}"), command))?;
+            if !takes_value {
+                found.push((flag, None));
+                continue;
+            }
+            let attached = &letters[offset + flag.len_utf8()..];
+            let value = if attached.is_empty() {
+                let value = arguments
+                    .get(index)
+                    .ok_or_else(|| format!("command {command}: -{flag} expects an argument"))?;
+                index += 1;
+                value.as_str()
+            } else {
+                attached
+            };
+            found.push((flag, Some(value)));
+            break;
+        }
+    }
+    let positional = &arguments[index..];
+    if positional.len() > most_positional {
+        return Err(format!(
+            "command {command}: too many arguments (need at most {most_positional})"
+        ));
+    }
+    Ok(ScannedFlags { found, positional })
 }
 
 fn argument<'a>(arguments: &'a [String], index: usize, flag: &str) -> Result<&'a str, String> {

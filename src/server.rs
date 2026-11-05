@@ -595,7 +595,11 @@ fn attach_client(
                     }
                     continue;
                 }
-                let clear_screen = last_size != Some(render_size);
+                let redraw = state
+                    .clients
+                    .get_mut(&client_id)
+                    .is_some_and(|client| std::mem::take(&mut client.redraw_requested));
+                let clear_screen = redraw || last_size != Some(render_size);
                 let Some(full_render) =
                     state.render_session_with_clear(session_id, Some(client_id), clear_screen)
                 else {
@@ -606,11 +610,11 @@ fn attach_client(
                     .get(&client_id)
                     .map(|client| client.chrome_observation.clone())
                     .unwrap_or_default();
-                break Some((full_render, render_size, revision, state.forced_sync_revision, chrome));
+                break Some((full_render, render_size, revision, state.forced_sync_revision, chrome, redraw));
             },
             Err(_) => None,
         };
-        let Some((full_render, render_size, render_revision, forced_sync_revision, chrome)) =
+        let Some((full_render, render_size, render_revision, forced_sync_revision, chrome, redraw)) =
             next_render
         else {
             break;
@@ -625,7 +629,7 @@ fn attach_client(
         observed_forced_sync_revision = Some(forced_sync_revision);
         observed_chrome = Some(chrome);
         last_render_at = Instant::now();
-        if last_size != Some(render_size) {
+        if redraw || last_size != Some(render_size) {
             terminal = vt100::Parser::new(render_size.rows.max(1), render_size.cols.max(1), 10_000);
             previous_screen = None;
             previous.clear();
@@ -925,6 +929,7 @@ struct AttachedClient {
     term: String,
     modes: terminal::TerminalModes,
     detach_requested: bool,
+    redraw_requested: bool,
     bell_pending: bool,
     chrome_observation: Vec<u8>,
     clipboard: Option<(Vec<u8>, terminal::ClipboardTerminator)>,
@@ -1562,7 +1567,7 @@ impl ServerState {
             if !command.is_empty() {
                 return Err("grouped session cannot specify a command".to_owned());
             }
-            let source_index = self.resolve_session_index(Some(group_target))?;
+            let source_index = self.resolve_session_target(Some(group_target))?;
             let source = &self.sessions[source_index];
             let windows = source
                 .windows
@@ -1969,7 +1974,7 @@ impl ServerState {
     }
 
     fn attach_target(&mut self, target: Option<&str>, size: Size) -> Result<u64, String> {
-        let session_index = self.resolve_session_index(target)?;
+        let session_index = self.resolve_session_target(target)?;
         let id = self.sessions[session_index].id;
         self.resize_session(id, size, true);
         Ok(id)
@@ -2128,6 +2133,7 @@ impl ServerState {
                 focused_pane: None,
                 terminal_focused: true,
                 detach_requested: false,
+                redraw_requested: false,
                 bell_pending: false,
                 chrome_observation: Vec::new(),
                 clipboard: None,
@@ -6996,7 +7002,14 @@ impl ServerState {
                             ("session_id", format!("${}", session.id)),
                             ("session_name", session.name.clone()),
                             ("session_windows", session.windows.len().to_string()),
-                            ("session_attached", "0".to_owned()),
+                            (
+                                "session_attached",
+                                self.clients
+                                    .values()
+                                    .filter(|client| client.session_id == session.id)
+                                    .count()
+                                    .to_string(),
+                            ),
                             (
                                 "session_grouped",
                                 if grouped { "1" } else { "0" }.to_owned(),
@@ -7031,7 +7044,7 @@ impl ServerState {
                     ("client_session_id", format!("${}", session.id)),
                     ("client_width", client.size.cols.to_string()),
                     ("client_height", client.size.rows.to_string()),
-                    ("client_termname", "tm".to_owned()),
+                    ("client_termname", client.term.clone()),
                     ("client_control_mode", "0".to_owned()),
                 ];
                 Some(render_format_with_options(
@@ -7042,6 +7055,17 @@ impl ServerState {
             })
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+
+    fn require_clients(&self, target: Option<&str>) -> Result<Vec<u64>, String> {
+        let ids = self.resolve_client_ids(target);
+        if ids.is_empty() {
+            return Err(match target {
+                Some(target) => format!("can't find client: {target}"),
+                None => "no current client".to_owned(),
+            });
+        }
+        Ok(ids)
     }
 
     fn resolve_client_ids(&self, target: Option<&str>) -> Vec<u64> {
@@ -7055,20 +7079,29 @@ impl ServerState {
                 ids.clear();
             }
         } else {
-            ids.truncate(1);
+            let latest = ids
+                .iter()
+                .copied()
+                .max_by_key(|id| self.clients[id].activity);
+            ids = latest.into_iter().collect();
         }
         ids
     }
 
     fn detach_client(&mut self, target: Option<&str>, all: bool) -> CommandResult {
+        let kept = self.require_clients(target)?;
         let ids = if all {
-            self.clients.keys().copied().collect::<Vec<_>>()
+            let mut others = self
+                .clients
+                .keys()
+                .copied()
+                .filter(|id| !kept.contains(id))
+                .collect::<Vec<_>>();
+            others.sort_unstable();
+            others
         } else {
-            self.resolve_client_ids(target)
+            kept
         };
-        if ids.is_empty() {
-            return Err("no matching client".to_owned());
-        }
         for id in ids {
             let restore = self.take_client_restore(id);
             self.pending_restores.insert(id, restore);
@@ -7079,13 +7112,9 @@ impl ServerState {
     }
 
     fn switch_client(&mut self, client: Option<&str>, session: &str) -> CommandResult {
-        let session_index = self.resolve_session_index(Some(session))?;
+        let client_id = self.require_clients(client)?[0];
+        let session_index = self.resolve_session_target(Some(session))?;
         let session_id = self.sessions[session_index].id;
-        let client_id = self
-            .resolve_client_ids(client)
-            .first()
-            .copied()
-            .ok_or_else(|| "no matching client".to_owned())?;
         let size = self
             .clients
             .get(&client_id)
@@ -7109,9 +7138,11 @@ impl ServerState {
         Ok(String::new())
     }
 
-    fn refresh_client(&self, target: Option<&str>) -> CommandResult {
-        if self.resolve_client_ids(target).is_empty() {
-            return Err("no matching client".to_owned());
+    fn refresh_client(&mut self, target: Option<&str>) -> CommandResult {
+        for id in self.require_clients(target)? {
+            if let Some(client) = self.clients.get_mut(&id) {
+                client.redraw_requested = true;
+            }
         }
         Ok(String::new())
     }
@@ -7891,7 +7922,7 @@ impl ServerState {
     }
 
     fn rename_session(&mut self, target: Option<&str>, name: &str) -> CommandResult {
-        let session_index = self.resolve_session_index(target)?;
+        let session_index = self.resolve_session_target(target)?;
         let name = render_format_with_options(
             name,
             &[
@@ -8712,7 +8743,7 @@ impl ServerState {
     }
 
     fn kill_session(&mut self, target: Option<&str>, all: bool) -> CommandResult {
-        let index = self.resolve_session_index(target)?;
+        let index = self.resolve_session_target(target)?;
         if all {
             let keep_id = self.sessions[index].id;
             let sessions = std::mem::take(&mut self.sessions);
@@ -9220,6 +9251,22 @@ impl ServerState {
             self.mark_render_dirty();
         }
         Some(output)
+    }
+
+    fn resolve_session_target(&self, target: Option<&str>) -> Result<usize, String> {
+        let Some(target) = target.filter(|target| !target.is_empty()) else {
+            return self.resolve_session_index(None);
+        };
+        let name = target.split_once(':').map_or(target, |(session, _)| session);
+        if let Some(id) = name.strip_prefix('$').and_then(|id| id.parse::<u64>().ok()) {
+            return self
+                .sessions
+                .iter()
+                .position(|session| session.id == id)
+                .ok_or_else(|| format!("can't find session: {target}"));
+        }
+        self.find_session(name)
+            .ok_or_else(|| format!("can't find session: {target}"))
     }
 
     fn resolve_session_index(&self, target: Option<&str>) -> Result<usize, String> {
@@ -11374,9 +11421,8 @@ fn execute_request_inner(
             target,
         } => state.run_shell(&command, background, target.as_deref()),
         Request::HasSession { target } => state
-            .find_session(&target)
-            .map(|_| String::new())
-            .ok_or_else(|| format!("session not found: {target}")),
+            .resolve_session_target(Some(&target))
+            .map(|_| String::new()),
         Request::KillSession { target, all } => state.kill_session(target.as_deref(), all),
         Request::NewWindow {
             target,
