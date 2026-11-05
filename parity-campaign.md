@@ -5,9 +5,10 @@
 - **Goal:** within tm's compiled profile and narrow scope, every behavior advertised as matching tmux 3.8 has evidence that runs both implementations, observes the effect exactly, and passes at the qualified commit. The known CLI and lifecycle mismatches are fixed. Generated histories cover multi-step use, and the release artifact on this host passes the suite.
 - **Base:** `d171bbd`, toolchain `nightly-2026-09-15` (pinned; do not change), host x86_64 Alpine (`x86_64-unknown-linux-musl`).
 - **Preflight:** 2026-11-05. Verdict: ready.
-- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2, G3.
+- **Accepted:** G0 (baseline reconfirmed at `4e84fe0`, which adds only this doc to `d171bbd`), G1, G2, G3, O1 (`KNOWN_DIFFERENCES` empty: exact comparison exposed no difference in the existing differential tests).
 - **Red / parked:** none. Baseline reds are listed in **Baseline**.
-- **Next:** O1.
+- **Next:** O2, then M1 ∥ L1.
+- **Ruling (affects O2, H2, H3):** ptytest 0.1.1–0.3.0 rejects any escape with an intermediate byte, such as `ESC ( B`, under every profile, so it cannot attach the reference. Differential attached observations use a raw-PTY runner in `tests/support/` (openpty, a reader thread, and the existing `vt100` dev-dependency for screen state); ptytest stays for tm-only scenarios. The upstream ptytest fix is listed under **Needs environment**.
 
 ## Charter
 
@@ -197,6 +198,7 @@ These checks cannot run on this host. The campaign does not wait for them.
 - **aarch64 musl, native.** On an arm64 host: `docker build --platform linux/arm64 -t tm-builder . && docker run --rm --init --platform linux/arm64 -v "$PWD:/tm" -w /tm tm-builder sh -ec 'make qualify TARGET=aarch64-unknown-linux-musl'`. This needs the reference dependencies in the image, or a host build.
 - **macOS arm64.** `make qualify TARGET=aarch64-apple-darwin` on the owner's Mac.
 - **Ghostty workflows.** Shell editing, the owner's editor and coding-agent TUIs, paste, copy, resize, detach and reattach, and suspend and resume. Run them in `tm -S .work/tmp/manual.sock` under Ghostty, outside the owner's tmux.
+- **ptytest escape scanner.** `laputa-ptytest` rejects nF escapes (`ESC` + 0x20–0x2f intermediates + final), which tmux emits on attach. Fixing it is outside this repo; once fixed, the raw-PTY runner can be replaced by ptytest.
 - **Real clipboard and audio.** Tests assert the OSC 52 and BEL bytes. The system clipboard contents and the audible bell need a human.
 
 ## Boundary and non-goals
