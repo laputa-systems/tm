@@ -796,7 +796,11 @@ fn attach_client(
         let restore = state
             .pending_restores
             .remove(&client_id)
-            .unwrap_or_else(|| state.take_client_restore(client_id));
+            .unwrap_or_else(|| {
+                let mut restore = state.take_client_restore(client_id);
+                restore.extend(state.client_exit_message(client_id));
+                restore
+            });
         if !restore.is_empty() {
             let _ = write_server_message(&mut stream, &ServerMessage::Restore(restore));
         }
@@ -2323,6 +2327,24 @@ impl ServerState {
         }
         restore.extend_from_slice(b"\x1b[?25h\x1b[0m");
         restore
+    }
+
+    fn client_exit_message(&self, client_id: u64) -> Vec<u8> {
+        let Some(client) = self.clients.get(&client_id) else {
+            return Vec::new();
+        };
+        let session = self
+            .sessions
+            .iter()
+            .find(|session| session.id == client.session_id);
+        match (client.detach_requested, session) {
+            (true, Some(session)) => {
+                format!("[detached (from session {})]\r\n", session.name).into_bytes()
+            }
+            (true, None) => b"[detached]\r\n".to_vec(),
+            (false, None) => b"[exited]\r\n".to_vec(),
+            (false, Some(_)) => Vec::new(),
+        }
     }
 
     fn remove_client_with_reflow(&mut self, client_id: u64) {
@@ -4653,7 +4675,9 @@ impl ServerState {
             .position(|value| value == "-p")
             .and_then(|index| command.get(index + 1))
             .cloned()
-            .unwrap_or_else(|| "command: ".to_owned());
+            .unwrap_or_else(|| {
+                if Self::prompt_template(command).is_empty() { ":" } else { "(1) " }.to_owned()
+            });
         prompt.split(',').map(str::to_owned).collect()
     }
 
@@ -4837,7 +4861,7 @@ impl ServerState {
                 let label = labels
                     .first()
                     .cloned()
-                    .unwrap_or_else(|| "command: ".to_owned());
+                    .unwrap_or_else(|| ":".to_owned());
                 let template = Self::prompt_template(&command);
                 let initial_inputs = Self::prompt_initial_inputs(&command);
                 let initial_input = initial_inputs.first().cloned().unwrap_or_default();
@@ -6273,6 +6297,11 @@ impl ServerState {
             piped: self.pane_pipes.get(&pane.id).is_some_and(PanePipe::is_open),
             mode: pane.copy_mode.as_ref(),
             linked_sessions: self.window_link_count(window.id),
+            attached: self
+                .clients
+                .values()
+                .filter(|client| client.session_id == session.id)
+                .count(),
             group_info: self.session_group_info(session_index),
             session_names: &session_names,
             window_names: &window_names,
@@ -7214,10 +7243,22 @@ impl ServerState {
                     window.activate_pane(window.panes[0].id);
                 }
             }
+            let emptied = session
+                .windows
+                .iter()
+                .filter(|window| window.panes.is_empty())
+                .map(|window| window.index)
+                .collect::<Vec<_>>();
             session.windows.retain(|window| !window.panes.is_empty());
             if session.windows.is_empty() {
                 false
             } else {
+                for index in emptied {
+                    session.select_after_removing(index);
+                    if session.renumber_windows {
+                        renumber_session_windows(session);
+                    }
+                }
                 if !session
                     .windows
                     .iter()
@@ -7300,6 +7341,8 @@ impl ServerState {
                     ("client_name", format!("client{id}")),
                     ("client_session", session.name.clone()),
                     ("client_session_id", format!("${}", session.id)),
+                    ("session_name", session.name.clone()),
+                    ("session_id", format!("${}", session.id)),
                     ("client_width", client.size.cols.to_string()),
                     ("client_height", client.size.rows.to_string()),
                     ("client_termname", client.term.clone()),
@@ -7361,7 +7404,11 @@ impl ServerState {
             kept
         };
         for id in ids {
-            let restore = self.take_client_restore(id);
+            let mut restore = self.take_client_restore(id);
+            if let Some(client) = self.clients.get_mut(&id) {
+                client.detach_requested = true;
+            }
+            restore.extend(self.client_exit_message(id));
             self.pending_restores.insert(id, restore);
             self.remove_client_with_reflow(id);
         }
@@ -11439,9 +11486,7 @@ fn render_status_line(
         } else {
             right.plain_width() + 2
         };
-    let window_area = cols
-        .saturating_sub(reserved)
-        .saturating_sub(usize::from(!windows.is_empty()));
+    let window_area = cols.saturating_sub(reserved);
     let active_position = session
         .windows
         .iter()
@@ -11452,7 +11497,6 @@ fn render_status_line(
     output.extend_from_slice(b"\x1b[0m");
     append_status_base(output, options);
     if start < end {
-        output.push(b' ');
         for (index, window) in windows.iter().enumerate().take(end).skip(start) {
             if index > start {
                 output.push(b' ');
@@ -14671,6 +14715,7 @@ struct FormatPaneOptions<'a> {
     piped: bool,
     mode: Option<&'a CopyModeState>,
     linked_sessions: usize,
+    attached: usize,
     group_info: (bool, usize, String),
     session_names: &'a str,
     window_names: &'a str,
@@ -14695,6 +14740,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         piped,
         mode,
         linked_sessions,
+        attached,
         group_info,
         session_names,
         window_names,
@@ -14744,6 +14790,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         ("session_id", format!("${}", session.id)),
         ("session_name", session.name.clone()),
         ("session_windows", session.windows.len().to_string()),
+        ("session_attached", attached.to_string()),
         ("session_path", session.cwd.clone().unwrap_or_default()),
         ("session_active", "1".to_owned()),
         (
