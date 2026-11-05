@@ -3,8 +3,10 @@ use std::io::{self, Read, Write};
 use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
+const MAX_COMMAND_ARGUMENTS: usize = 1024;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_0001;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
     NewSession {
         name: Option<String>,
@@ -329,7 +331,7 @@ pub(crate) enum Request {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OptionScope {
     Global,
     Session,
@@ -337,7 +339,7 @@ pub(crate) enum OptionScope {
     Pane,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneDirection {
     Left,
     Right,
@@ -349,14 +351,14 @@ pub(crate) enum PaneDirection {
     Target,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ClientMessage {
     Input(Vec<u8>),
     Resize(Size),
     Detach,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ServerMessage {
     Response { ok: bool, body: String },
     Render(Vec<u8>),
@@ -364,7 +366,21 @@ pub(crate) enum ServerMessage {
     Closed,
 }
 
-pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::Result<()> {
+pub(crate) fn write_version(stream: &mut impl Write) -> io::Result<()> {
+    stream.write_all(&PROTOCOL_VERSION.to_le_bytes())
+}
+
+pub(crate) fn read_version(stream: &mut impl Read) -> io::Result<u32> {
+    let mut version = [0; 4];
+    stream.read_exact(&mut version)?;
+    Ok(u32::from_le_bytes(version))
+}
+
+pub(crate) fn encode_request(request: &Request) -> io::Result<Vec<u8>> {
+    framed(&request_payload(request)?)
+}
+
+fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
     let mut payload = Vec::new();
     match request {
         Request::NewSession {
@@ -385,7 +401,7 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
             put_optional_string(&mut payload, group_target);
             put_optional_string(&mut payload, format);
             put_optional_string(&mut payload, window_name);
-            put_strings(&mut payload, command);
+            put_strings(&mut payload, command)?;
             put_optional_string(&mut payload, cwd);
             put_size(&mut payload, *size);
         }
@@ -433,7 +449,7 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
             put_bool(&mut payload, *after);
             put_bool(&mut payload, *before);
             put_bool(&mut payload, *select_existing);
-            put_strings(&mut payload, command);
+            put_strings(&mut payload, command)?;
             put_optional_string(&mut payload, cwd);
         }
         Request::SplitWindow {
@@ -457,7 +473,7 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
             put_bool(&mut payload, *empty);
             put_bool(&mut payload, *zoom);
             put_optional_string(&mut payload, size);
-            put_strings(&mut payload, command);
+            put_strings(&mut payload, command)?;
             put_optional_string(&mut payload, cwd);
         }
         Request::ListWindows { target, format } => {
@@ -760,7 +776,7 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
         } => {
             payload.push(37);
             put_optional_string(&mut payload, target);
-            put_strings(&mut payload, command);
+            put_strings(&mut payload, command)?;
             put_optional_string(&mut payload, cwd);
             put_bool(&mut payload, *kill);
             put_bool(&mut payload, *empty);
@@ -956,11 +972,11 @@ pub(crate) fn write_request(stream: &mut impl Write, request: &Request) -> io::R
             put_optional_string(&mut payload, source);
             put_bool(&mut payload, *no_zoom);
             put_bool(&mut payload, *no_mode);
-            put_strings(&mut payload, command);
+            put_strings(&mut payload, command)?;
             put_bool(&mut payload, *kill_on_exit);
         }
     }
-    write_frame(stream, &payload)
+    Ok(payload)
 }
 
 pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
@@ -1392,12 +1408,18 @@ pub(crate) fn read_client_message(stream: &mut impl Read) -> io::Result<ClientMe
     Ok(message)
 }
 
-fn write_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
+fn framed(payload: &[u8]) -> io::Result<Vec<u8>> {
     if payload.len() > MAX_FRAME {
         return Err(invalid_data("frame is too large"));
     }
-    stream.write_all(&(payload.len() as u32).to_le_bytes())?;
-    stream.write_all(payload)
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+fn write_frame(stream: &mut impl Write, payload: &[u8]) -> io::Result<()> {
+    stream.write_all(&framed(payload)?)
 }
 
 fn read_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
@@ -1426,11 +1448,21 @@ fn put_optional_string(output: &mut Vec<u8>, value: &Option<String>) {
     }
 }
 
-fn put_strings(output: &mut Vec<u8>, values: &[String]) {
+fn put_strings(output: &mut Vec<u8>, values: &[String]) -> io::Result<()> {
+    if values.len() > MAX_COMMAND_ARGUMENTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "too many arguments: {} (limit {MAX_COMMAND_ARGUMENTS})",
+                values.len()
+            ),
+        ));
+    }
     output.extend_from_slice(&(values.len() as u32).to_le_bytes());
     for value in values {
         put_string(output, value);
     }
+    Ok(())
 }
 
 fn put_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
@@ -1579,7 +1611,7 @@ impl<'a> Decoder<'a> {
 
     fn strings(&mut self) -> io::Result<Vec<String>> {
         let count = self.u32()? as usize;
-        if count > 1024 {
+        if count > MAX_COMMAND_ARGUMENTS {
             return Err(invalid_data("too many command arguments"));
         }
         (0..count).map(|_| self.string()).collect()
@@ -1677,8 +1709,7 @@ mod tests {
             command: vec!["printf".to_owned(), "a\tb".to_owned()],
             cwd: Some("/tmp".to_owned()),
         };
-        let mut bytes = Vec::new();
-        write_request(&mut bytes, &request).expect("encode");
+        let bytes = encode_request(&request).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1701,8 +1732,7 @@ mod tests {
             hide_source: true,
             kill_on_exit: true,
         };
-        let mut bytes = Vec::new();
-        write_request(&mut bytes, &request).expect("encode");
+        let bytes = encode_request(&request).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1740,8 +1770,7 @@ mod tests {
                 kill_on_exit: false,
             },
         ] {
-            let mut bytes = Vec::new();
-            write_request(&mut bytes, &request).expect("encode");
+            let bytes = encode_request(&request).expect("encode");
             let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
             let decoded = read_request_from_payload(&mut cursor).expect("decode");
             assert!(matches!(
@@ -1762,8 +1791,7 @@ mod tests {
             separator: Some(b"|".to_vec()),
             delete: true,
         };
-        let mut bytes = Vec::new();
-        write_request(&mut bytes, &request).expect("encode");
+        let bytes = encode_request(&request).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1794,8 +1822,7 @@ mod tests {
             ],
             kill_on_exit: true,
         };
-        let mut bytes = Vec::new();
-        write_request(&mut bytes, &request).expect("encode");
+        let bytes = encode_request(&request).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1841,8 +1868,7 @@ mod tests {
                 scroll_to_mouse: false,
             },
         ] {
-            let mut bytes = Vec::new();
-            write_request(&mut bytes, &request).expect("encode");
+            let bytes = encode_request(&request).expect("encode");
             let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
             let decoded = read_request_from_payload(&mut cursor).expect("decode");
             match (request, decoded) {
@@ -1881,5 +1907,728 @@ mod tests {
         framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         framed.extend_from_slice(&payload);
         read_request(&mut std::io::Cursor::new(framed))
+    }
+
+    const REQUEST_VARIANTS: usize = 58;
+
+    trait Source {
+        fn flag(&mut self) -> bool;
+        fn opt_flag(&mut self) -> Option<bool>;
+        fn text(&mut self) -> String;
+        fn opt_text(&mut self) -> Option<String>;
+        fn texts(&mut self) -> Vec<String>;
+        fn blob(&mut self) -> Vec<u8>;
+        fn opt_blob(&mut self) -> Option<Vec<u8>>;
+        fn number(&mut self) -> u32;
+        fn opt_number(&mut self) -> Option<u32>;
+        fn signed(&mut self) -> i32;
+        fn opt_signed(&mut self) -> Option<i32>;
+        fn opt_small(&mut self) -> Option<u16>;
+        fn size(&mut self) -> Size;
+        fn direction(&mut self) -> PaneDirection;
+        fn opt_direction(&mut self) -> Option<PaneDirection>;
+        fn opt_scope(&mut self) -> Option<OptionScope>;
+    }
+
+    const DIRECTIONS: [PaneDirection; 8] = [
+        PaneDirection::Left,
+        PaneDirection::Right,
+        PaneDirection::Up,
+        PaneDirection::Down,
+        PaneDirection::Next,
+        PaneDirection::Previous,
+        PaneDirection::Last,
+        PaneDirection::Target,
+    ];
+
+    const SCOPES: [OptionScope; 4] = [
+        OptionScope::Global,
+        OptionScope::Session,
+        OptionScope::Window,
+        OptionScope::Pane,
+    ];
+
+    struct Canonical {
+        calls: usize,
+    }
+
+    impl Canonical {
+        fn toggle(&mut self) -> bool {
+            self.calls += 1;
+            !self.calls.is_multiple_of(3)
+        }
+    }
+
+    impl Source for Canonical {
+        fn flag(&mut self) -> bool {
+            self.toggle()
+        }
+        fn opt_flag(&mut self) -> Option<bool> {
+            let present = self.toggle();
+            present.then(|| self.toggle())
+        }
+        fn text(&mut self) -> String {
+            self.calls += 1;
+            format!("t{}", self.calls)
+        }
+        fn opt_text(&mut self) -> Option<String> {
+            self.toggle().then(|| self.text())
+        }
+        fn texts(&mut self) -> Vec<String> {
+            vec![self.text(), "\u{e9}\t".to_owned()]
+        }
+        fn blob(&mut self) -> Vec<u8> {
+            self.calls += 1;
+            vec![0, self.calls as u8, 255]
+        }
+        fn opt_blob(&mut self) -> Option<Vec<u8>> {
+            self.toggle().then(|| self.blob())
+        }
+        fn number(&mut self) -> u32 {
+            self.calls += 1;
+            0x0100_0000 + self.calls as u32
+        }
+        fn opt_number(&mut self) -> Option<u32> {
+            self.toggle().then(|| self.number())
+        }
+        fn signed(&mut self) -> i32 {
+            self.calls += 1;
+            -(self.calls as i32)
+        }
+        fn opt_signed(&mut self) -> Option<i32> {
+            self.toggle().then(|| self.signed())
+        }
+        fn opt_small(&mut self) -> Option<u16> {
+            self.calls += 1;
+            self.toggle().then_some(0x0102 + self.calls as u16)
+        }
+        fn size(&mut self) -> Size {
+            Size::new(80, 24)
+        }
+        fn direction(&mut self) -> PaneDirection {
+            self.calls += 1;
+            DIRECTIONS[self.calls % DIRECTIONS.len()]
+        }
+        fn opt_direction(&mut self) -> Option<PaneDirection> {
+            self.toggle().then(|| self.direction())
+        }
+        fn opt_scope(&mut self) -> Option<OptionScope> {
+            self.calls += 1;
+            self.toggle().then(|| SCOPES[self.calls % SCOPES.len()])
+        }
+    }
+
+    struct Random(u64);
+
+    impl Random {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, bound: usize) -> usize {
+            (self.next() % bound as u64) as usize
+        }
+    }
+
+    impl Source for Random {
+        fn flag(&mut self) -> bool {
+            self.below(2) == 1
+        }
+        fn opt_flag(&mut self) -> Option<bool> {
+            self.flag().then(|| self.flag())
+        }
+        fn text(&mut self) -> String {
+            const POOL: [char; 12] = ['a', 'Z', '0', ' ', '\t', '\n', '#', '{', '\u{e9}', '\u{4e2d}', '\u{1f600}', '\0'];
+            (0..self.below(40)).map(|_| POOL[self.below(POOL.len())]).collect()
+        }
+        fn opt_text(&mut self) -> Option<String> {
+            self.flag().then(|| self.text())
+        }
+        fn texts(&mut self) -> Vec<String> {
+            (0..self.below(7)).map(|_| self.text()).collect()
+        }
+        fn blob(&mut self) -> Vec<u8> {
+            (0..self.below(64)).map(|_| self.next() as u8).collect()
+        }
+        fn opt_blob(&mut self) -> Option<Vec<u8>> {
+            self.flag().then(|| self.blob())
+        }
+        fn number(&mut self) -> u32 {
+            self.next() as u32
+        }
+        fn opt_number(&mut self) -> Option<u32> {
+            self.flag().then(|| self.number())
+        }
+        fn signed(&mut self) -> i32 {
+            self.next() as i32
+        }
+        fn opt_signed(&mut self) -> Option<i32> {
+            self.flag().then(|| self.signed())
+        }
+        fn opt_small(&mut self) -> Option<u16> {
+            self.flag().then(|| self.next() as u16)
+        }
+        fn size(&mut self) -> Size {
+            Size::new(self.next() as u16, self.next() as u16)
+        }
+        fn direction(&mut self) -> PaneDirection {
+            DIRECTIONS[self.below(DIRECTIONS.len())]
+        }
+        fn opt_direction(&mut self) -> Option<PaneDirection> {
+            self.flag().then(|| self.direction())
+        }
+        fn opt_scope(&mut self) -> Option<OptionScope> {
+            self.flag().then(|| SCOPES[self.below(SCOPES.len())])
+        }
+    }
+
+    fn build(variant: usize, source: &mut impl Source) -> Request {
+        match variant {
+        0 => Request::NewSession {
+                name: source.opt_text(),
+                detached: source.flag(),
+                attach_existing: source.flag(),
+                group_target: source.opt_text(),
+                format: source.opt_text(),
+                window_name: source.opt_text(),
+                command: source.texts(),
+                cwd: source.opt_text(),
+                size: source.size(),
+        },
+        1 => Request::Attach {
+                target: source.opt_text(),
+                size: source.size(),
+                term: source.text(),
+        },
+        2 => Request::ListSessions {
+                format: source.opt_text(),
+        },
+        3 => Request::HasSession {
+                target: source.text(),
+        },
+        4 => Request::KillSession {
+                target: source.opt_text(),
+                all: source.flag(),
+        },
+        5 => Request::NewWindow {
+                target: source.opt_text(),
+                name: source.opt_text(),
+                detached: source.flag(),
+                empty: source.flag(),
+                index: source.opt_number(),
+                force: source.flag(),
+                format: source.opt_text(),
+                after: source.flag(),
+                before: source.flag(),
+                select_existing: source.flag(),
+                command: source.texts(),
+                cwd: source.opt_text(),
+        },
+        6 => Request::SplitWindow {
+                target: source.opt_text(),
+                horizontal: source.flag(),
+                before: source.flag(),
+                full: source.flag(),
+                detached: source.flag(),
+                empty: source.flag(),
+                zoom: source.flag(),
+                size: source.opt_text(),
+                command: source.texts(),
+                cwd: source.opt_text(),
+        },
+        7 => Request::ListWindows {
+                target: source.opt_text(),
+                format: source.opt_text(),
+        },
+        8 => Request::ListPanes {
+                target: source.opt_text(),
+                format: source.opt_text(),
+        },
+        9 => Request::SelectWindow {
+                target: source.text(),
+        },
+        10 => Request::SelectLayout {
+                target: source.opt_text(),
+                layout: source.text(),
+        },
+        11 => Request::NextWindow {
+                target: source.opt_text(),
+        },
+        12 => Request::PreviousWindow {
+                target: source.opt_text(),
+        },
+        13 => Request::RenameSession {
+                target: source.opt_text(),
+                name: source.text(),
+        },
+        14 => Request::RenameWindow {
+                target: source.opt_text(),
+                name: source.text(),
+        },
+        15 => Request::KillWindow {
+                target: source.opt_text(),
+                all: source.flag(),
+        },
+        16 => Request::SelectPane {
+                target: source.opt_text(),
+                direction: source.direction(),
+                mark: source.opt_flag(),
+                title: source.opt_text(),
+                enabled: source.opt_flag(),
+        },
+        17 => Request::KillPane {
+                target: source.opt_text(),
+                all: source.flag(),
+                filter: source.opt_text(),
+        },
+        18 => Request::SendKeys {
+                target: source.opt_text(),
+                bytes: source.blob(),
+                reset: source.flag(),
+        },
+        19 => Request::SendPrefix {
+                target: source.opt_text(),
+        },
+        20 => Request::CapturePane {
+                target: source.opt_text(),
+                start: source.opt_signed(),
+                end: source.opt_signed(),
+                escape: source.flag(),
+                join: source.flag(),
+                preserve_trailing: source.flag(),
+        },
+        21 => Request::KillServer,
+        22 => Request::CopyMode {
+                target: source.opt_text(),
+                source: source.opt_text(),
+                exit_on_scroll: source.flag(),
+                hide_position: source.flag(),
+                kill_on_exit: source.flag(),
+                page: source.flag(),
+                page_down: source.flag(),
+                reset: source.flag(),
+                mouse_start: source.flag(),
+                scroll_to_mouse: source.flag(),
+        },
+        23 => Request::CopyModeCommand {
+                target: source.opt_text(),
+                action: source.text(),
+                repeat: source.number(),
+        },
+        24 => Request::ChooseTree {
+                target: source.opt_text(),
+                filter: source.opt_text(),
+                format: source.opt_text(),
+                sort: source.text(),
+                reverse: source.flag(),
+                hide_source: source.flag(),
+                kill_on_exit: source.flag(),
+        },
+        25 => Request::ChooseBuffer {
+                target: source.opt_text(),
+                filter: source.opt_text(),
+                format: source.opt_text(),
+                sort: source.text(),
+                reverse: source.flag(),
+                kill_on_exit: source.flag(),
+        },
+        26 => Request::ChooseClient {
+                target: source.opt_text(),
+                filter: source.opt_text(),
+                format: source.opt_text(),
+                kill_on_exit: source.flag(),
+        },
+        27 => Request::DisplayPanes {
+                target: source.opt_text(),
+                source: source.opt_text(),
+                no_zoom: source.flag(),
+                no_mode: source.flag(),
+                command: source.texts(),
+                kill_on_exit: source.flag(),
+        },
+        28 => Request::DisplayMessage {
+                target: source.opt_text(),
+                format: source.text(),
+        },
+        29 => Request::SetBuffer {
+                name: source.opt_text(),
+                append: source.flag(),
+                data: source.blob(),
+                rename: source.opt_text(),
+        },
+        30 => Request::ShowBuffer {
+                name: source.opt_text(),
+        },
+        31 => Request::ListBuffers {
+                format: source.opt_text(),
+                filter: source.opt_text(),
+        },
+        32 => Request::DeleteBuffer {
+                name: source.opt_text(),
+        },
+        33 => Request::PasteBuffer {
+                target: source.opt_text(),
+                name: source.opt_text(),
+                raw: source.flag(),
+                bracketed: source.flag(),
+                separator: source.opt_blob(),
+                delete: source.flag(),
+        },
+        34 => Request::LoadBuffer {
+                name: source.opt_text(),
+                data: source.blob(),
+        },
+        35 => Request::SaveBuffer {
+                name: source.opt_text(),
+                path: source.opt_text(),
+                append: source.flag(),
+        },
+        36 => Request::SetOption {
+                target: source.opt_text(),
+                scope: source.opt_scope(),
+                key: source.text(),
+                value: source.text(),
+                unset: source.flag(),
+        },
+        37 => Request::ResizePane {
+                target: source.opt_text(),
+                direction: source.direction(),
+                amount: source.signed(),
+                absolute: source.opt_small(),
+                absolute_percent: source.flag(),
+                zoom: source.flag(),
+        },
+        38 => Request::SwapPane {
+                source: source.opt_text(),
+                target: source.opt_text(),
+                direction: source.opt_direction(),
+                detached: source.flag(),
+        },
+        39 => Request::BreakPane {
+                source: source.opt_text(),
+                target: source.opt_text(),
+                name: source.opt_text(),
+                detached: source.flag(),
+                format: source.opt_text(),
+        },
+        40 => Request::JoinPane {
+                source: source.opt_text(),
+                target: source.opt_text(),
+                horizontal: source.flag(),
+                before: source.flag(),
+                detached: source.flag(),
+                size: source.opt_text(),
+        },
+        41 => Request::RespawnPane {
+                target: source.opt_text(),
+                command: source.texts(),
+                cwd: source.opt_text(),
+                kill: source.flag(),
+                empty: source.flag(),
+                window: source.flag(),
+        },
+        42 => Request::ClearHistory {
+                target: source.opt_text(),
+        },
+        43 => Request::SetWindowOption {
+                target: source.opt_text(),
+                key: source.text(),
+                value: source.text(),
+        },
+        44 => Request::RotateWindow {
+                target: source.opt_text(),
+                up: source.flag(),
+        },
+        45 => Request::SwapWindow {
+                source: source.opt_text(),
+                target: source.opt_text(),
+                detached: source.flag(),
+        },
+        46 => Request::MoveWindow {
+                source: source.opt_text(),
+                target: source.opt_text(),
+                after: source.flag(),
+                detached: source.flag(),
+                force: source.flag(),
+                renumber: source.flag(),
+        },
+        47 => Request::LinkWindow {
+                source: source.opt_text(),
+                target: source.opt_text(),
+                detached: source.flag(),
+                force: source.flag(),
+        },
+        48 => Request::UnlinkWindow {
+                target: source.opt_text(),
+                force: source.flag(),
+        },
+        49 => Request::ShowOptions {
+                target: source.opt_text(),
+                global: source.flag(),
+                window: source.flag(),
+                pane: source.flag(),
+                value: source.flag(),
+                all: source.flag(),
+                quiet: source.flag(),
+                key: source.opt_text(),
+        },
+        50 => Request::SetEnvironment {
+                name: source.text(),
+                value: source.opt_text(),
+                remove: source.flag(),
+        },
+        51 => Request::ShowEnvironment {
+                format: source.opt_text(),
+                name: source.opt_text(),
+        },
+        52 => Request::PipePane {
+                target: source.opt_text(),
+                command: source.opt_text(),
+                toggle: source.flag(),
+        },
+        53 => Request::ListClients {
+                format: source.opt_text(),
+        },
+        54 => Request::DetachClient {
+                target: source.opt_text(),
+                all: source.flag(),
+        },
+        55 => Request::SwitchClient {
+                client: source.opt_text(),
+                session: source.text(),
+        },
+        56 => Request::RefreshClient {
+                target: source.opt_text(),
+        },
+        57 => Request::RunShell {
+                command: source.text(),
+                background: source.flag(),
+                target: source.opt_text(),
+        },
+        _ => unreachable!("request variant index out of range"),
+        }
+    }
+
+    fn decode_frame(frame: &[u8]) -> io::Result<Request> {
+        read_request(&mut std::io::Cursor::new(frame.to_vec()))
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn random_requests_inside_the_domain_round_trip() {
+        let mut random = Random(0x9e37_79b9_7f4a_7c15);
+        for _ in 0..200 {
+            for variant in 0..REQUEST_VARIANTS {
+                let request = build(variant, &mut random);
+                let frame = encode_request(&request).expect("encode");
+                assert_eq!(decode_frame(&frame).expect("decode"), request);
+            }
+        }
+    }
+
+    #[test]
+    fn random_messages_round_trip() {
+        let mut random = Random(0x2545_f491_4f6c_dd1d);
+        for _ in 0..200 {
+            let client = match random.below(3) {
+                0 => ClientMessage::Input(random.blob()),
+                1 => ClientMessage::Resize(random.size()),
+                _ => ClientMessage::Detach,
+            };
+            let mut bytes = Vec::new();
+            write_client_message(&mut bytes, &client).expect("encode");
+            assert_eq!(
+                read_client_message(&mut std::io::Cursor::new(bytes)).expect("decode"),
+                client
+            );
+            let server = match random.below(4) {
+                0 => ServerMessage::Response {
+                    ok: random.flag(),
+                    body: random.text(),
+                },
+                1 => ServerMessage::Render(random.blob()),
+                2 => ServerMessage::Restore(random.blob()),
+                _ => ServerMessage::Closed,
+            };
+            let mut bytes = Vec::new();
+            write_server_message(&mut bytes, &server).expect("encode");
+            assert_eq!(
+                read_server_message(&mut std::io::Cursor::new(bytes)).expect("decode"),
+                server
+            );
+        }
+    }
+
+    fn new_window_with_commands(count: usize) -> Request {
+        Request::NewWindow {
+            target: None,
+            name: None,
+            detached: false,
+            empty: false,
+            index: None,
+            force: false,
+            format: None,
+            after: false,
+            before: false,
+            select_existing: false,
+            command: (0..count).map(|index| format!("arg{index}")).collect(),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn command_arguments_at_the_limit_round_trip_and_beyond_it_are_refused() {
+        let at_limit = new_window_with_commands(MAX_COMMAND_ARGUMENTS);
+        let frame = encode_request(&at_limit).expect("1024 arguments encode");
+        assert_eq!(decode_frame(&frame).expect("decode"), at_limit);
+
+        let error = encode_request(&new_window_with_commands(MAX_COMMAND_ARGUMENTS + 1))
+            .expect_err("1025 arguments are refused");
+        assert_eq!(error.to_string(), "too many arguments: 1025 (limit 1024)");
+    }
+
+    #[test]
+    fn oversized_frames_are_refused_by_encoder_and_decoder() {
+        let request = Request::LoadBuffer {
+            name: None,
+            data: vec![0; MAX_FRAME],
+        };
+        assert_eq!(
+            encode_request(&request).expect_err("oversized").to_string(),
+            "frame is too large"
+        );
+        let mut header = ((MAX_FRAME + 1) as u32).to_le_bytes().to_vec();
+        header.push(1);
+        assert!(decode_frame(&header).is_err());
+        assert!(decode_frame(&0_u32.to_le_bytes()).is_err());
+    }
+
+    #[test]
+    fn version_preamble_is_never_a_valid_frame_length_for_an_older_daemon() {
+        assert!(PROTOCOL_VERSION as usize > MAX_FRAME);
+        let mut bytes = Vec::new();
+        write_version(&mut bytes).expect("write");
+        assert_eq!(bytes, PROTOCOL_VERSION.to_le_bytes());
+        assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
+    }
+
+    const GOLDEN_VERSION: u32 = 0x544d_0001;
+
+    const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
+        "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
+        "12000000020102000000743250001800020000007433",
+        "080000000301020000007432",
+        "0700000004020000007431",
+        "09000000050102000000743200",
+        "310000000601020000007432000101000101020000007439010100020000000300000074313303000000c3a9090103000000743135",
+        "29000000070102000000743200010100010100020000000300000074313003000000c3a9090103000000743132",
+        "09000000080102000000743200",
+        "09000000090102000000743200",
+        "070000000a020000007431",
+        "0e0000003901020000007432020000007433",
+        "080000000b01020000007432",
+        "080000000c01020000007432",
+        "0e0000000d01020000007432020000007433",
+        "0e0000000e01020000007432020000007433",
+        "090000000f0102000000743200",
+        "0e0000001001020000007432040101000101",
+        "1000000011010200000074320001020000007435",
+        "100000001201020000007432030000000003ff01",
+        "080000003a01020000007432",
+        "1100000013010200000074320001fbffffff000101",
+        "0100000014",
+        "110000001501020000007432000101000101000101",
+        "12000000160102000000743202000000743304000001",
+        "1900000035010200000074320001020000007435020000007436010100",
+        "18000000360102000000743200010200000074350200000074360101",
+        "110000003701020000007432000102000000743500",
+        "1d00000038010200000074320001010200000002000000743603000000c3a90901",
+        "0e0000001701020000007432020000007433",
+        "17000000180102000000743200030000000004ff01020000007436",
+        "080000001901020000007432",
+        "090000001b0102000000743200",
+        "080000001c01020000007432",
+        "0d0000001d010200000074320001010001",
+        "0f0000001e01020000007432030000000003ff",
+        "0a0000001f010200000074320001",
+        "170000002001020000007432010102000000743502000000743601",
+        "10000000210102000000743204fcffffff000101",
+        "0c000000220102000000743200010600",
+        "18000000230102000000743200010200000074350001020000007438",
+        "1300000024010200000074320001010001020000007438",
+        "2300000025010200000074320200000002000000743303000000c3a90901020000007435000101",
+        "080000002601020000007432",
+        "140000001a01020000007432020000007433020000007434",
+        "09000000270102000000743200",
+        "0a00000028010200000074320001",
+        "0d00000029010200000074320001010001",
+        "0b0000002a01020000007432000101",
+        "090000002b0102000000743200",
+        "0f0000002c0102000000743200010100010100",
+        "0f0000002d0200000074310102000000743301",
+        "090000002e0102000000743200",
+        "0a0000002f010200000074320001",
+        "080000003001020000007432",
+        "09000000310102000000743200",
+        "0e0000003201020000007432020000007433",
+        "080000003301020000007432",
+        "09000000340200000074310100",
+    ];
+
+    #[test]
+    fn wire_format_matches_goldens_for_the_current_version() {
+        assert_eq!(
+            PROTOCOL_VERSION, GOLDEN_VERSION,
+            "bump PROTOCOL_VERSION and the goldens together"
+        );
+        let mut tags = Vec::new();
+        for (variant, golden) in GOLDEN_REQUESTS.iter().enumerate() {
+            let request = build(variant, &mut Canonical { calls: 0 });
+            let frame = encode_request(&request).expect("encode");
+            assert_eq!(hex(&frame), *golden, "request variant {variant}");
+            tags.push(frame[4]);
+        }
+        tags.sort_unstable();
+        let expected = (1..=REQUEST_VARIANTS as u8).collect::<Vec<_>>();
+        assert_eq!(tags, expected, "every request tag needs exactly one golden");
+        let next_tag = [1_u32.to_le_bytes().as_slice(), &[REQUEST_VARIANTS as u8 + 1]].concat();
+        assert_eq!(
+            decode_frame(&next_tag).expect_err("tag").to_string(),
+            "unknown request tag",
+            "a new request variant needs a golden"
+        );
+    }
+
+    #[test]
+    fn wire_format_matches_goldens_for_messages() {
+        let client = [
+            (ClientMessage::Input(vec![0, 1, 255]), "0800000001030000000001ff"),
+            (ClientMessage::Resize(Size::new(80, 24)), "0500000002500018 00"),
+            (ClientMessage::Detach, "0100000003"),
+        ];
+        for (message, golden) in client {
+            let mut bytes = Vec::new();
+            write_client_message(&mut bytes, &message).expect("encode");
+            assert_eq!(hex(&bytes), golden.replace(' ', ""), "{message:?}");
+        }
+        let server = [
+            (
+                ServerMessage::Response { ok: true, body: "ok".to_owned() },
+                "08000000010102000000 6f6b",
+            ),
+            (ServerMessage::Render(vec![27, 91]), "0700000002020000001b5b"),
+            (ServerMessage::Restore(vec![27, 91]), "0700000004020000001b5b"),
+            (ServerMessage::Closed, "0100000003"),
+        ];
+        for (message, golden) in server {
+            let mut bytes = Vec::new();
+            write_server_message(&mut bytes, &message).expect("encode");
+            assert_eq!(hex(&bytes), golden.replace(' ', ""), "{message:?}");
+        }
     }
 }

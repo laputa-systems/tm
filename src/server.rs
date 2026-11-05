@@ -25,8 +25,8 @@ use crate::copy_mode::{
 use crate::cells::display_column_to_char_index;
 use crate::model::{Axis, CopySource, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
-    ClientMessage, OptionScope, PaneDirection, Request, ServerMessage, read_client_message,
-    read_request, write_server_message,
+    ClientMessage, OptionScope, PROTOCOL_VERSION, PaneDirection, Request, ServerMessage,
+    read_client_message, read_request, read_version, write_server_message, write_version,
 };
 use crate::pty::Pty;
 use crate::terminal;
@@ -360,6 +360,17 @@ fn handle_connection(
     // tear down an otherwise healthy session. Requests and the long-lived
     // attach stream are intentionally blocking at this boundary.
     let _ = stream.set_nonblocking(false);
+    match read_version(&mut stream) {
+        Ok(PROTOCOL_VERSION) => {}
+        Ok(_) => {
+            let _ = write_version(&mut stream);
+            return;
+        }
+        Err(_) => return,
+    }
+    if write_version(&mut stream).is_err() {
+        return;
+    }
     let request = match read_request(&mut stream) {
         Ok(request) => request,
         Err(_) => return,

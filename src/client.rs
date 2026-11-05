@@ -10,7 +10,8 @@ use std::time::Duration;
 use crate::command::Invocation;
 use crate::model::Size;
 use crate::protocol::{
-    ClientMessage, ServerMessage, read_server_message, write_client_message, write_request,
+    ClientMessage, PROTOCOL_VERSION, ServerMessage, encode_request, read_server_message,
+    read_version, write_client_message, write_version,
 };
 use crate::terminal::{self, RawTerminal};
 
@@ -19,8 +20,9 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     let request = invocation.request;
     let attach = invocation.attach;
     let starts_server = matches!(request, crate::protocol::Request::NewSession { .. });
+    let frame = encode_request(&request).map_err(|error| error.to_string())?;
     let mut stream = connect_or_start(&socket, starts_server)?;
-    write_request(&mut stream, &request).map_err(|error| error.to_string())?;
+    send_request(&mut stream, &socket, &frame)?;
     let response = read_server_message(&mut stream).map_err(|error| error.to_string())?;
     let ServerMessage::Response { ok, body } = response else {
         return Err("server returned an invalid command response".to_owned());
@@ -52,6 +54,38 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         _ => None,
     };
     attach_loop(&socket, target)
+}
+
+fn protocol_mismatch(socket: &std::path::Path) -> String {
+    let socket = socket.display();
+    format!("tm server at {socket} runs a different protocol; run tm -S {socket} kill-server")
+}
+
+fn send_request(
+    stream: &mut UnixStream,
+    socket: &std::path::Path,
+    frame: &[u8],
+) -> Result<(), String> {
+    let mut bytes = Vec::with_capacity(4 + frame.len());
+    write_version(&mut bytes).map_err(|error| error.to_string())?;
+    bytes.extend_from_slice(frame);
+    let written = stream.write_all(&bytes);
+    match read_version(stream) {
+        Ok(PROTOCOL_VERSION) => {}
+        Ok(_) => return Err(protocol_mismatch(socket)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::BrokenPipe
+            ) =>
+        {
+            return Err(protocol_mismatch(socket));
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+    written.map_err(|error| error.to_string())
 }
 
 fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream, String> {
@@ -110,11 +144,9 @@ fn attach_loop(socket: &std::path::Path, target: Option<String>) -> Result<(), S
     let mut stream = UnixStream::connect(socket).map_err(|error| error.to_string())?;
     let size = terminal::size();
     let term = std::env::var("TERM").unwrap_or_default();
-    write_request(
-        &mut stream,
-        &crate::protocol::Request::Attach { target, size, term },
-    )
-    .map_err(|error| error.to_string())?;
+    let frame = encode_request(&crate::protocol::Request::Attach { target, size, term })
+        .map_err(|error| error.to_string())?;
+    send_request(&mut stream, socket, &frame)?;
     let response = read_server_message(&mut stream).map_err(|error| error.to_string())?;
     let ServerMessage::Response { ok, body } = response else {
         return Err("server returned an invalid attach response".to_owned());

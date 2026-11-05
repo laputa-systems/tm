@@ -24,6 +24,12 @@ The default socket is `$TMPDIR/tm-$UID.sock`. Pass `-S path` to select another
 socket. A daemon first started with `TM_SOCKET` uses the baseline settings and
 bindings, including the `C-b` prefix.
 
+The client and daemon check a protocol version on every connection. After an
+upgrade, a client that finds a daemon started by another version prints
+`tm server at <socket> runs a different protocol; run tm -S <socket> kill-server`
+and exits nonzero. A command with more than 1024 command arguments is refused
+by the client before it connects.
+
 The normal prefix is `C-a`. `C-a %` and `C-a "` split panes, `C-a h`, `C-a j`,
 and `C-a l` move between panes, `C-a k` kills the current pane, `C-a d`
 detaches, and `C-a [` enters copy mode. Settings and bindings are compiled in.
