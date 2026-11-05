@@ -7,6 +7,8 @@ mod capture;
 mod cells;
 #[path = "../src/client.rs"]
 mod client;
+#[path = "../src/colour.rs"]
+mod colour;
 #[path = "../src/command.rs"]
 mod command;
 #[path = "../src/config.rs"]
@@ -23,6 +25,8 @@ mod protocol;
 mod pty;
 #[path = "../src/server.rs"]
 mod server;
+#[path = "../src/style_text.rs"]
+mod style_text;
 #[path = "../src/terminal.rs"]
 mod terminal;
 

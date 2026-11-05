@@ -3,6 +3,7 @@
 mod capture;
 mod cells;
 mod client;
+mod colour;
 mod command;
 mod config;
 mod copy_mode;
@@ -11,6 +12,7 @@ mod options;
 mod protocol;
 mod pty;
 mod server;
+mod style_text;
 mod terminal;
 
 use std::path::Path;

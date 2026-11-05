@@ -3577,6 +3577,179 @@ mod options {
     }
 
     #[test]
+    fn options_style_and_colour_values_are_validated_like_the_reference() {
+        const STYLES: &[&str] = &[
+            "fg=notacolour",
+            "fg=red,bg=blue",
+            "FG=Red, BG=Blue",
+            "fg=#ff00AA,bg=#12345",
+            "fg=#gg0000",
+            "fg=colour256",
+            "fg=colour255,bg=COLOUR0",
+            "fg=color7,us=brightred",
+            "fg=brightwhite,bg=90,us=default",
+            "fg=terminal,bg=themered",
+            "fg=AliceBlue,bg=darkslategray4,us=LightGoldenrod1",
+            "fg=grey,bg=gray50,fill=grey101",
+            "fg=orange1,bg=Orange",
+            "fill=blue,fill=",
+            "xg=red",
+            "fg=",
+            "bold,dim,underscore,reverse,italics,strikethrough,overline",
+            "bold|dim,blink",
+            "curly-underscore,double-underscore,dotted-underscore,dashed-underscore,acs",
+            "bold|",
+            "|bold",
+            "bold,nonsense",
+            "nobold,nodim,noreverse",
+            "NOBOLD,Bold",
+            "noattr,nolink,nolist,noalign,norange,noignore",
+            "nonsense",
+            "no",
+            "nolink=x",
+            "none",
+            "default",
+            "DEFAULT,Ignore,push-default,pop-default,set-default",
+            "nodefault",
+            "align=left,align=centre,align=right,align=absolute-centre",
+            "align=middle",
+            "align=",
+            "list=on,list=focus,list=left-marker,list=right-marker",
+            "list=off",
+            "list=",
+            "range=left,range=right",
+            "range=left|1",
+            "range=control|9",
+            "range=control|10",
+            "range=control",
+            "range=pane|%12",
+            "range=pane|12",
+            "range=pane|%",
+            "range=window|3",
+            "range=window|x",
+            "range=session|$4",
+            "range=session|4",
+            "range=user|anything",
+            "range=user",
+            "range=left|",
+            "range=unknown",
+            "range=unknown|x",
+            "dim=50",
+            "dim=50%",
+            "dim=101",
+            "dim=",
+            "width=10,pad=2",
+            "width=100%",
+            "width=101%",
+            "width=%",
+            "width=-1",
+            "pad=x",
+            "link=https://example.com",
+            "link=",
+            "fg=red bg=blue\nbold",
+            "  ,, fg=red ,, ",
+            "",
+            " ",
+            "fg=#{status_fg_colour}",
+            "fg=#{x},nonsense",
+            "nonsense #{x}",
+        ];
+        const COLOURS: &[&str] = &[
+            "red",
+            "RED",
+            "1",
+            "9",
+            "7",
+            "colour5",
+            "COLOUR255",
+            "color7",
+            "colour256",
+            "colour 5",
+            "colour+5",
+            "colour",
+            "#ff00AA",
+            "#ff00a",
+            "#gg0000",
+            "default",
+            "terminal",
+            "themered",
+            "ThemeLightGrey",
+            "brightred",
+            "90",
+            "98",
+            "AliceBlue",
+            "darkslategray4",
+            "grey",
+            "gray50",
+            "gray33",
+            "grey101",
+            "grey0",
+            "orange",
+            "Orange1",
+            "not a colour",
+            " red",
+            "",
+            "#{x}",
+        ];
+        let pair = fixture("optstylecolour");
+        for (option, value) in [
+            ("status-style", "bold"),
+            ("window-style", "bold"),
+            ("cursor-colour", "red"),
+            ("status-bg", "red"),
+            ("dark-theme-red", "red"),
+            ("clock-mode-colour", "red"),
+            ("status-fg", "red"),
+        ] {
+            for mux in pair.both() {
+                mux.ok(&["set-option", "-g", option, value]);
+            }
+        }
+        for style in STYLES {
+            for option in ["status-style", "window-style"] {
+                for arguments in [
+                    vec!["set-option", "-g", option, style],
+                    vec!["show-options", "-gv", option],
+                ] {
+                    compare_commands(
+                        "options_style_and_colour_values_are_validated_like_the_reference",
+                        &pair.tm,
+                        &pair.reference,
+                        &[&arguments],
+                    );
+                }
+            }
+        }
+        for colour in COLOURS {
+            for option in ["cursor-colour", "status-bg", "dark-theme-red", "clock-mode-colour"] {
+                for arguments in [
+                    vec!["set-option", "-g", option, colour],
+                    vec!["show-options", "-gv", option],
+                ] {
+                    compare_commands(
+                        "options_style_and_colour_values_are_validated_like_the_reference",
+                        &pair.tm,
+                        &pair.reference,
+                        &[&arguments],
+                    );
+                }
+            }
+        }
+        compare_all(
+            "options_style_and_colour_values_are_validated_like_the_reference",
+            &pair,
+            &[
+                &["set-option", "-g", "status-style"],
+                &["set-option", "-g", "status-bg"],
+                &["set-option", "-g", "cursor-colour"],
+                &["set-option", "-g", "status-fg", "nonsense"],
+                &["set-option", "-g", "status-fg", "ColoUr9"],
+                &["show-options", "-gv", "status-fg"],
+            ],
+        );
+    }
+
+    #[test]
     fn options_show_options_quotes_values_like_the_reference() {
         let pair = fixture("optquote");
         for value in [
