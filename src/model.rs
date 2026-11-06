@@ -21,11 +21,19 @@ impl Default for Size {
 impl Size {
     pub(crate) const MINIMUM: u16 = 1;
     pub(crate) const MAXIMUM: u16 = 10_000;
+    pub(crate) const MAXIMUM_CELLS: u32 = 4_000_000;
 
     pub(crate) const fn new(cols: u16, rows: u16) -> Self {
+        let cols = Self::clamp(cols);
+        let rows = Self::clamp(rows);
+        let affordable_rows = Self::MAXIMUM_CELLS / cols as u32;
         Self {
-            cols: Self::clamp(cols),
-            rows: Self::clamp(rows),
+            cols,
+            rows: if (rows as u32) > affordable_rows {
+                affordable_rows as u16
+            } else {
+                rows
+            },
         }
     }
 
@@ -1061,6 +1069,17 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    use super::Size;
+
+    #[test]
+    fn a_window_never_holds_more_cells_than_one_pane_grid_can_afford() {
+        let largest = Size::new(Size::MAXIMUM, Size::MAXIMUM);
+        assert_eq!(largest.cols(), Size::MAXIMUM);
+        assert!(u32::from(largest.cols()) * u32::from(largest.rows()) <= Size::MAXIMUM_CELLS);
+        assert_eq!(Size::new(300, 100), Size::new(300, 100).with_rows(100));
+        assert_eq!(Size::new(Size::MAXIMUM, 1).rows(), 1);
+    }
+
     use super::*;
 
     #[test]

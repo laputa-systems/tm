@@ -181,7 +181,7 @@ fails when a command arm in `src/command.rs` has no row.
 | `new-session` | `-t (unknown name)` | tm-only | tmux creates a named session group; tm needs an existing session and fails with `can't find session` | C3 `tests/tmux_cli_flags.rs::sessions_new_session_group_target_must_name_a_session` | internal |
 | `new-session` | `-X` | rejected | with `-A`, detach other clients and send them SIGHUP | C3 `tests/tmux_cli_flags.rs::sessions_new_session_rejects_flags_it_does_not_implement` | internal |
 | `new-session` | `-x` | match | width of a detached session | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
-| `new-session` | `-y` | match | height of a detached session | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
+| `new-session` | `-y` | match | height of a detached session; values above 10000 clamp to 10000 as in tmux, and tm also caps a window at 4,000,000 cells (so `-x 10000 -y 10000` gives 400 rows) because each pane's `vt100` grid allocates every cell up front | C3 `tests/tmux_cli_flags.rs::sessions_new_session_flags_match_the_reference` | differential |
 | `attach-session` | `-c` | rejected | working directory for the session | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_rejects_flags_it_does_not_implement` | internal |
 | `attach-session` | `-d` | rejected | detach other clients of the session | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_rejects_flags_it_does_not_implement` | internal |
 | `attach-session` | `-E` | match | skip `update-environment`, which tm lacks, so it changes nothing | C3 `tests/tmux_cli_flags.rs::sessions_attach_session_flags_match_the_reference` | differential |

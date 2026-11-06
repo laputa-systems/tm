@@ -83,6 +83,14 @@ Changed behavior:
   ending a client prints `[detached (from session <name>)]` or `[exited]`.
 - Status messages disappear after `display-time` instead of at the next
   request.
+- `new-session -x` and `-y` accept 1 to 65535 and clamp to 10000, as tmux
+  does; tm also caps a window at 4,000,000 cells.
+- Pane programs start with default `SIGPIPE` handling.
+- `run-shell -b` and `run-shell` from a key binding or the command prompt
+  discard their output and no longer block other clients. Foreground
+  `run-shell` output past 1 MiB is dropped.
+- A pane that has 16 MiB of unread input refuses more, for example from
+  `paste-buffer`.
 - Client and daemon check a protocol version on every connection, and a
   command with more than 1024 arguments is refused by the client.
 - The default socket moved from `<tmpdir>/tm-<uid>.sock` to the private

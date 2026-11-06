@@ -278,6 +278,20 @@ fn out_of_range_session_sizes_are_rejected_like_tmux() {
     assert!(tm.ok(&["has-session", "-t", "S"]).is_empty());
 }
 
+#[test]
+fn the_largest_session_size_keeps_one_pane_grid_affordable() {
+    let scratch = Scratch::new("liveness-area");
+    let tm = Mux::tm(&scratch, "tm");
+    create_session(&tm, "S", "sleep 30");
+    tm.ok(&["new-session", "-d", "-s", "BIG", "-x", "10000", "-y", "10000", "--", "sleep", "30"]);
+    assert_eq!(
+        tm.body(&["display-message", "-p", "-t", "BIG", "#{window_width}x#{window_height}"]),
+        "10000x400"
+    );
+    assert_responsive(&tm, "largest session");
+    assert!(tm.ok(&["has-session", "-t", "S"]).is_empty());
+}
+
 fn process_has_exited(pid: &str) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => stat
