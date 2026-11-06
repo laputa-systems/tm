@@ -10,7 +10,12 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+#[path = "support/raw_pty.rs"]
+#[allow(dead_code)]
+mod raw_pty;
+
 use parity::{Mux, Scratch};
+use raw_pty::RawClient;
 
 fn create_session(mux: &Mux, name: &str, command: &str) {
     mux.ok(&[
@@ -320,4 +325,65 @@ fn a_daemon_exits_on_sigterm_when_the_socket_file_is_gone() {
         wait_for_exit(&pid, Duration::from_secs(5)),
         "daemon {pid} ignored SIGTERM"
     );
+}
+
+#[test]
+fn prompted_run_shell_does_not_block_other_commands() {
+    let scratch = Scratch::new("liveness-prompt-run-shell");
+    let tm = Mux::tm(&scratch, "tm");
+    tm.ok(&[
+        "new-session", "-d", "-s", "S", "-x", "40", "-y", "10", "-c",
+        scratch.root().to_str().expect("path"), "--", "sh", "-c", "printf 'PANE_READY\\n'; sleep 30",
+    ]);
+    let marker = scratch.root().join("prompted.done");
+    let mut client = RawClient::spawn(&tm, "tm", &["attach-session", "-t", "S"], 10, 40);
+    client.wait_for_text("PANE_READY", Duration::from_secs(5));
+    client.write(b"\x01");
+    std::thread::sleep(Duration::from_millis(100));
+    client.write(b"/");
+    client.write(format!("run-shell \"sleep 2; touch {}\"", marker.display()).as_bytes());
+    client.wait_for_text("run-shell", Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(300));
+    client.write(b"\r");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!marker.exists(), "prompt did not start run-shell before the check");
+    let started = Instant::now();
+    tm.ok(&["list-sessions"]);
+    tm.ok(&["display-message", "-p", "x"]);
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "commands blocked for {:?} while a prompted run-shell ran",
+        started.elapsed()
+    );
+    assert!(
+        wait_for_path(&marker, Duration::from_secs(6)),
+        "screen: {:?}",
+        client.screen_text()
+    );
+}
+
+fn peak_resident_kib(pid: &str) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .expect("read daemon status")
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+        .expect("VmHWM line")
+}
+
+#[test]
+fn run_shell_output_does_not_accumulate_in_the_daemon() {
+    let scratch = Scratch::new("liveness-run-shell-memory");
+    let tm = Mux::tm(&scratch, "tm");
+    create_session(&tm, "S", "sleep 30");
+    let pid = tm.ok(&["display-message", "-p", "-t", "S", "#{pid}"]).trim().to_owned();
+    let baseline = peak_resident_kib(&pid);
+    let marker = scratch.root().join("flood.done");
+    let flood = format!("head -c 400000000 /dev/zero; touch {}", marker.display());
+    tm.ok(&["run-shell", "-b", "--", &flood]);
+    assert!(wait_for_path(&marker, Duration::from_secs(30)));
+    let output = tm.ok(&["run-shell", "--", "head -c 400000000 /dev/zero"]);
+    assert!(output.len() <= 2 * 1024 * 1024, "foreground output was {} bytes", output.len());
+    let growth = peak_resident_kib(&pid).saturating_sub(baseline);
+    assert!(growth < 64 * 1024, "daemon peak RSS grew by {growth} KiB");
 }

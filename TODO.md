@@ -1,28 +1,10 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, and TMUX-57 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, TMUX-57, TMUX-55, and TMUX-56 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
-
-### TMUX-55 · P2 · run-shell output and pane input are buffered without bound
-
-- **Area:** Concurrency
-- **Where:** `src/server.rs:513-523`, `src/server.rs:7305-7312`, `src/pty.rs:126`, `src/server.rs:12435-12438`
-- **Problem:** `run_shell_process` uses `Command::output()`, holding all helper stdout in the daemon, and `run-shell -b` then discards it. Proven: `run-shell -b yes` grew daemon RSS about 285 MB per second until the address-space limit. The pane input channel is an unbounded `mpsc::channel`, and terminal query replies queue there while a pane does not read stdin (about 2 MB/s growth under a DA-query flood on a debug build).
-- **Recommendation:** Send background output to null, cap foreground output, and bound the pane input channel, coalescing or dropping query replies when full.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** S
-
-### TMUX-56 · P2 · A bound or prompted run-shell blocks every session while it runs
-
-- **Area:** Concurrency
-- **Where:** `src/server.rs:651`, `src/server.rs:4948-4951`, `src/server.rs:7282-7320`, `src/server.rs:455-477`
-- **Problem:** The CLI path runs foreground `run-shell` outside the state lock, but key bindings and the command prompt reach `run_shell` from the attach input thread while it holds `state.lock()`, and run `Command::output()` and the `-d` sleep inline. Every pane reader, renderer and command waits until the script ends. Unproven: traced end to end by reading; not run in an attached client.
-- **Recommendation:** Run bound and prompted `run-shell` on a detached thread, or release the lock around the spawn as the CLI path does.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** M
 
 ### TMUX-58 · P2 · Copy mode copies the whole scrollback for every key, frame and mouse event
 

@@ -4,15 +4,38 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::model::Size;
 use rustix::termios::{Winsize, tcsetwinsize};
 
+const INPUT_QUEUE_LIMIT: usize = 16 * 1024 * 1024;
+const REPLY_QUEUE_LIMIT: usize = 64 * 1024;
+
+#[derive(Clone)]
+struct InputQueue {
+    sender: mpsc::Sender<Vec<u8>>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl InputQueue {
+    fn push(&self, bytes: &[u8], limit: usize) -> bool {
+        let previous = self.queued.fetch_add(bytes.len(), Ordering::SeqCst);
+        if previous.saturating_add(bytes.len()) > limit
+            || self.sender.send(bytes.to_vec()).is_err()
+        {
+            self.queued.fetch_sub(bytes.len(), Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+}
+
 /// One Unix PTY master and the process group it owns.
 pub(crate) struct Pty {
     master: Arc<Mutex<File>>,
-    writer: Option<mpsc::Sender<Vec<u8>>>,
+    input: Option<InputQueue>,
     pid: libc::pid_t,
 }
 
@@ -20,7 +43,7 @@ impl Clone for Pty {
     fn clone(&self) -> Self {
         Self {
             master: Arc::clone(&self.master),
-            writer: self.writer.clone(),
+            input: self.input.clone(),
             pid: self.pid,
         }
     }
@@ -31,7 +54,7 @@ impl Pty {
         let master = File::open("/dev/null")?;
         Ok(Self {
             master: Arc::new(Mutex::new(master)),
-            writer: None,
+            input: None,
             pid: 0,
         })
     }
@@ -123,21 +146,25 @@ impl Pty {
         // SAFETY: the parent owns the master descriptor returned by openpty.
         let master_file = unsafe { File::from_raw_fd(master) };
         let writer_file = master_file.try_clone()?;
-        let (writer, receiver) = mpsc::channel::<Vec<u8>>();
+        let (sender, receiver) = mpsc::channel::<Vec<u8>>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let drained = Arc::clone(&queued);
         std::thread::Builder::new()
             .name(format!("tm-pane-write-{pid}"))
             .spawn(move || {
                 let mut writer_file = writer_file;
                 for bytes in receiver {
+                    let length = bytes.len();
                     if writer_file.write_all(&bytes).is_err() {
                         break;
                     }
+                    drained.fetch_sub(length, Ordering::SeqCst);
                 }
             })
             ?;
         Ok(Self {
             master: Arc::new(Mutex::new(master_file)),
-            writer: Some(writer),
+            input: Some(InputQueue { sender, queued }),
             pid,
         })
     }
@@ -180,10 +207,21 @@ impl Pty {
         if self.is_empty() {
             return Ok(());
         }
-        let writer = self.writer.as_ref().ok_or_else(poisoned)?;
-        writer
-            .send(bytes.to_vec())
-            .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))
+        let input = self.input.as_ref().ok_or_else(poisoned)?;
+        if input.push(bytes, INPUT_QUEUE_LIMIT) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "pane input queue is full",
+            ))
+        }
+    }
+
+    pub(crate) fn write_query_reply(&self, bytes: &[u8]) {
+        if let Some(input) = self.input.as_ref().filter(|_| !self.is_empty()) {
+            input.push(bytes, REPLY_QUEUE_LIMIT);
+        }
     }
 
     pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
@@ -358,4 +396,54 @@ fn invalid_command(error: std::ffi::NulError) -> io::Error {
 
 fn poisoned() -> io::Error {
     io::Error::other("PTY lock is poisoned")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn silent_pane() -> Pty {
+        Pty::spawn(
+            &["sleep".to_owned(), "30".to_owned()],
+            None,
+            Size::new(80, 24),
+            None,
+            &HashMap::new(),
+        )
+        .expect("spawn silent pane")
+    }
+
+    fn queued(pty: &Pty) -> usize {
+        pty.input
+            .as_ref()
+            .expect("live pane has an input queue")
+            .queued
+            .load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn query_replies_are_dropped_once_the_pane_stops_reading() {
+        let pty = silent_pane();
+        let reply = vec![b'r'; 1024];
+        for _ in 0..10_000 {
+            pty.write_query_reply(&reply);
+        }
+        assert!(queued(&pty) <= REPLY_QUEUE_LIMIT, "queued {}", queued(&pty));
+    }
+
+    #[test]
+    fn user_input_is_rejected_instead_of_growing_past_the_limit() {
+        let pty = silent_pane();
+        let chunk = vec![b'k'; 1024 * 1024];
+        let mut accepted = 0;
+        let error = loop {
+            match pty.write(&chunk) {
+                Ok(()) => accepted += 1,
+                Err(error) => break error,
+            }
+            assert!(accepted <= 2 * INPUT_QUEUE_LIMIT / chunk.len(), "unbounded");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(queued(&pty) <= INPUT_QUEUE_LIMIT);
+    }
 }

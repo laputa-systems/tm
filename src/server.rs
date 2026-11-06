@@ -650,6 +650,14 @@ fn handle_connection(
     let _ = write_server_message(&mut stream, &ServerMessage::Response { ok, body });
 }
 
+const FOREGROUND_SHELL_OUTPUT_LIMIT: u64 = 1024 * 1024;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ShellOutput {
+    Discard,
+    Capture,
+}
+
 struct ShellRun {
     output: Vec<u8>,
     status: u8,
@@ -660,11 +668,12 @@ fn run_shell_process(
     cwd: &str,
     environment: &HashMap<String, String>,
     delay_ms: Option<u32>,
+    output: ShellOutput,
 ) -> Result<ShellRun, String> {
     if let Some(delay_ms) = delay_ms {
         thread::sleep(Duration::from_millis(u64::from(delay_ms)));
     }
-    let output = Command::new("/bin/sh")
+    let mut child = Command::new("/bin/sh")
         .arg0("sh")
         .arg("-c")
         .arg(command)
@@ -672,21 +681,40 @@ fn run_shell_process(
         .envs(environment.iter())
         .current_dir(cwd)
         .stdin(Stdio::null())
+        .stdout(match output {
+            ShellOutput::Discard => Stdio::null(),
+            ShellOutput::Capture => Stdio::piped(),
+        })
         .stderr(Stdio::null())
-        .output()
+        .spawn()
+        .map_err(|error| format!("failed to run command: {command}: {error}"))?;
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let drained = (&mut pipe)
+            .take(FOREGROUND_SHELL_OUTPUT_LIMIT)
+            .read_to_end(&mut stdout)
+            .and_then(|_| io::copy(&mut pipe, &mut io::sink()));
+        if let Err(error) = drained {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("failed to read output of {command}: {error}"));
+        }
+    }
+    let status = child
+        .wait()
         .map_err(|error| format!("failed to run command: {command}: {error}"))?;
     let mut lines = Vec::new();
-    for line in output.stdout.split_inclusive(|byte| *byte == b'\n') {
+    for line in stdout.split_inclusive(|byte| *byte == b'\n') {
         lines.extend_from_slice(line.strip_suffix(b"\n").unwrap_or(line));
         lines.push(b'\n');
     }
     let status = {
-        if let Some(code) = output.status.code() {
+        if let Some(code) = status.code() {
             if code != 0 {
                 lines.extend_from_slice(format!("'{command}' returned {code}\n").as_bytes());
             }
             u8::try_from(code).unwrap_or(255)
-        } else if let Some(signal) = output.status.signal() {
+        } else if let Some(signal) = status.signal() {
             lines.extend_from_slice(
                 format!("'{command}' terminated by signal {signal}\n").as_bytes(),
             );
@@ -725,7 +753,7 @@ fn run_foreground_shell(
         }
         return Ok((0, Vec::new()));
     };
-    let run = run_shell_process(&command, cwd, &environment, delay_ms)?;
+    let run = run_shell_process(&command, cwd, &environment, delay_ms, ShellOutput::Capture)?;
     if target.is_some() {
         Ok((run.status, Vec::new()))
     } else {
@@ -1817,7 +1845,6 @@ impl ServerState {
     /// A one-row terminal cannot host both, so retain its sole row for the
     /// pane rather than creating an invalid zero-row PTY.
     fn pane_viewport(&self, size: Size, reserve_status: bool) -> Rect {
-        let size = size;
         let status_enabled = !self
             .global_options
             .get("status")
@@ -1947,7 +1974,6 @@ impl ServerState {
                 .ok_or_else(|| "new grouped session no longer exists".to_owned())?;
             return Ok(format_session_result(session, format));
         }
-        let size = size;
         let base_index = self.global_base_index();
         let pane_id = self.next_pane_id();
         let pane = self.new_pane(
@@ -7433,10 +7459,9 @@ impl ServerState {
         Ok(String::new())
     }
 
-    fn run_shell(
+    fn run_shell_detached(
         &mut self,
         command: Option<String>,
-        background: bool,
         target: Option<&str>,
         cwd: &str,
         delay_ms: Option<u32>,
@@ -7456,21 +7481,20 @@ impl ServerState {
                 .ok()
                 .map(|(session_index, _, _)| session_index),
         );
-        if background {
-            let cwd = cwd.to_owned();
-            thread::Builder::new()
-                .name("tm-run-shell".to_owned())
-                .spawn(move || {
-                    let _ = run_shell_process(&command, &cwd, &environment, delay_ms);
-                })
-                .map_err(|error| format!("run-shell: {error}"))?;
-            return Ok(String::new());
-        }
-        let run = run_shell_process(&command, cwd, &environment, delay_ms)?;
-        if target.is_some() {
-            return Ok(String::new());
-        }
-        Ok(String::from_utf8_lossy(&run.output).into_owned())
+        let cwd = cwd.to_owned();
+        thread::Builder::new()
+            .name("tm-run-shell".to_owned())
+            .spawn(move || {
+                let _ = run_shell_process(
+                    &command,
+                    &cwd,
+                    &environment,
+                    delay_ms,
+                    ShellOutput::Discard,
+                );
+            })
+            .map_err(|error| format!("run-shell: {error}"))?;
+        Ok(String::new())
     }
 
     fn session_group_info(&self, session_index: usize) -> (bool, usize, String) {
@@ -11929,11 +11953,11 @@ fn execute_request_inner(
         Request::RefreshClient { target } => state.refresh_client(target.as_deref()),
         Request::RunShell {
             command,
-            background,
+            background: _,
             target,
             cwd,
             delay_ms,
-        } => state.run_shell(command, background, target.as_deref(), &cwd, delay_ms),
+        } => state.run_shell_detached(command, target.as_deref(), &cwd, delay_ms),
         Request::HasSession { target } => state
             .resolve_session_target(Some(&target))
             .map(|_| String::new()),
@@ -12588,7 +12612,7 @@ fn spawn_reader(shared: SharedState, pane_id: u64, pid: libc::pid_t, mut reader:
                                 redraws_chrome |= title.is_some() || pane.copy_mode.is_some();
                                 let replies = pane.output_state.take_query_replies();
                                 if !replies.is_empty() {
-                                    let _ = pane.pty.write(&replies);
+                                    pane.pty.write_query_reply(&replies);
                                 }
                                 let refresh_live = pane.copy_source.is_none()
                                     && pane

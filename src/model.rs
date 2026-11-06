@@ -617,7 +617,6 @@ impl Pane {
         command: String,
         command_args: Vec<String>,
     ) -> Self {
-        let size = size;
         Self {
             id,
             index,
@@ -757,7 +756,7 @@ impl Window {
             index,
             name,
             origin_y: 0,
-            size: size,
+            size,
             layout: Layout::Leaf(pane.id),
             active_pane: pane.id,
             last_pane: None,
