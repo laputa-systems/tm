@@ -253,6 +253,10 @@ impl Pty {
         }
     }
 
+    fn is_last_handle(&self) -> bool {
+        Arc::strong_count(&self.master) == 1
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.pid == 0
     }
@@ -260,10 +264,7 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // Linked tmux windows clone the same PTY. Dropping one link must not
-        // terminate the process still owned by another link; explicit kill
-        // operations call `kill` directly and remain unconditional.
-        if Arc::strong_count(&self.master) == 1 {
+        if self.is_last_handle() {
             self.kill();
         }
     }
