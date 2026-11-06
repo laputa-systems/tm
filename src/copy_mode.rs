@@ -410,6 +410,8 @@ pub(crate) struct CopyModeState {
     history_floor: usize,
     last_search: Option<(String, bool, bool)>,
     search_origin: Option<CopyPosition>,
+    goal_col: usize,
+    goal_len: usize,
     last_jump: Option<(String, bool, bool)>,
     prompt_history: Vec<Vec<u8>>,
     prompt: Option<CopyPrompt>,
@@ -476,6 +478,8 @@ impl CopyModeState {
             history_floor: options.history_floor,
             last_search: None,
             search_origin: None,
+            goal_col: 0,
+            goal_len: 0,
             last_jump: None,
             prompt_history: Vec::new(),
             prompt: None,
@@ -563,20 +567,18 @@ impl CopyModeState {
             CopyAction::HistoryTop => {
                 let (history, _) = self.history_rows(parser);
                 self.scroll_offset = history.len();
-                if self.anchor.is_none() {
-                    self.cursor.row = 0;
-                    self.cursor.col = 0;
-                }
+                self.cursor.row = 0;
+                self.cursor.col = 0;
             }
             CopyAction::HistoryBottom => {
                 self.scroll_offset = 0;
-                if self.anchor.is_none() {
-                    self.cursor.row = self.bottom_row(parser);
-                    self.cursor.col = self
-                        .cursor
-                        .col
-                        .min(self.line_width(parser, self.cursor.row));
-                }
+                self.cursor.row = self.bottom_row(parser);
+                let width = self.line_width(parser, self.cursor.row);
+                self.cursor.col = if self.keys == CopyModeKeys::Vi {
+                    width.saturating_sub(1)
+                } else {
+                    width
+                };
             }
             CopyAction::StartOfLine => {
                 let wrapped = self.wrapped_rows(parser);
@@ -616,8 +618,16 @@ impl CopyModeState {
                 self.selection_mode = SelectionMode::Word;
                 let (history, live) = self.history_rows(parser);
                 let lines = history.into_iter().chain(live).collect::<Vec<_>>();
-                let start =
-                    previous_word(&lines, self.cursor, &self.word_separators, false, self.keys);
+                let wrapped = self.wrapped_rows(parser);
+                let start = previous_word(
+                    &lines,
+                    &wrapped,
+                    self.cursor,
+                    &self.word_separators,
+                    false,
+                    false,
+                    self.keys,
+                );
                 let end = next_word(&lines, start, &self.word_separators, false, true, self.keys);
                 self.anchor = Some(start);
                 self.cursor = end;
@@ -645,16 +655,14 @@ impl CopyModeState {
                 }
             }
             CopyAction::CursorUp => {
-                self.cursor.row = self.cursor.row.saturating_sub(repeat);
-                self.keep_cursor_visible(parser);
+                for _ in 0..repeat {
+                    self.move_cursor_vertically(parser, false);
+                }
             }
             CopyAction::CursorDown => {
-                self.cursor.row = self
-                    .cursor
-                    .row
-                    .saturating_add(repeat)
-                    .min(self.total_rows(parser).saturating_sub(1));
-                self.keep_cursor_visible(parser);
+                for _ in 0..repeat {
+                    self.move_cursor_vertically(parser, true);
+                }
             }
             CopyAction::CursorDownAndCancel => {
                 let old_row = self.cursor.row;
@@ -1936,6 +1944,37 @@ impl CopyModeState {
             .unwrap_or(0)
     }
 
+    fn move_cursor_vertically(&mut self, parser: &mut Parser, down: bool) {
+        let total = self.total_rows(parser);
+        let target = if down {
+            (self.cursor.row + 1).min(total.saturating_sub(1))
+        } else {
+            self.cursor.row.saturating_sub(1)
+        };
+        let follows_goal = !(self.rectangle && self.anchor.is_some());
+        if follows_goal {
+            let length = self.line_width(parser, self.cursor.row);
+            if self.cursor.col != length {
+                self.goal_col = self.cursor.col;
+                self.goal_len = length;
+            }
+        }
+        if target == self.cursor.row {
+            return;
+        }
+        self.cursor.row = target;
+        if follows_goal {
+            self.cursor.col = self.goal_col;
+            let length = self.line_width(parser, target);
+            if (self.cursor.col >= self.goal_len && self.cursor.col != length)
+                || self.cursor.col > length
+            {
+                self.cursor.col = length;
+            }
+        }
+        self.keep_cursor_visible(parser);
+    }
+
     fn move_cursor_left(&mut self, parser: &mut Parser, repeat: usize) {
         let (history, live) = self.history_rows(parser);
         let lines = history.into_iter().chain(live).collect::<Vec<_>>();
@@ -2228,15 +2267,18 @@ impl CopyModeState {
     fn move_word(&mut self, parser: &mut Parser, action: CopyAction, repeat: usize) {
         let (history, live) = self.history_rows(parser);
         let lines = history.into_iter().chain(live).collect::<Vec<_>>();
+        let wrapped = self.wrapped_rows(parser);
         let mut position = self.cursor;
         for _ in 0..repeat {
             match action {
                 CopyAction::PreviousWord | CopyAction::PreviousSpace => {
                     position = previous_word(
                         &lines,
+                        &wrapped,
                         position,
                         &self.word_separators,
                         matches!(action, CopyAction::PreviousSpace),
+                        true,
                         self.keys,
                     );
                 }
@@ -2447,18 +2489,19 @@ fn is_separator(character: char, separators: &str) -> bool {
 
 fn previous_word(
     lines: &[String],
+    wrapped: &[bool],
     mut position: CopyPosition,
     separators: &str,
     spaces: bool,
-    _keys: CopyModeKeys,
+    already: bool,
+    keys: CopyModeKeys,
 ) -> CopyPosition {
     let separators = if spaces { "" } else { separators };
     position.col = position.col.min(lines[position.row].chars().count());
 
-    // Match grid_reader_cursor_previous_word: first find a non-whitespace
-    // cell to the left, then walk back until the word/separator class changes.
     let mut word_is_letters = None;
-    if position.col >= lines[position.row].chars().count()
+    if already
+        || position.col >= lines[position.row].chars().count()
         || line_char(&lines[position.row], position.col)
             .is_some_and(|character| character.is_whitespace())
     {
@@ -2474,6 +2517,14 @@ fn previous_word(
             } else if position.row > 0 {
                 position.row -= 1;
                 position.col = lines[position.row].chars().count();
+                if keys == CopyModeKeys::Emacs
+                    && position.col > 0
+                    && line_char(&lines[position.row], position.col - 1)
+                        .is_none_or(|character| character.is_whitespace())
+                {
+                    word_is_letters = Some(false);
+                    break;
+                }
             } else {
                 return CopyPosition { row: 0, col: 0 };
             }
@@ -2490,7 +2541,7 @@ fn previous_word(
     loop {
         let old = position;
         if position.col == 0 {
-            if position.row == 0 {
+            if position.row == 0 || wrapped.get(position.row - 1) != Some(&true) {
                 return old;
             }
             position.row -= 1;

@@ -217,6 +217,39 @@ impl RawClient {
             .collect()
     }
 
+    pub fn styled_row(&self, row: u16) -> String {
+        let shared = lock(&self.monitor);
+        let screen = shared.parser.screen();
+        let (_, columns) = screen.size();
+        let color = |color: vt100::Color| match color {
+            vt100::Color::Default => "default".to_owned(),
+            vt100::Color::Idx(index) => format!("c{index}"),
+            vt100::Color::Rgb(red, green, blue) => format!("#{red:02x}{green:02x}{blue:02x}"),
+        };
+        let mut runs: Vec<(String, String)> = Vec::new();
+        for column in 0..columns {
+            let cell = screen.cell(row, column).expect("cell inside the screen");
+            let flags: String = [
+                (cell.bold(), 'b'),
+                (cell.dim(), 'd'),
+                (cell.italic(), 'i'),
+                (cell.underline(), 'u'),
+                (cell.inverse(), 'r'),
+            ]
+            .iter()
+            .filter(|(set, _)| *set)
+            .map(|(_, flag)| *flag)
+            .collect();
+            let style = format!("{}/{}/{flags}", color(cell.fgcolor()), color(cell.bgcolor()));
+            let text = if cell.contents().is_empty() { " " } else { cell.contents() };
+            match runs.last_mut() {
+                Some((last, run)) if *last == style => run.push_str(text),
+                _ => runs.push((style, text.to_owned())),
+            }
+        }
+        runs.iter().map(|(style, text)| format!("[{style}]{text:?}")).collect::<Vec<_>>().join(" ")
+    }
+
     pub fn is_closed(&self) -> bool {
         lock(&self.monitor).closed
     }

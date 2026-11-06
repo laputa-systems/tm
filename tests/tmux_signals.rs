@@ -85,7 +85,7 @@ fn terminate_signal_restores_termios_and_screen() {
         client
             .wait_for_exit(client.deadline(Duration::from_secs(3)))
             .expect("wait for signal exit"),
-        ExitStatus::Code(143)
+        ExitStatus::Code(1)
     );
     client
         .assert_terminal_restored(&baseline)

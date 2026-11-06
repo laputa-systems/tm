@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use vt100::{Color, Parser};
 
 use crate::capture::{CaptureFormat, CaptureStyle, capture_row};
+use crate::colour::Colour;
 use crate::config;
 #[cfg(test)]
 use crate::config::ConfigLine;
@@ -662,6 +663,11 @@ fn attach_client(
                             }
                         }
                         ClientMessage::Resize(size) => {
+                            if let Some(client) = state.clients.get_mut(&client_id)
+                                && client.size == size
+                            {
+                                client.redraw_requested = true;
+                            }
                             state.resize_client(client_id, size);
                             state.mark_render_dirty();
                         }
@@ -9085,6 +9091,7 @@ impl ServerState {
             return Err("target pane no longer exists".to_owned());
         };
         let pane = window.panes.remove(position);
+        window.zoomed = false;
         if !linked_window {
             pane.pty.kill();
         }
@@ -11493,10 +11500,16 @@ fn render_status_line(
     session: &Session,
     active_window: &Window,
     client_prefix: bool,
-    options: &HashMap<String, String>,
+    global_options: &HashMap<String, String>,
     message: Option<&str>,
     prompt: Option<&str>,
 ) {
+    let effective_options: HashMap<String, String> = global_options
+        .iter()
+        .chain(&session.options)
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let options = &effective_options;
     if options
         .get("status")
         .is_some_and(|value| !parse_on_off(value).unwrap_or(true))
@@ -11567,44 +11580,45 @@ fn render_status_line(
     output.extend_from_slice(left.styled.as_bytes());
     output.extend_from_slice(b"\x1b[0m");
     append_status_base(output, options);
+    let mut used = left.plain_width();
     if start < end {
         for (index, window) in windows.iter().enumerate().take(end).skip(start) {
             if index > start {
                 output.push(b' ');
+                used += 1;
             }
             let styled = if window.plain_width() <= window_area {
                 window.styled.as_str()
             } else {
                 window.plain.as_str()
             };
+            if session.windows[index].index == session.active_window {
+                output.extend_from_slice(b"\x1b[4m");
+            }
             output.extend_from_slice(styled.as_bytes());
             output.extend_from_slice(b"\x1b[0m");
             append_status_base(output, options);
+            used += window.plain_width();
         }
     }
-    if !right.plain.is_empty() {
-        output.extend_from_slice(b"  ");
+    let right_width = if right.plain.is_empty() { 0 } else { right.plain_width() };
+    output.extend(std::iter::repeat_n(b' ', cols.saturating_sub(used + right_width)));
+    if right_width > 0 {
         output.extend_from_slice(right.styled.as_bytes());
     }
     output.extend_from_slice(b"\x1b[0m");
 }
 
 fn append_status_base(output: &mut Vec<u8>, options: &HashMap<String, String>) {
-    output.extend_from_slice(match options.get("status-bg").map(String::as_str) {
-        Some("black") | None => b"\x1b[40m",
-        Some("red") => b"\x1b[41m",
-        Some("green") => b"\x1b[42m",
-        Some("blue") => b"\x1b[44m",
-        _ => b"\x1b[40m",
-    });
-    output.extend_from_slice(match options.get("status-fg").map(String::as_str) {
-        Some("black") => b"\x1b[30m",
-        Some("red") => b"\x1b[31m",
-        Some("green") => b"\x1b[32m",
-        Some("blue") => b"\x1b[34m",
-        Some("white") | None => b"\x1b[37m",
-        _ => b"\x1b[37m",
-    });
+    for (key, fallback, background) in [("status-bg", "black", true), ("status-fg", "white", false)] {
+        let colour = options
+            .get(key)
+            .and_then(|value| Colour::parse(value))
+            .or_else(|| Colour::parse(fallback));
+        if let Some(colour) = colour {
+            output.extend_from_slice(colour.sgr(background).as_bytes());
+        }
+    }
 }
 
 struct StatusSpan {

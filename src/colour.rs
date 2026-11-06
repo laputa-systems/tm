@@ -97,6 +97,19 @@ impl Colour {
     }
 }
 
+impl Colour {
+    pub(crate) fn sgr(self, background: bool) -> String {
+        let base: u16 = if background { 40 } else { 30 };
+        match self {
+            Self::Default | Self::Terminal | Self::Theme(_) => format!("\x1b[{}m", base + 9),
+            Self::Basic(code) if code < 8 => format!("\x1b[{}m", base + u16::from(code)),
+            Self::Basic(code) => format!("\x1b[{}m", u16::from(code) + if background { 10 } else { 0 }),
+            Self::Indexed(index) => format!("\x1b[{};5;{index}m", base + 8),
+            Self::Rgb(red, green, blue) => format!("\x1b[{};2;{red};{green};{blue}m", base + 8),
+        }
+    }
+}
+
 impl fmt::Display for Colour {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

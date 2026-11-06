@@ -343,8 +343,16 @@ fn start_signal_thread(
                 let _ = stdout.write_all(&restore);
                 let _ = stdout.flush();
                 let _ = terminal::apply_termios(&original);
+                let reason: &[u8] = match signal {
+                    libc::SIGTERM => b"[terminated]\n",
+                    libc::SIGHUP => b"[lost tty]\n",
+                    _ => b"",
+                };
+                let mut stdout = io::stdout();
+                let _ = stdout.write_all(reason);
+                let _ = stdout.flush();
                 unsafe {
-                    libc::_exit(128 + signal);
+                    libc::_exit(if reason.is_empty() { 128 + signal } else { 1 });
                 }
             }
         });

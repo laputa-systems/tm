@@ -1,14 +1,5 @@
 Prefix: TMUX
-Next: 47
-
-### TMUX-10 · P3 · A session-scoped status-left is not rendered
-
-- **Area:** Status
-- **Where:** `src/server.rs` status rendering
-- **Problem:** `set-option -t S status-left X` changes the option but the status line keeps the global value; `set-option -g status-left X` renders. tmux 3.8 renders the session value.
-- **Recommendation:** Resolve status options through the session scope before the global table when rendering, with a differential raw-stream test.
-- **Fix with:** reference-parity
-- **Effort:** S
+Next: 50
 
 ### TMUX-11 · P3 · Session format variables are missing or wrong
 
@@ -19,7 +10,7 @@ Next: 47
 - **Fix with:** reference-parity
 - **Effort:** S
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-16, TMUX-38, TMUX-39, and TMUX-40 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-38, TMUX-39, and TMUX-40 are closed
 with tests and commits recorded in git history. Add a new entry here only for a reproduced defect that the current
 suites do not cover.
 
@@ -159,7 +150,7 @@ suites do not cover.
 
 - **Area:** Modes
 - **Where:** `src/server.rs` tree, buffer and client modes
-- **Problem:** tmux 3.8 puts these modes on the target pane (`#{pane_in_mode}` is 1, no client needed) with `(n)` shortcut lines and a template run at the selection. tm opens its own list on an attached client, renders different text, and C6c therefore rejects `-F`, `-f`, `-O`, `-r`, `-k`, `-h`, `-G`, `-N`, `-Z`, `-K`, `-s`, `-w`, `-y`, `-i` and the template.
+- **Problem:** tm has no `choose-window` command (it exits 1 with `unknown command`; tmux 3.8 opens tree mode with the windows collapsed). tmux 3.8 puts these modes on the target pane (`#{pane_in_mode}` is 1, no client needed) with `(n)` shortcut lines and a template run at the selection. tm opens its own list on an attached client, renders different text, and C6c therefore rejects `-F`, `-f`, `-O`, `-r`, `-k`, `-h`, `-G`, `-N`, `-Z`, `-K`, `-s`, `-w`, `-y`, `-i` and the template.
 - **Recommendation:** Rebuild the modes on the pane-mode model with the tmux line format, then re-enable the flags one at a time with raw-PTY differential tests.
 - **Fix with:** reference-parity
 - **Effort:** L
@@ -295,3 +286,30 @@ suites do not cover.
 - **Problem:** On a 30-column client in a session with four windows, tmux 3.8 draws `(b) 1:sh 2:inpane 3:sleep 4:i>`, truncating the last window with `>`; tm draws `(b) 1:sh 2:inpane 3:sleep` and drops the fourth window. Seen as a screen difference in attached history seed 33 before the in-pane shell window was shortened.
 - **Recommendation:** Reproduce on the raw-PTY runner with a differential screen test, then truncate the overflowing window entry as tmux does.
 - **Fix with:** reference-parity
+
+### TMUX-47 · P3 · Short format aliases are not expanded in window names
+
+- **Area:** Formats
+- **Where:** `src/server.rs` `rename_window`, `new_window`
+- **Problem:** `rename-window '#S-#I'` names the window `#S-#I` in tm and `S-1` in tmux 3.8, and `new-window -n '#S-x'` likewise. The command prompt (`prefix r`) takes the same path. The long forms (`#{session_name}`) expand in both.
+- **Recommendation:** Expand the single-letter aliases (`#S`, `#I`, `#W`, `#P`, `#F`, `#H`, `#h`, `#D`, `#T`) in the shared format expander and cover `rename-window`, `rename-session`, `new-window -n` and `new-session -s` with differential probes.
+- **Fix with:** reference-parity
+- **Effort:** S
+
+### TMUX-48 · P4 · Ctrl+Shift+letter in a legacy pane reaches it as a control character
+
+- **Area:** Input
+- **Where:** `src/server.rs` pane key encoder
+- **Problem:** With the pane not requesting extended keys, the client bytes `ESC [ 105 ; 6 u` (Ctrl+Shift+i) reach the pane as `0x09` in tm and as `I` in tmux 3.8.
+- **Recommendation:** Follow `input_key_vt10x` and tmux's key parsing for Ctrl+Shift letters, with a differential probe over the whole letter range.
+- **Fix with:** reference-parity
+- **Effort:** S
+
+### TMUX-49 · P3 · Copy-mode search prompt and formats differ
+
+- **Area:** Modes
+- **Where:** `src/copy_mode.rs` prompt, `src/server.rs` pane formats
+- **Problem:** After `C-s` and `o` in copy mode tmux 3.8 draws `(search down) o` on the pane's last row and `[0/0] (3 results)` at the top right; tm draws `(search) o` on the status row and `[0/0]`. `#{search_present}` is unset in tm, `#{copy_cursor_word}` is empty where tmux gives the word, and `#{selection_present}` is 1 in tm for a zero-width selection where tmux gives 0.
+- **Recommendation:** Move the prompt to the pane, count the matches, and add the formats, each with a raw-PTY differential test.
+- **Fix with:** reference-parity
+- **Effort:** M
