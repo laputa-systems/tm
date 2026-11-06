@@ -117,6 +117,23 @@ fn attached_delta_120x40_4_panes(bencher: Bencher) {
     });
 }
 
+#[rustybench::bench(
+    name = "copy_mode_80x24_10000_history_rows",
+    sample_count = 20,
+    sample_size = 10,
+    threads = false
+)]
+fn copy_mode_80x24_10000_history_rows(bencher: Bencher) {
+    let mut fixture = server::RenderBenchmark::new(80, 24, 1);
+    fixture.enter_copy_mode_with_history(10_000);
+    bencher.bench_local(|| {
+        let started = std::time::Instant::now();
+        let frame = fixture.render_frame();
+        assert_frame_budget(&frame, started, "copy mode render with 10000 history rows");
+        black_box(frame);
+    });
+}
+
 fn main() {
     rustybench::main();
 }

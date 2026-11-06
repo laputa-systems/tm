@@ -405,7 +405,7 @@ pub(crate) struct CopyModeState {
     pub keys: CopyModeKeys,
     wrap_search: bool,
     word_separators: String,
-    raw_output: Vec<u8>,
+    tab_lines: Vec<(usize, String)>,
     history_floor: usize,
     last_search: Option<(String, bool, bool)>,
     search_origin: Option<CopyPosition>,
@@ -470,7 +470,7 @@ impl CopyModeState {
             keys: options.keys,
             wrap_search: options.wrap_search,
             word_separators: options.word_separators.to_owned(),
-            raw_output: raw_output.to_vec(),
+            tab_lines: tab_lines(raw_output),
             history_floor: options.history_floor,
             last_search: None,
             search_origin: None,
@@ -528,15 +528,10 @@ impl CopyModeState {
     fn set_mouse_cursor(&mut self, parser: &mut Parser, viewport_row: usize, viewport_col: usize) {
         let viewport_start = self.viewport_start(parser);
         let total_rows = self.total_rows(parser);
-        let (history, live) = self.history_rows(parser);
         self.cursor.row = viewport_start
             .saturating_add(viewport_row)
             .min(total_rows.saturating_sub(1));
-        let line = history
-            .into_iter()
-            .chain(live)
-            .nth(self.cursor.row)
-            .unwrap_or_default();
+        let line = self.row_text(parser, self.cursor.row).unwrap_or_default();
         self.cursor.col = crate::cells::display_column_to_char_index(&line, viewport_col);
     }
 
@@ -561,8 +556,7 @@ impl CopyModeState {
                 result.exit = true;
             }
             CopyAction::HistoryTop => {
-                let (history, _) = self.history_rows(parser);
-                self.scroll_offset = history.len();
+                self.scroll_offset = self.history_len(parser);
                 self.cursor.row = 0;
                 self.cursor.col = 0;
             }
@@ -899,8 +893,7 @@ impl CopyModeState {
                 }
             }
             CopyAction::BackToIndentation => {
-                let (history, live) = self.history_rows(parser);
-                if let Some(line) = history.into_iter().chain(live).nth(self.cursor.row) {
+                if let Some(line) = self.row_text(parser, self.cursor.row) {
                     self.cursor.col = line
                         .chars()
                         .position(|character| !character.is_whitespace())
@@ -1149,7 +1142,7 @@ impl CopyModeState {
     }
 
     pub(crate) fn position_limit(&mut self, parser: &mut Parser) -> usize {
-        self.history_rows(parser).0.len()
+        self.history_len(parser)
     }
 
     pub(crate) fn rectangle_selection(&self) -> bool {
@@ -1173,8 +1166,7 @@ impl CopyModeState {
     /// output; this updates the raw stream used for tab-cell reconstruction
     /// and keeps the logical cursor inside the new history bounds.
     pub(crate) fn refresh_now(&mut self, parser: &mut Parser, raw_output: &[u8]) {
-        self.raw_output.clear();
-        self.raw_output.extend_from_slice(raw_output);
+        self.tab_lines = tab_lines(raw_output);
         if self.scroll_offset == 0 && !self.selection_present() {
             self.cursor.row = self.bottom_row(parser);
             self.cursor.col = self.line_width(parser, self.cursor.row);
@@ -1191,8 +1183,7 @@ impl CopyModeState {
         if !self.refresh_active || self.selection_present() {
             return;
         }
-        self.raw_output.clear();
-        self.raw_output.extend_from_slice(raw_output);
+        self.tab_lines = tab_lines(raw_output);
         if self.scroll_offset == 0 {
             self.cursor.row = self.bottom_row(parser);
             self.cursor.col = self.line_width(parser, self.cursor.row);
@@ -1253,8 +1244,7 @@ impl CopyModeState {
     }
 
     pub(crate) fn viewport_start(&self, parser: &mut Parser) -> usize {
-        let (history, live) = self.history_rows(parser);
-        let total_rows = history.len().saturating_add(live.len()).max(1);
+        let total_rows = self.total_rows(parser);
         let viewport_rows = usize::from(parser.screen().size().0).max(1);
         total_rows
             .saturating_sub(viewport_rows)
@@ -1564,9 +1554,7 @@ impl CopyModeState {
     /// that drives word motion. This is exposed by tmux as
     /// `copy_cursor_word` and consumed by the Vi `#` and `*` bindings.
     pub(crate) fn cursor_word(&self, parser: &mut Parser) -> String {
-        let (history, live) = self.history_rows(parser);
-        let lines = history.into_iter().chain(live).collect::<Vec<_>>();
-        let Some(line) = lines.get(self.cursor.row) else {
+        let Some(line) = self.row_text(parser, self.cursor.row) else {
             return String::new();
         };
         let chars = line.chars().collect::<Vec<_>>();
@@ -1602,17 +1590,13 @@ impl CopyModeState {
     /// as `copy_cursor_line` so bindings and position formats can inspect the
     /// current mode context without scraping the rendered terminal.
     pub(crate) fn cursor_line(&self, parser: &mut Parser) -> String {
-        let (history, live) = self.history_rows(parser);
-        history
-            .into_iter()
-            .chain(live)
-            .nth(self.cursor.row)
-            .unwrap_or_default()
+        self.row_text(parser, self.cursor.row).unwrap_or_default()
     }
 
     fn total_rows(&self, parser: &mut Parser) -> usize {
-        let (history, live) = self.history_rows(parser);
-        history.len().saturating_add(live.len()).max(1)
+        self.history_len(parser)
+            .saturating_add(usize::from(parser.screen().size().0))
+            .max(1)
     }
 
     fn bottom_row(&self, parser: &mut Parser) -> usize {
@@ -1620,8 +1604,7 @@ impl CopyModeState {
     }
 
     fn max_scroll(&self, parser: &mut Parser) -> usize {
-        let (history, _) = self.history_rows(parser);
-        history.len()
+        self.history_len(parser)
     }
 
     fn scroll_by(
@@ -1930,13 +1913,8 @@ impl CopyModeState {
     }
 
     fn line_width(&self, parser: &mut Parser, row: usize) -> usize {
-        let (history, live) = self.history_rows(parser);
-        history
-            .iter()
-            .chain(live.iter())
-            .nth(row)
-            .map(|line| line.chars().count())
-            .unwrap_or(0)
+        self.row_text(parser, row)
+            .map_or(0, |line| line.chars().count())
     }
 
     fn move_cursor_vertically(&mut self, parser: &mut Parser, down: bool) {
@@ -1971,26 +1949,25 @@ impl CopyModeState {
     }
 
     fn move_cursor_left(&mut self, parser: &mut Parser, repeat: usize) {
-        let (history, live) = self.history_rows(parser);
-        let lines = history.into_iter().chain(live).collect::<Vec<_>>();
         for _ in 0..repeat {
             if self.cursor.col > 0 {
                 self.cursor.col -= 1;
             } else if self.cursor.row > 0 {
                 self.cursor.row -= 1;
-                self.cursor.col = lines[self.cursor.row].chars().count().saturating_sub(1);
+                self.cursor.col = self.line_width(parser, self.cursor.row).saturating_sub(1);
             }
         }
     }
 
     fn move_cursor_right(&mut self, parser: &mut Parser, repeat: usize) {
-        let (history, live) = self.history_rows(parser);
-        let lines = history.into_iter().chain(live).collect::<Vec<_>>();
+        let row_count = self
+            .history_len(parser)
+            .saturating_add(usize::from(parser.screen().size().0));
         for _ in 0..repeat {
-            let width = lines[self.cursor.row].chars().count();
+            let width = self.line_width(parser, self.cursor.row);
             if self.cursor.col + 1 < width {
                 self.cursor.col += 1;
-            } else if self.cursor.row + 1 < lines.len() {
+            } else if self.cursor.row + 1 < row_count {
                 self.cursor.row += 1;
                 self.cursor.col = 0;
             } else if width > 0 {
@@ -2001,12 +1978,11 @@ impl CopyModeState {
     }
 
     fn update_cursor_x(&mut self, parser: &mut Parser) {
-        let (history, live) = self.history_rows(parser);
-        let lines = history.into_iter().chain(live).collect::<Vec<_>>();
-        self.cursor_x = lines
-            .get(self.cursor.row)
-            .map(|line| crate::cells::char_index_to_display_column(line, self.cursor.col))
-            .unwrap_or(0);
+        self.cursor_x = self
+            .row_text(parser, self.cursor.row)
+            .map_or(0, |line| {
+                crate::cells::char_index_to_display_column(&line, self.cursor.col)
+            });
     }
 
     fn keep_cursor_visible(&mut self, parser: &mut Parser) {
@@ -2247,8 +2223,35 @@ impl CopyModeState {
         let (mut history, mut live) = history_rows(parser);
         let floor = self.history_floor.min(history.len());
         history.drain(..floor);
-        restore_tab_cells(&mut history, &mut live, &self.raw_output);
+        restore_tab_cells(&mut history, &mut live, &self.tab_lines);
         (history, live)
+    }
+
+    fn history_len(&self, parser: &mut Parser) -> usize {
+        parser_history_len(parser).saturating_sub(self.history_floor)
+    }
+
+    fn row_text(&self, parser: &mut Parser, row: usize) -> Option<String> {
+        let (live_rows, cols) = parser.screen().size();
+        let stored = parser_history_len(parser);
+        let skipped = self.history_floor.min(stored);
+        let history = stored - skipped;
+        if row >= history.saturating_add(usize::from(live_rows)) {
+            return None;
+        }
+        if let Ok(index) = self.tab_lines.binary_search_by_key(&row, |(index, _)| *index) {
+            return Some(self.tab_lines[index].1.clone());
+        }
+        let saved = parser.screen().scrollback();
+        let text = if row < history {
+            parser.screen_mut().set_scrollback(stored - (row + skipped));
+            parser.screen().rows(0, cols).next()
+        } else {
+            parser.screen_mut().set_scrollback(0);
+            parser.screen().rows(0, cols).nth(row - history)
+        };
+        parser.screen_mut().set_scrollback(saved);
+        text
     }
 
     fn wrapped_rows(&self, parser: &mut Parser) -> Vec<bool> {
@@ -2366,6 +2369,14 @@ impl CopyModeState {
 /// Returns the stable logical history as scrollback rows followed by the live
 /// screen rows. `vt100` keeps this data in two grids, so both views are read
 /// explicitly and the parser is restored to its prior scroll position.
+fn parser_history_len(parser: &mut Parser) -> usize {
+    let saved = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let stored = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(saved);
+    stored
+}
+
 pub(crate) fn history_rows(parser: &mut Parser) -> (Vec<String>, Vec<String>) {
     let saved = parser.screen().scrollback();
     let (rows, cols) = parser.screen().size();
@@ -2419,16 +2430,20 @@ fn char_to_byte_offset(line: &str, col: usize) -> usize {
         .unwrap_or(line.len())
 }
 
-fn restore_tab_cells(history: &mut [String], live: &mut [String], raw_output: &[u8]) {
-    let raw_lines = raw_terminal_lines(raw_output);
-    for (index, raw_line) in raw_lines.into_iter().enumerate() {
-        if !raw_line.contains('\t') {
-            continue;
-        }
-        if let Some(line) = history.get_mut(index) {
-            *line = raw_line;
+fn tab_lines(raw_output: &[u8]) -> Vec<(usize, String)> {
+    raw_terminal_lines(raw_output)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains('\t'))
+        .collect()
+}
+
+fn restore_tab_cells(history: &mut [String], live: &mut [String], tab_lines: &[(usize, String)]) {
+    for (index, raw_line) in tab_lines {
+        if let Some(line) = history.get_mut(*index) {
+            line.clone_from(raw_line);
         } else if let Some(line) = live.get_mut(index.saturating_sub(history.len())) {
-            *line = raw_line;
+            line.clone_from(raw_line);
         }
     }
 }

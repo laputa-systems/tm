@@ -26,7 +26,7 @@ use crate::copy_mode::{
     scrollbar_geometry_for, scrollbar_hit_for,
 };
 use crate::cells::display_column_to_char_index;
-use crate::model::{Axis, CopySource, EdgeMove, Pane, Rect, Session, Size, Window};
+use crate::model::{Axis, CopySource, CopySourceParser, EdgeMove, Pane, Rect, Session, Size, Window};
 use crate::protocol::{
     ClientMessage, OptionFlags, PROTOCOL_VERSION, PaneDirection, PaneListScope, Request,
     ServerMessage, WindowStep,
@@ -1137,6 +1137,28 @@ impl RenderBenchmark {
             client_id,
             terminal: vt100::Parser::new(size.rows(), size.cols(), 10_000),
             previous_screen: None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn enter_copy_mode_with_history(&mut self, history_rows: usize) {
+        let pane = &mut self.state.sessions[0].windows[0].panes[0];
+        for row in 0..history_rows {
+            let line = format!("history row {row} 0123456789 abcdefghijklmnopqrstuvwxyz\r\n");
+            pane.parser.process(line.as_bytes());
+            pane.raw_output.extend_from_slice(line.as_bytes());
+        }
+        self.state
+            .enter_copy_mode(Some("render-benchmark"), None, false, false, false)
+            .expect("enter render benchmark copy mode");
+        for _ in 0..3 {
+            self.state
+                .execute_copy_action(
+                    self.state.sessions[0].windows[0].panes[0].id,
+                    CopyAction::CursorUp,
+                    1,
+                )
+                .expect("move render benchmark copy cursor");
         }
     }
 
@@ -3710,10 +3732,9 @@ impl ServerState {
             }
             let history_limit = self.history_limit;
             if let Some(pane) = self.find_pane_mut(pane_id) {
-                let mut source_parser = copy_source_parser(pane, history_limit);
+                let source_parser = copy_source_parser(&mut pane.copy_source, pane.rect, history_limit);
                 if let Some(mode) = pane.copy_mode.as_mut() {
                     let parser = source_parser
-                        .as_mut()
                         .map_or(&mut pane.parser, |parser| parser);
                     mode.mouse_position(parser, local_row, local_col, false, false);
                 }
@@ -3768,10 +3789,9 @@ impl ServerState {
         if release && dragging {
             let history_limit = self.history_limit;
             if let Some(pane) = self.find_pane_mut(pane_id) {
-                let mut source_parser = copy_source_parser(pane, history_limit);
+                let source_parser = copy_source_parser(&mut pane.copy_source, pane.rect, history_limit);
                 if let Some(mode) = pane.copy_mode.as_mut() {
                     let parser = source_parser
-                        .as_mut()
                         .map_or(&mut pane.parser, |parser| parser);
                     mode.mouse_position(parser, local_row, local_col, false, true);
                 }
@@ -3794,10 +3814,9 @@ impl ServerState {
         }
         let history_limit = self.history_limit;
         if let Some(pane) = self.find_pane_mut(pane_id) {
-            let mut source_parser = copy_source_parser(pane, history_limit);
+            let source_parser = copy_source_parser(&mut pane.copy_source, pane.rect, history_limit);
             if let Some(mode) = pane.copy_mode.as_mut() {
                 let parser = source_parser
-                    .as_mut()
                     .map_or(&mut pane.parser, |parser| parser);
                 if !motion && !release && pane_in_copy_mode {
                     mode.mouse_down_position(parser, local_row, local_col);
@@ -3864,7 +3883,7 @@ impl ServerState {
             return None;
         }
         let mut parser =
-            copy_source_parser(pane, self.history_limit).unwrap_or_else(|| parser_for_pane(pane));
+            replayed_copy_source_parser(pane, self.history_limit).unwrap_or_else(|| parser_for_pane(pane));
         if let Some(mode) = pane.copy_mode.as_ref() {
             Some(mode.scrollbar_hit(&mut parser, local_row))
         } else {
@@ -3881,7 +3900,7 @@ impl ServerState {
 
     fn copy_mode_scrollbar_slider_offset(&self, pane: &Pane, row: usize) -> Option<usize> {
         let mut parser =
-            copy_source_parser(pane, self.history_limit).unwrap_or_else(|| parser_for_pane(pane));
+            replayed_copy_source_parser(pane, self.history_limit).unwrap_or_else(|| parser_for_pane(pane));
         if let Some(mode) = pane.copy_mode.as_ref() {
             return mode.scrollbar_slider_offset(&mut parser, row);
         }
@@ -3904,7 +3923,7 @@ impl ServerState {
     ) -> MouseContext {
         let (line, separators) = if let Some(mode) = pane.copy_mode.as_ref() {
             let mut parser =
-                copy_source_parser(pane, 10_000).unwrap_or_else(|| parser_for_pane(pane));
+                replayed_copy_source_parser(pane, 10_000).unwrap_or_else(|| parser_for_pane(pane));
             let (history, live) = history_rows(&mut parser);
             let total_rows = history.len().saturating_add(live.len()).max(1);
             let viewport_rows = usize::from(parser.screen().size().0).max(1);
@@ -5489,6 +5508,7 @@ impl ServerState {
                         pane.raw_output.clone()
                     },
                     history_floor: pane.history_floor,
+                    parser: None,
                 })
             });
         let pane_mode_clients = self
@@ -5543,10 +5563,9 @@ impl ServerState {
             mode.set_line_number_mode(line_number_mode);
         }
         if page && let Some(pane) = self.find_pane_mut(pane_id) {
-            let mut source_parser = copy_source_parser(pane, history_limit);
+            let source_parser = copy_source_parser(&mut pane.copy_source, pane.rect, history_limit);
             if let Some(mode) = pane.copy_mode.as_mut() {
                 let parser = source_parser
-                    .as_mut()
                     .map_or(&mut pane.parser, |parser| parser);
                 let _ = mode.execute(parser, CopyAction::PageUp, 1);
             }
@@ -6166,9 +6185,9 @@ impl ServerState {
             let Some(mut mode) = pane.copy_mode.take() else {
                 return Err("not in a mode".to_owned());
             };
-            let mut source_parser = copy_source_parser(pane, history_limit);
+            let source_active = pane.copy_source.is_some();
+            let source_parser = copy_source_parser(&mut pane.copy_source, pane.rect, history_limit);
             let parser = source_parser
-                .as_mut()
                 .map_or(&mut pane.parser, |parser| parser);
             let action_result = mode.execute(parser, action, repeat);
             pane.copy_prompt_history = mode.prompt_history().to_vec();
@@ -6181,7 +6200,7 @@ impl ServerState {
             let set_clipboard = action_result.set_clipboard;
             let refresh_now = action_result.refresh_now;
             let live_raw_output = refresh_now
-                .then(|| pane.copy_source.is_none().then(|| pane.raw_output.clone()))
+                .then(|| (!source_active).then(|| pane.raw_output.clone()))
                 .flatten();
             if let Some(raw_output) = live_raw_output.as_deref() {
                 mode.refresh_now(parser, raw_output);
@@ -9395,10 +9414,10 @@ impl ServerState {
         for pane in &mut window.panes {
             let content_rect =
                 pane_content_rect(pane, &window.options, &self.global_options, history_limit);
-            let mut source_parser = copy_source_parser(pane, history_limit);
+            let mut source_parser = copy_source_parser(&mut pane.copy_source, pane.rect, history_limit);
             let copy_cursor = pane.copy_mode.as_mut().map(|mode| {
                 let parser = source_parser
-                    .as_mut()
+                    .as_deref_mut()
                     .map_or(&mut pane.parser, |parser| parser);
                 let (row, col) = mode.cursor_viewport(parser);
                 let viewport_start = mode.viewport_start(parser);
@@ -9406,10 +9425,29 @@ impl ServerState {
             });
             if let Some((cursor_row, cursor_col, hide_position, viewport_start)) = copy_cursor {
                 let parser = source_parser
-                    .as_mut()
+                    .as_deref_mut()
                     .map_or(&mut pane.parser, |parser| parser);
-                let screen = parser.screen().clone();
+                let screen = parser.screen();
                 let lines = screen.rows(0, content_rect.cols).collect::<Vec<_>>();
+                let styles = (0..content_rect.rows)
+                    .map(|row| {
+                        (0..content_rect.cols)
+                            .map(|col| {
+                                screen
+                                    .cell(row, col)
+                                    .map(CellStyle::from_cell)
+                                    .unwrap_or_default()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                let style_at = |row: u16, col: usize| {
+                    styles
+                        .get(usize::from(row))
+                        .and_then(|row| row.get(col))
+                        .copied()
+                        .unwrap_or_default()
+                };
                 let mut cell_style = CellStyle::default();
                 for row in 0..content_rect.rows {
                     output.extend_from_slice(
@@ -9427,7 +9465,7 @@ impl ServerState {
                         .filter(|mode| mode.line_numbers)
                         .map_or(0, |mode| {
                             let parser = source_parser
-                                .as_mut()
+                                .as_deref_mut()
                                 .map_or(&mut pane.parser, |parser| parser);
                             copy_mode_line_number_width_from_mode(mode, parser)
                         });
@@ -9453,10 +9491,7 @@ impl ServerState {
                         if display_col >= content_cols {
                             break;
                         }
-                        let style = screen
-                            .cell(row, u16::try_from(char_col).unwrap_or(u16::MAX))
-                            .map(CellStyle::from_cell)
-                            .unwrap_or_default();
+                        let style = style_at(row, char_col);
                         append_cell_style(&mut output, &mut cell_style, style);
                         let selected = pane
                             .copy_mode
@@ -9483,10 +9518,7 @@ impl ServerState {
                         };
                     }
                     while display_col < content_cols {
-                        let style = screen
-                            .cell(row, u16::try_from(display_col).unwrap_or(u16::MAX))
-                            .map(CellStyle::from_cell)
-                            .unwrap_or_default();
+                        let style = style_at(row, display_col);
                         append_cell_style(&mut output, &mut cell_style, style);
                         let selected = pane
                             .copy_mode
@@ -9517,7 +9549,6 @@ impl ServerState {
                     .map(String::as_str)
                     .unwrap_or("#[align=right][#{copy_position}/#{copy_position_limit}]");
                 let parser = source_parser
-                    .as_mut()
                     .map_or(&mut pane.parser, |parser| parser);
                 if let Some(mode) = pane.copy_mode.as_mut() {
                     render_copy_mode_position(
@@ -9618,15 +9649,14 @@ impl ServerState {
         {
             let content_rect =
                 pane_content_rect(active, &window.options, &self.global_options, history_limit);
-            let mut source_parser = copy_source_parser(active, history_limit);
+            let mut source_parser = copy_source_parser(&mut active.copy_source, active.rect, history_limit);
             if let Some(mode) = active.copy_mode.as_mut() {
                 let parser = source_parser
-                    .as_mut()
+                    .as_deref_mut()
                     .map_or(&mut active.parser, |parser| parser);
                 let (row, col) = mode.cursor_viewport(parser);
                 let line_number_width = if mode.line_numbers {
                     let parser = source_parser
-                        .as_mut()
                         .map_or(&mut active.parser, |parser| parser);
                     copy_mode_line_number_width_from_mode(mode, parser)
                 } else {
@@ -10519,7 +10549,36 @@ fn normalize_application_arrows(bytes: &mut Vec<u8>, application: bool) {
 /// Rebuild the isolated terminal view used by `copy-mode -s`. Ordinary copy
 /// mode reads the target pane's live parser; a source-pane mode must leave
 /// that parser untouched while still giving every action a scrollback view.
-fn copy_source_parser(pane: &Pane, history_limit: usize) -> Option<Parser> {
+fn copy_source_parser(
+    source: &mut Option<CopySource>,
+    rect: Rect,
+    history_limit: usize,
+) -> Option<&mut Parser> {
+    let source = source.as_mut()?;
+    let (rows, cols) = (rect.rows.max(1), rect.cols.max(1));
+    if source.parser.as_ref().is_some_and(|cached| {
+        cached.rows != rows || cached.cols != cols || cached.history_limit != history_limit
+    }) {
+        source.parser = None;
+    }
+    let cached = match &mut source.parser {
+        Some(cached) => cached,
+        empty => {
+            let mut parser = Parser::new(rows, cols, history_limit);
+            terminal::replay(&mut parser, &source.raw_output);
+            empty.insert(CopySourceParser {
+                rows,
+                cols,
+                history_limit,
+                parser,
+            })
+        }
+    };
+    cached.parser.screen_mut().set_scrollback(0);
+    Some(&mut cached.parser)
+}
+
+fn replayed_copy_source_parser(pane: &Pane, history_limit: usize) -> Option<Parser> {
     let source = pane.copy_source.as_ref()?;
     let mut parser = Parser::new(pane.rect.rows.max(1), pane.rect.cols.max(1), history_limit);
     terminal::replay(&mut parser, &source.raw_output);
@@ -10964,7 +11023,7 @@ fn pane_scrollbar_layout(
     }
 
     let mut parser =
-        copy_source_parser(pane, history_limit).unwrap_or_else(|| parser_for_pane(pane));
+        replayed_copy_source_parser(pane, history_limit).unwrap_or_else(|| parser_for_pane(pane));
     let (history, live) = history_rows(&mut parser);
     let total_rows = history.len().saturating_add(live.len());
     let viewport_rows = usize::from(parser.screen().size().0).max(1);
@@ -14668,7 +14727,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
             // while copy-mode's history helpers temporarily move a parser's
             // scrollback viewport. Rebuild a private parser from the retained
             // PTY stream so format expansion cannot mutate the live pane.
-            let mut parser = copy_source_parser(pane, 10_000).unwrap_or_else(|| {
+            let mut parser = replayed_copy_source_parser(pane, 10_000).unwrap_or_else(|| {
                 let mut parser = Parser::new(pane.rect.rows.max(1), pane.rect.cols.max(1), 10_000);
                 if pane.raw_output.is_empty() {
                     parser.process(pane.parser.screen().contents().as_bytes());
@@ -15574,9 +15633,8 @@ fn copy_input_actions(
             let word = state
                 .find_pane_mut(pane_id)
                 .map_or_else(String::new, |pane| {
-                    let mut source_parser = copy_source_parser(pane, history_limit);
+                    let source_parser = copy_source_parser(&mut pane.copy_source, pane.rect, history_limit);
                     let parser = source_parser
-                        .as_mut()
                         .map_or(&mut pane.parser, |parser| parser);
                     pane.copy_mode
                         .as_ref()

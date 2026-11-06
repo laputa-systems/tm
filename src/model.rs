@@ -610,10 +610,17 @@ pub(crate) struct Pane {
 /// A copy-mode target can display a snapshot from another pane (`copy-mode
 /// -s`). The source is retained as terminal bytes so mode actions can rebuild
 /// an isolated parser without mutating the target pane's live PTY screen.
-#[derive(Clone, Debug)]
 pub(crate) struct CopySource {
     pub raw_output: Vec<u8>,
     pub history_floor: usize,
+    pub parser: Option<CopySourceParser>,
+}
+
+pub(crate) struct CopySourceParser {
+    pub rows: u16,
+    pub cols: u16,
+    pub history_limit: usize,
+    pub parser: vt100::Parser,
 }
 
 impl Pane {

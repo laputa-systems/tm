@@ -1,19 +1,10 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, TMUX-57, TMUX-55, TMUX-56, and TMUX-59 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, TMUX-57, TMUX-55, TMUX-56, TMUX-58, and TMUX-59 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
-
-### TMUX-58 · P2 · Copy mode copies the whole scrollback for every key, frame and mouse event
-
-- **Area:** Performance
-- **Where:** `src/copy_mode.rs:1244-1262`, `src/copy_mode.rs:2246`, `src/copy_mode.rs:2369-2388`, `src/copy_mode.rs:1151`, `src/server.rs:9220-9240`, `src/server.rs:10344`, `src/server.rs:3687-3727`, `src/server.rs:14484`
-- **Problem:** `history_rows` builds a `Vec<String>` of all scrollback and is called at least twice per operation; a `-s` source pane replays its retained bytes through a new parser each time. Measured on a release build: `send-keys -X cursor-up` takes about 66-70 ms per command with the default 10000-line history (200 commands in 13.3, 13.7 and 14.1 s) against 0.5 ms with 100 lines. Frames run the same helpers under the global lock (frame cost unproven). The render benchmark uses two-line panes, so its 16 ms gate cannot see this.
-- **Recommendation:** Read history length and rows from the live parser without mutating its viewport (or cache a row index invalidated on output), drop the per-call replay parsers, and add a benchmark fixture with 10000 history rows in copy mode.
-- **Fix with:** make-it-fast
-- **Effort:** M
 
 ### TMUX-11 · P3 · Session format variables are missing or wrong
 
