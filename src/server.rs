@@ -925,7 +925,7 @@ impl RenderBenchmark {
                 .split_window(
                     &shared,
                     SplitWindowOptions {
-                        target: Some("render-benchmark:0"),
+                        target: Some("render-benchmark:"),
                         horizontal: true,
                         before: false,
                         detached: true,
@@ -17043,6 +17043,12 @@ mod tests {
                 .any(|window| window == b"\x1b[?25l"),
             "incremental redraw must not repeat an already-hidden cursor"
         );
+    }
+
+    #[test]
+    fn render_benchmark_splits_the_requested_pane_count_headlessly() {
+        let fixture = RenderBenchmark::new(120, 40, 4);
+        assert_eq!(fixture.state.sessions[0].windows[0].panes.len(), 4);
     }
 
     #[test]
