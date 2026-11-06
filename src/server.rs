@@ -1136,7 +1136,6 @@ struct TreeMode {
     cursor: usize,
     filter: Option<String>,
     filter_input: Option<Vec<u8>>,
-    format: String,
     collapsed: HashSet<TreeKey>,
     no_matches: bool,
     confirmation: Option<TreeEntry>,
@@ -1158,7 +1157,6 @@ struct BufferMode {
     cursor: usize,
     filter: Option<String>,
     filter_input: Option<Vec<u8>>,
-    format: String,
     no_matches: bool,
     source_pane: u64,
     tagged: HashSet<String>,
@@ -1176,7 +1174,6 @@ struct ClientMode {
     cursor: usize,
     filter: Option<String>,
     filter_input: Option<Vec<u8>>,
-    format: String,
     no_matches: bool,
 }
 
@@ -1524,7 +1521,6 @@ fn parent_table(table: OptionTable) -> OptionTable {
 
 struct TreeEntriesOptions<'a> {
     filter: Option<&'a str>,
-    format: &'a str,
     collapsed: &'a HashSet<TreeKey>,
 }
 
@@ -5572,7 +5568,6 @@ impl ServerState {
             cursor: 0,
             filter: None,
             filter_input: None,
-            format: String::new(),
             collapsed: HashSet::new(),
             no_matches: false,
             confirmation: None,
@@ -5640,7 +5635,6 @@ impl ServerState {
             cursor: 0,
             filter: None,
             filter_input: None,
-            format: String::new(),
             no_matches: false,
             source_pane,
             tagged: HashSet::new(),
@@ -5656,10 +5650,7 @@ impl ServerState {
         let Some(mode) = client.buffer_mode.as_ref() else {
             return;
         };
-        let (entries, no_matches) = self.build_buffer_entries(
-            mode.filter.as_deref(),
-            &mode.format,
-        );
+        let (entries, no_matches) = self.build_buffer_entries(mode.filter.as_deref());
         if let Some(mode) = self
             .clients
             .get_mut(&client_id)
@@ -5671,11 +5662,7 @@ impl ServerState {
         }
     }
 
-    fn build_buffer_entries(
-        &self,
-        filter: Option<&str>,
-        format: &str,
-    ) -> (Vec<BufferEntry>, bool) {
+    fn build_buffer_entries(&self, filter: Option<&str>) -> (Vec<BufferEntry>, bool) {
         let mut matching = self
             .buffers
             .iter()
@@ -5701,19 +5688,7 @@ impl ServerState {
             .filter(|buffer| matching.contains(&buffer.name))
             .map(|buffer| BufferEntry {
                 name: buffer.name.clone(),
-                text: if format.is_empty() {
-                    buffer.name.clone()
-                } else {
-                    format!(
-                        "{}: {}",
-                        buffer.name,
-                        render_format_with_options(
-                            format,
-                            &buffer_values(buffer),
-                            &self.global_options,
-                        )
-                    )
-                },
+                text: buffer.name.clone(),
             })
             .collect();
         (entries, no_matches)
@@ -5734,7 +5709,6 @@ impl ServerState {
                 cursor: 0,
                 filter: None,
                 filter_input: None,
-                format: String::new(),
                 no_matches: false,
             });
         }
@@ -5749,7 +5723,7 @@ impl ServerState {
         let Some(mode) = client.client_mode.as_ref() else {
             return;
         };
-        let (entries, no_matches) = self.build_client_entries(mode.filter.as_deref(), &mode.format);
+        let (entries, no_matches) = self.build_client_entries(mode.filter.as_deref());
         if let Some(mode) = self
             .clients
             .get_mut(&client_id)
@@ -5761,7 +5735,7 @@ impl ServerState {
         }
     }
 
-    fn build_client_entries(&self, filter: Option<&str>, format: &str) -> (Vec<ClientEntry>, bool) {
+    fn build_client_entries(&self, filter: Option<&str>) -> (Vec<ClientEntry>, bool) {
         let mut clients = self.clients.iter().collect::<Vec<_>>();
         clients.sort_by_key(|(id, _)| **id);
         let mut matching = clients
@@ -5791,17 +5765,9 @@ impl ServerState {
                     .find(|(name, _)| *name == "client_session")
                     .map(|(_, value)| value.clone())
                     .unwrap_or_default();
-                let text = if format.is_empty() {
-                    format!("client{id}: {session_name}")
-                } else {
-                    format!(
-                        "client{id}: {}",
-                        render_format_with_options(format, &values, &self.global_options)
-                    )
-                };
                 Some(ClientEntry {
                     client_id: *id,
-                    text,
+                    text: format!("client{id}: {session_name}"),
                 })
             })
             .collect();
@@ -5837,11 +5803,9 @@ impl ServerState {
             return;
         };
         let filter = mode.filter.clone();
-        let format = mode.format.clone();
         let collapsed = mode.collapsed.clone();
         let (entries, no_matches) = self.build_tree_entries(TreeEntriesOptions {
             filter: filter.as_deref(),
-            format: &format,
             collapsed: &collapsed,
         });
         if let Some(mode) = self
@@ -5858,7 +5822,6 @@ impl ServerState {
     fn build_tree_entries(&self, options: TreeEntriesOptions<'_>) -> (Vec<TreeEntry>, bool) {
         let TreeEntriesOptions {
             filter,
-            format,
             collapsed,
         } = options;
         let mut matching = HashSet::new();
@@ -5905,7 +5868,7 @@ impl ServerState {
                 window_id: None,
                 pane_id: None,
                 key: session_key,
-                text: self.tree_entry_text(session, None, None, format, 0),
+                text: self.tree_entry_text(session, None, None, 0),
             });
             if collapsed.contains(&session_key) {
                 continue;
@@ -5925,7 +5888,7 @@ impl ServerState {
                     window_id: Some(window.id),
                     pane_id: None,
                     key: window_key,
-                    text: self.tree_entry_text(session, Some(window), None, format, 1),
+                    text: self.tree_entry_text(session, Some(window), None, 1),
                 });
                 if collapsed.contains(&window_key) {
                     continue;
@@ -5936,7 +5899,7 @@ impl ServerState {
                         window_id: Some(window.id),
                         pane_id: Some(pane.id),
                         key: window_key,
-                        text: self.tree_entry_text(session, Some(window), Some(pane), format, 2),
+                        text: self.tree_entry_text(session, Some(window), Some(pane), 2),
                     });
                 }
             }
@@ -5961,26 +5924,12 @@ impl ServerState {
         session: &Session,
         window: Option<&Window>,
         pane: Option<&Pane>,
-        format: &str,
         depth: usize,
     ) -> String {
-        let value = if format.is_empty() {
-            match (window, pane) {
-                (None, _) => session.name.clone(),
-                (Some(window), None) => format!("{}: {}", window.index, window.name),
-                (Some(window), Some(pane)) => format!("{}.{}", window.index, pane.index),
-            }
-        } else {
-            let window = window.or_else(|| session.windows.first());
-            let pane = pane.or_else(|| window.and_then(|window| window.panes.first()));
-            match (window, pane) {
-                (Some(window), Some(pane)) => render_format_with_options(
-                    format,
-                    &self.tree_values(session, window, pane),
-                    &self.global_options,
-                ),
-                _ => format.to_owned(),
-            }
+        let value = match (window, pane) {
+            (None, _) => session.name.clone(),
+            (Some(window), None) => format!("{}: {}", window.index, window.name),
+            (Some(window), Some(pane)) => format!("{}.{}", window.index, pane.index),
         };
         format!("{}{}", "  ".repeat(depth), value)
     }
@@ -15740,6 +15689,25 @@ mod tests {
         );
     }
 
+    fn tree_entry_session_names(state: &ServerState, client_id: u64) -> Vec<&str> {
+        state.clients[&client_id]
+            .tree_mode
+            .as_ref()
+            .expect("tree mode")
+            .entries
+            .iter()
+            .map(|entry| {
+                state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == entry.session_id)
+                    .expect("entry session")
+                    .name
+                    .as_str()
+            })
+            .collect()
+    }
+
     #[test]
     fn choose_tree_filters_renders_and_switches_clients_headlessly() {
         let shared = Arc::new(Mutex::new(ServerState::new()));
@@ -15801,25 +15769,10 @@ mod tests {
         state
             .enter_tree_mode(client_id)
             .expect("enter tree mode");
-        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:F".to_owned();
         state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").filter = Some("#{==:#{session_name},aaa}".to_owned());
         state.rebuild_tree_mode(client_id);
         let session_id = state.clients[&client_id].session_id;
-        let rendered = state
-            .render_session(session_id, Some(client_id))
-            .expect("render tree mode");
-        assert_eq!(
-            rendered
-                .windows(b"aaa:F".len())
-                .filter(|window| *window == b"aaa:F")
-                .count(),
-            3
-        );
-        assert!(
-            !rendered
-                .windows(b"zzz:F".len())
-                .any(|window| window == b"zzz:F")
-        );
+        assert_eq!(tree_entry_session_names(&state, client_id), ["aaa"; 3]);
 
         state.handle_client_input(client_id, b"q", &shared);
         assert!(state.clients[&client_id].tree_mode.is_none());
@@ -15827,46 +15780,17 @@ mod tests {
         state
             .enter_tree_mode(client_id)
             .expect("re-enter tree mode");
-        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:F".to_owned();
         state.rebuild_tree_mode(client_id);
-        let rendered = state
-            .render_session(session_id, Some(client_id))
-            .expect("render unfiltered tree mode");
-        assert_eq!(
-            rendered
-                .windows(b"zzz:F".len())
-                .filter(|window| *window == b"zzz:F")
-                .count(),
-            4
-        );
+        assert_eq!(tree_entry_session_names(&state, client_id).iter().filter(|name| **name == "zzz").count(), 4);
         state.handle_client_input(client_id, b"gh", &shared);
-        let rendered = state
-            .render_session(session_id, Some(client_id))
-            .expect("render collapsed tree mode");
-        assert_eq!(
-            rendered
-                .windows(b"zzz:F".len())
-                .filter(|window| *window == b"zzz:F")
-                .count(),
-            1
-        );
+        assert_eq!(tree_entry_session_names(&state, client_id).iter().filter(|name| **name == "zzz").count(), 1);
         state.handle_client_input(client_id, b"l", &shared);
         state.handle_client_input(client_id, b"f#{==:#{session_name},zzz}\r", &shared);
-        let rendered = state
-            .render_session(session_id, Some(client_id))
-            .expect("render prompted tree filter");
-        assert_eq!(
-            rendered
-                .windows(b"zzz:F".len())
-                .filter(|window| *window == b"zzz:F")
-                .count(),
-            4
-        );
+        assert_eq!(tree_entry_session_names(&state, client_id).iter().filter(|name| **name == "zzz").count(), 4);
         state.handle_client_input(client_id, b"c", &shared);
         state
             .enter_tree_mode(client_id)
             .expect("enter no-match tree mode");
-        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:F".to_owned();
         state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").filter = Some("#{==:#{session_name},nosuch}".to_owned());
         state.rebuild_tree_mode(client_id);
         let rendered = state
@@ -15902,7 +15826,6 @@ mod tests {
         state
             .enter_tree_mode(client_id)
             .expect("re-enter tree mode for kill test");
-        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:G".to_owned();
         state.rebuild_tree_mode(client_id);
         state.handle_client_input(client_id, b"gjjjjx", &shared);
         let session_id = state.clients[&client_id].session_id;
@@ -15916,16 +15839,7 @@ mod tests {
         );
         state.handle_client_input(client_id, b"y", &shared);
         assert_eq!(state.sessions[0].windows.len(), 1);
-        let rendered = state
-            .render_session(session_id, Some(client_id))
-            .expect("render tree after kill");
-        assert_eq!(
-            rendered
-                .windows(b"zzz:G".len())
-                .filter(|window| *window == b"zzz:G")
-                .count(),
-            4
-        );
+        assert_eq!(tree_entry_session_names(&state, client_id).iter().filter(|name| **name == "zzz").count(), 4);
         state.handle_client_input(client_id, b"q", &shared);
     }
 
@@ -15981,7 +15895,6 @@ mod tests {
         state
             .enter_buffer_mode(client_a, Some("aaa:0".to_owned()))
             .expect("enter buffer mode");
-        state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").format = "B".to_owned();
         state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").filter = Some("#{m:*log*,#{buffer_sample}}".to_owned());
         state.rebuild_buffer_mode(client_a);
         let session_id = state.clients[&client_a].session_id;
@@ -15990,20 +15903,19 @@ mod tests {
             .expect("render buffer mode");
         assert!(
             rendered
-                .windows(b"bufa: B".len())
-                .any(|window| window == b"bufa: B")
+                .windows(b"bufa".len())
+                .any(|window| window == b"bufa")
         );
         assert!(
             !rendered
-                .windows(b"bufz: B".len())
-                .any(|window| window == b"bufz: B")
+                .windows(b"bufz".len())
+                .any(|window| window == b"bufz")
         );
         state.handle_client_input(client_a, b"q", &shared);
 
         state
             .enter_buffer_mode(client_a, Some("aaa:0".to_owned()))
             .expect("enter no-match buffer mode");
-        state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").format = "B".to_owned();
         state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").filter = Some("#{==:#{buffer_name},nosuch}".to_owned());
         state.rebuild_buffer_mode(client_a);
         let rendered = state
@@ -16030,7 +15942,6 @@ mod tests {
         state
             .enter_client_mode(client_a)
             .expect("enter client mode");
-        state.clients.get_mut(&client_a).and_then(|client| client.client_mode.as_mut()).expect("client mode").format = "C=#{client_session}".to_owned();
         state.clients.get_mut(&client_a).and_then(|client| client.client_mode.as_mut()).expect("client mode").filter = Some("#{==:#{client_session},bbb}".to_owned());
         state.rebuild_client_mode(client_a);
         let rendered = state
@@ -16038,8 +15949,8 @@ mod tests {
             .expect("render client mode");
         assert!(
             rendered
-                .windows(b"client1: C=bbb".len())
-                .any(|window| window == b"client1: C=bbb")
+                .windows(b"client1: bbb".len())
+                .any(|window| window == b"client1: bbb")
         );
         state.handle_client_input(client_a, b"\r", &shared);
         assert!(!state.clients.contains_key(&client_b));
