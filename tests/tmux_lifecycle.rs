@@ -36,7 +36,7 @@ fn wait_clients(mux: &Mux, expected: usize) {
 fn concurrent_startup_converges_and_replaces_a_stale_socket() {
     let scratch = Scratch::new("lifecycle-startup");
     let tm = Mux::tm(&scratch, "tm");
-    std::fs::write(tm.socket(), b"stale").expect("write stale socket path");
+    drop(std::os::unix::net::UnixListener::bind(tm.socket()).expect("bind stale socket"));
     let mut first = tm.command(&["new-session", "-d", "-s", "one", "--", "sleep", "30"]);
     let mut second = tm.command(&["new-session", "-d", "-s", "two", "--", "sleep", "30"]);
     let first = first.spawn().expect("spawn first client");

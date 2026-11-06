@@ -58,11 +58,13 @@ client, and the daemon answers with its own before any other byte. On a
 mismatch, or on EOF before any response byte, which is how an older daemon
 reacts, the client prints
 `tm server at <socket> runs a different protocol; run tm -S <socket> kill-server`
-and exits nonzero. A new client's version preamble is refused by an old daemon before it reads any
-request, so `kill-server` from the new binary fails with the same message.
-Run `kill-server` with the old binary before you upgrade. If you already
-upgraded, send `SIGTERM` to the `tm --daemon <socket>` process. The next
-command then starts a daemon of the new version. The encoder refuses more than 1024 command
+and exits nonzero. An old daemon refuses a new client's version preamble before it reads any
+request, so no request can reach it. `kill-server` therefore handles a mismatch
+itself: the client reads the daemon's pid and uid from the connected socket
+(`SO_PEERCRED` on Linux, `LOCAL_PEERPID` and `getpeereid` on macOS) before it
+sends anything, requires the uid to equal its own, sends `SIGTERM`, and waits
+until the socket stops accepting. The daemon removes its socket on `SIGTERM`.
+The next command then starts a daemon of the new version. The encoder refuses more than 1024 command
 arguments, so the client fails before it connects. Golden-byte tests in
 [`src/protocol.rs`](../src/protocol.rs) fail when the format changes without a
 version bump.

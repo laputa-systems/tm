@@ -1,19 +1,10 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, and TMUX-52 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, and TMUX-52 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
-
-### TMUX-51 · P1 · After an upgrade the documented kill-server cannot stop the old daemon
-
-- **Area:** Operability
-- **Where:** `src/client.rs:138-141`, `src/client.rs:143-168`, `src/server.rs:425-432`, `src/protocol.rs:7`, `tests/protocol_version.rs:31-48`
-- **Problem:** A new client sends its protocol version first; an older daemon answers with its own and hangs up before reading a request. The mismatch message tells the user to run `tm -S <socket> kill-server`, which goes through the same handshake and fails the same way. Proven: a daemon started from `target/dist/tm` refused both `ls` and `kill-server` from `target/debug/tm` with that message (rc 1); only the old binary's `kill-server` worked. `PROTOCOL_VERSION` changed about 12 times in the last 180 commits, and every change strands running daemons, whose only exit is finding the pid and signalling it. The mismatch test never sends `kill-server` to a mismatched daemon.
-- **Recommendation:** Make shutdown version-independent: on a mismatch for `kill-server`, read the daemon pid with `SO_PEERCRED` and send SIGTERM (already handled gracefully), or accept a frozen shutdown frame before the version check. Fix the message to name a command that works, and test it against a mismatched daemon.
-- **Fix with:** durable-state
-- **Effort:** S
 
 ### TMUX-53 · P2 · Pane programs run with SIGPIPE ignored
 

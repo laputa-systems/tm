@@ -41,7 +41,8 @@ exists, the command resolves as if run outside any pane.
 The client and daemon check a protocol version on every connection. After an
 upgrade, a client that finds a daemon started by another version prints
 `tm server at <socket> runs a different protocol; run tm -S <socket> kill-server`
-and exits nonzero. That command fails the same way from the new binary. See
+and exits nonzero. `kill-server` works across versions: it signals the old
+daemon with `SIGTERM`. See
 [Wire protocol](docs/architecture.md#wire-protocol) for the recovery steps. A command with more than 1024 command arguments is refused
 by the client before it connects.
 
@@ -91,11 +92,12 @@ Changed behavior:
   request.
 
 Wire protocol: client and daemon exchange a protocol version on every
-connection, and the version changes whenever the format does. Before an
-upgrade, stop the daemon with `kill-server` from the old binary. After an
-upgrade, send `SIGTERM` to the `tm --daemon <socket>` process instead. A client
-that meets a daemon of another version prints the message above and exits
-nonzero. A command with more
+connection, and the version changes whenever the format does. After an
+upgrade, run `tm -S <socket> kill-server` with the new binary: on a version
+mismatch it reads the daemon's pid from the socket, checks that the daemon runs
+as you, sends `SIGTERM`, and returns once the socket stops accepting. Any other
+command that meets a daemon of another version prints the message above and
+exits nonzero. A command with more
 than 1024 arguments is refused by the client.
 
 Default socket: the default socket moved from `<tmpdir>/tm-<uid>.sock` to

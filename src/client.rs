@@ -42,7 +42,19 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     }
     let frame = encode_request(&request, caller_pane).map_err(|error| error.to_string())?;
     let mut stream = connect_or_start(&socket, starts_server)?;
-    send_request(&mut stream, &socket, &frame)?;
+    let stops_server = matches!(request, crate::protocol::Request::KillServer);
+    let peer = if stops_server {
+        Some(peer_process(&stream).map_err(|error| format!("read server credentials: {error}"))?)
+    } else {
+        None
+    };
+    match send_request(&mut stream, &socket, &frame) {
+        Err(SendError::ProtocolMismatch(_)) if stops_server => {
+            let peer = peer.expect("kill-server reads the peer before sending");
+            return terminate_other_version(&socket, peer);
+        }
+        sent => sent?,
+    }
     let response = read_server_message(&mut stream).map_err(|error| error.to_string())?;
     let (ok, body) = match response {
         ServerMessage::Response { ok, body } => (ok, body),
@@ -140,18 +152,123 @@ fn protocol_mismatch(socket: &std::path::Path) -> String {
     format!("tm server at {socket} runs a different protocol; run tm -S {socket} kill-server")
 }
 
+enum SendError {
+    ProtocolMismatch(String),
+    Io(String),
+}
+
+impl From<SendError> for String {
+    fn from(error: SendError) -> Self {
+        match error {
+            SendError::ProtocolMismatch(message) | SendError::Io(message) => message,
+        }
+    }
+}
+
+struct PeerProcess {
+    pid: libc::pid_t,
+    uid: libc::uid_t,
+}
+
+#[cfg(target_os = "linux")]
+fn peer_process(stream: &UnixStream) -> io::Result<PeerProcess> {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: the descriptor is open and the buffer is a ucred of the stated length.
+    let status = unsafe {
+        libc::getsockopt(
+            std::os::fd::AsRawFd::as_raw_fd(stream),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut length,
+        )
+    };
+    if status == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(PeerProcess {
+        pid: credentials.pid,
+        uid: credentials.uid,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn peer_process(stream: &UnixStream) -> io::Result<PeerProcess> {
+    let descriptor = std::os::fd::AsRawFd::as_raw_fd(stream);
+    let mut pid: libc::pid_t = 0;
+    let mut length = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: the descriptor is open and the buffer is a pid_t of the stated length.
+    let status = unsafe {
+        libc::getsockopt(
+            descriptor,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&raw mut pid).cast(),
+            &mut length,
+        )
+    };
+    if status == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: the descriptor is open and both outputs are valid.
+    if unsafe { libc::getpeereid(descriptor, &mut uid, &mut gid) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(PeerProcess { pid, uid })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("tm reads the server process from the socket on Linux and macOS only");
+
+fn terminate_other_version(socket: &std::path::Path, peer: PeerProcess) -> Result<(), String> {
+    // SAFETY: geteuid has no preconditions.
+    if peer.uid != unsafe { libc::geteuid() } {
+        return Err(format!(
+            "tm server at {} belongs to another user",
+            socket.display()
+        ));
+    }
+    // SAFETY: kill with a positive pid and SIGTERM has no memory preconditions.
+    if unsafe { libc::kill(peer.pid, libc::SIGTERM) } == -1 {
+        return Err(format!(
+            "stop tm server {} at {}: {}",
+            peer.pid,
+            socket.display(),
+            io::Error::last_os_error()
+        ));
+    }
+    for _ in 0..500 {
+        if UnixStream::connect(socket).is_err() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err(format!(
+        "tm server {} at {} did not stop after SIGTERM",
+        peer.pid,
+        socket.display()
+    ))
+}
+
 fn send_request(
     stream: &mut UnixStream,
     socket: &std::path::Path,
     frame: &[u8],
-) -> Result<(), String> {
+) -> Result<(), SendError> {
     let mut bytes = Vec::with_capacity(4 + frame.len());
-    write_version(&mut bytes).map_err(|error| error.to_string())?;
+    write_version(&mut bytes).map_err(|error| SendError::Io(error.to_string()))?;
     bytes.extend_from_slice(frame);
     let written = stream.write_all(&bytes);
     match read_version(stream) {
         Ok(PROTOCOL_VERSION) => {}
-        Ok(_) => return Err(protocol_mismatch(socket)),
+        Ok(_) => return Err(SendError::ProtocolMismatch(protocol_mismatch(socket))),
         Err(error)
             if matches!(
                 error.kind(),
@@ -160,11 +277,11 @@ fn send_request(
                     | io::ErrorKind::BrokenPipe
             ) =>
         {
-            return Err(protocol_mismatch(socket));
+            return Err(SendError::ProtocolMismatch(protocol_mismatch(socket)));
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(SendError::Io(error.to_string())),
     }
-    written.map_err(|error| error.to_string())
+    written.map_err(|error| SendError::Io(error.to_string()))
 }
 
 fn connect_failure(socket: &std::path::Path, error: &io::Error) -> String {

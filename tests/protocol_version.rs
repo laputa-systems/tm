@@ -94,3 +94,65 @@ fn over_long_argument_lists_are_refused_before_any_byte_is_sent() {
     );
     tm.ok(&["kill-server"]);
 }
+
+const FAKE_DAEMON_SOCKET: &str = "TM_TEST_FAKE_DAEMON_SOCKET";
+
+#[test]
+#[ignore = "runs as the fake old daemon child of kill_server_stops_a_daemon_of_another_protocol"]
+fn fake_old_daemon_process() {
+    let Some(socket) = std::env::var_os(FAKE_DAEMON_SOCKET) else {
+        return;
+    };
+    let listener = UnixListener::bind(socket).expect("bind fake server");
+    for stream in listener.incoming() {
+        let mut stream = stream.expect("accept");
+        let mut version = [0_u8; 4];
+        if stream.read_exact(&mut version).is_ok() {
+            let other = u32::from_le_bytes(version) ^ 1;
+            let _ = stream.write_all(&other.to_le_bytes());
+        }
+    }
+}
+
+struct ReapOnDrop(std::process::Child);
+
+impl Drop for ReapOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn kill_server_stops_a_daemon_of_another_protocol() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let scratch = Scratch::new("protocol-kill");
+    let tm = Mux::tm(&scratch, "tm");
+    let mut daemon = ReapOnDrop(
+        std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "fake_old_daemon_process", "--ignored", "--nocapture"])
+            .env(FAKE_DAEMON_SOCKET, tm.socket())
+            .spawn()
+            .expect("spawn fake daemon"),
+    );
+    for _ in 0..500 {
+        if std::os::unix::net::UnixStream::connect(tm.socket()).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let listed = tm.run(&["list-sessions"]);
+    assert!(!listed.status.success());
+    assert_eq!(stderr(&listed), different_protocol_message(&tm));
+    assert!(daemon.0.try_wait().expect("poll fake daemon").is_none());
+
+    let killed = tm.run(&["kill-server"]);
+    assert!(killed.status.success(), "{}", stderr(&killed));
+    assert_eq!(
+        daemon.0.wait().expect("wait fake daemon").signal(),
+        Some(libc::SIGTERM)
+    );
+    assert!(std::os::unix::net::UnixStream::connect(tm.socket()).is_err());
+}
