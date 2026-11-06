@@ -5,6 +5,9 @@
 mod parity;
 #[path = "support/pty_harness.rs"]
 mod pty_harness;
+#[path = "support/split_input.rs"]
+#[allow(dead_code)]
+mod split_input;
 #[path = "support/raw_pty.rs"]
 #[allow(dead_code)]
 mod raw_pty;
@@ -284,4 +287,154 @@ fn repeat_deadline_and_switching_follow_the_500ms_contract() {
         "repeat mode did not switch to another repeatable key"
     );
     pty_harness::detach(&mut client, &baseline);
+}
+
+fn split_class(label: &str, modes: &str, inputs: &[&[u8]]) -> Vec<split_input::Observed> {
+    let scratch = Scratch::new(label);
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let mut per_input: Vec<Vec<split_input::Observed>> = Vec::new();
+    for mux in [&tm, &reference] {
+        let mut sink = split_input::Sink::start(mux, "S", "sink", modes);
+        let mut client = split_input::attach(mux, "S");
+        let observed: Vec<_> = inputs
+            .iter()
+            .map(|input| split_input::observe(&mut sink, &mut client, input))
+            .collect();
+        for (input, observed) in inputs.iter().zip(&observed) {
+            split_input::assert_split_invariant(&format!("{label} {input:?}"), mux, observed);
+        }
+        assert_eq!(client.detach(), Some(0));
+        per_input.push(observed);
+    }
+    let reference_observed = per_input.pop().expect("reference observations");
+    let tm_observed = per_input.pop().expect("tm observations");
+    for ((input, tm), reference) in inputs.iter().zip(&tm_observed).zip(&reference_observed) {
+        assert_eq!(tm, reference, "{label} {input:?}: tm pane bytes differ from the reference");
+    }
+    tm_observed
+}
+
+#[test]
+fn split_prefix_bindings_deliver_the_unsplit_pane_bytes() {
+    let observed = split_class("in-split-prefix", "", &[b"\x01b", b"\x01\x13"]);
+    assert_eq!(observed[0].unsplit, b"\x01");
+    assert_eq!(observed[1].unsplit, b"\x01\x01");
+}
+
+#[test]
+fn split_extended_keys_deliver_the_unsplit_pane_bytes() {
+    let observed = split_class(
+        "in-split-extended",
+        "\\033[>4;2m",
+        &[b"\x1b[98;5u\x1b[13;2u", b"\x1b[27;5;105~\x1b[27;6;66~"],
+    );
+    assert!(!observed[0].unsplit.is_empty());
+    assert!(!observed[1].unsplit.is_empty());
+}
+
+#[test]
+fn split_sgr_mouse_delivers_the_unsplit_pane_bytes() {
+    let observed = split_class(
+        "in-split-mouse",
+        "\\033[?1000h\\033[?1006h",
+        &[b"\x1b[<0;10;5M\x1b[<0;10;5m", b"\x1b[<64;3;4M"],
+    );
+    assert_eq!(observed[0].unsplit, b"\x1b[<0;10;5M\x1b[<0;10;5m");
+    assert_eq!(observed[1].unsplit, b"\x1b[<64;3;4M");
+}
+
+#[test]
+fn split_focus_events_deliver_the_unsplit_pane_bytes() {
+    let observed = split_class("in-split-focus", "\\033[?1004h", &[b"\x1b[O\x1b[I"]);
+    assert_eq!(observed[0].unsplit, b"\x1b[O\x1b[I");
+}
+
+#[test]
+fn split_prefix_window_switch_follows_the_reference() {
+    let scratch = Scratch::new("in-split-switch");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let input: &[u8] = b"\x01\x1b[1;5C";
+    for mux in [&tm, &reference] {
+        create_session(mux, "S", 2);
+        let mut client = RawClient::spawn(mux, "switch", &["attach-session", "-t", "S"], 24, 80);
+        client.wait_for_text("(S)", Duration::from_secs(3));
+        let first = mux.body(&["display-message", "-p", "-t", "S", "#{window_index}"]);
+        let mut current: usize = first.parse().expect("window index");
+        let next = |current: usize| if current == 1 { 2 } else { 1 };
+        let mut deliveries: Vec<Vec<&[u8]>> = vec![vec![input]];
+        deliveries.extend((1..input.len()).map(|at| {
+            let (head, tail) = input.split_at(at);
+            vec![head, tail]
+        }));
+        deliveries.push(input.chunks(1).collect());
+        for chunks in &deliveries {
+            for chunk in chunks {
+                client.write(chunk);
+            }
+            current = next(current);
+            assert_eq!(
+                wait_window(mux, "S", &current.to_string()),
+                current.to_string(),
+                "{:?}: split {chunks:?} did not switch window",
+                mux.implementation()
+            );
+        }
+        assert_eq!(client.detach(), Some(0));
+    }
+}
+
+const TM_DELAYED_ESCAPE_KNOWN_DIFFERENCE: &[u8] = b"\x1b[27;5;105~";
+
+#[test]
+fn escape_then_a_delay_longer_than_escape_time_follows_the_reference() {
+    let scratch = Scratch::new("in-escape-delay");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let sequence: &[u8] = b"\x1b[27;5;105~";
+    let mut observed = Vec::new();
+    for mux in [&tm, &reference] {
+        let mut sink = split_input::Sink::start(mux, "S", "sink", "");
+        assert_eq!(mux.body(&["show-options", "-s", "escape-time"]), "escape-time 0");
+        let mut client = split_input::attach(mux, "S");
+        let unsplit = sink.deliver(&mut client, &[sequence], "unsplit");
+        let delayed = sink.deliver_paused(
+            &mut client,
+            &sequence[..1],
+            Duration::from_millis(50),
+            &sequence[1..],
+        );
+        assert_eq!(client.detach(), Some(0));
+        observed.push((unsplit, delayed));
+    }
+    let (tm_observed, reference_observed) = (&observed[0], &observed[1]);
+    assert_eq!(tm_observed.0, b"\t");
+    assert_eq!(reference_observed.0, b"\t");
+    assert_eq!(
+        reference_observed.1, b"\t",
+        "tmux 3.8 joins an Escape with input that arrives later"
+    );
+    assert_eq!(
+        tm_observed.1, TM_DELAYED_ESCAPE_KNOWN_DIFFERENCE,
+        "tm no longer differs from the reference (TMUX-39): remove the known difference"
+    );
+}
+
+#[test]
+fn focus_in_reaches_a_requesting_pane_when_a_client_attaches() {
+    let scratch = Scratch::new("in-attach-focus");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        let mut sink = split_input::Sink::start(mux, "S", "sink", "\\033[?1004h");
+        let mut client = split_input::attach(mux, "S");
+        assert_eq!(
+            sink.deliver(&mut client, &[], "attach"),
+            b"\x1b[I",
+            "{:?}",
+            mux.implementation()
+        );
+        assert_eq!(client.detach(), Some(0));
+    }
 }

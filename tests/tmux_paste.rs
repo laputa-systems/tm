@@ -7,6 +7,13 @@ mod parity;
 #[allow(dead_code)]
 mod pty_harness;
 
+#[path = "support/raw_pty.rs"]
+#[allow(dead_code)]
+mod raw_pty;
+#[path = "support/split_input.rs"]
+#[allow(dead_code)]
+mod split_input;
+
 use std::time::{Duration, Instant};
 
 use parity::{Mux, Scratch};
@@ -171,4 +178,23 @@ fn paste_buffer_brackets_only_for_a_requesting_pane() {
     tm.ok(&["paste-buffer", "-p", "-t", "S"]);
     wait_hex(&tm, "S", "61 62");
     pty_harness::detach(&mut client, &baseline);
+}
+
+#[test]
+fn split_bracketed_paste_delivers_the_unsplit_pane_bytes() {
+    let scratch = Scratch::new("paste-split");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let input: &[u8] = b"\x1b[200~ab\x01d\r\n\x1b[x\x1b[201~";
+    let mut observed = Vec::new();
+    for mux in [&tm, &reference] {
+        let mut sink = split_input::Sink::start(mux, "S", "sink", "\\033[?2004h");
+        let mut client = split_input::attach(mux, "S");
+        let result = split_input::observe(&mut sink, &mut client, input);
+        split_input::assert_split_invariant("paste", mux, &result);
+        assert_eq!(client.detach(), Some(0));
+        observed.push(result);
+    }
+    assert_eq!(observed[0], observed[1], "tm pane bytes differ from the reference");
+    assert_eq!(observed[0].unsplit, input);
 }
