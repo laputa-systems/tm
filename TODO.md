@@ -1,7 +1,7 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, TMUX-57, TMUX-55, and TMUX-56 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, TMUX-57, TMUX-55, TMUX-56, and TMUX-59 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
@@ -14,15 +14,6 @@ suites do not cover.
 - **Recommendation:** Read history length and rows from the live parser without mutating its viewport (or cache a row index invalidated on output), drop the per-call replay parsers, and add a benchmark fixture with 10000 history rows in copy mode.
 - **Fix with:** make-it-fast
 - **Effort:** M
-
-### TMUX-59 · P2 · Every format expansion replays the pane's whole output
-
-- **Area:** Performance
-- **Where:** `src/server.rs:14671`, `src/server.rs:14258-14273`, `src/server.rs:14240`, `src/server.rs:12548-12555`
-- **Problem:** `format_pane` eagerly builds `__pane_content` by replaying up to the raw-output budget (about 1.9 MB per pane at 80 columns, capped at 32 MiB) through a new parser, though one reader uses it. Measured on a release build with 10000 history lines: `display-message -p -t c x` has a median of 28.5 ms (26.6-30.4, 20 samples) against 0.5 ms with 100 lines. Bindings, `run-shell` formats and choose-tree all expand pane formats.
-- **Recommendation:** Compute pane content only for the consumer at `src/server.rs:14240`, or lazily when the format references it.
-- **Fix with:** make-it-fast
-- **Effort:** S
 
 ### TMUX-11 · P3 · Session format variables are missing or wrong
 

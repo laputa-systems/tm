@@ -14433,6 +14433,11 @@ fn format_content_search(body: &str, values: &[(&str, String)]) -> Option<String
     Some(found.map_or_else(|| "0".to_owned(), |line| (line + 1).to_string()))
 }
 
+fn format_searches_content(format: &str, options: &HashMap<String, String>) -> bool {
+    const CONTENT_SEARCH: &str = "#{C";
+    format.contains(CONTENT_SEARCH) || options.values().any(|value| value.contains(CONTENT_SEARCH))
+}
+
 fn pane_content_for_format(pane: &Pane) -> String {
     if pane.raw_output.is_empty() {
         return pane.parser.screen().contents();
@@ -14846,7 +14851,14 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         ),
         ("cursor_x", cursor_x.to_string()),
         ("cursor_y", cursor_y.to_string()),
-        ("__pane_content", pane_content_for_format(pane)),
+        (
+            "__pane_content",
+            if format_searches_content(format, options) {
+                pane_content_for_format(pane)
+            } else {
+                String::new()
+            },
+        ),
         (
             "pane_pid",
             if pane.pty.is_empty() {
