@@ -46,6 +46,7 @@ type FormatLoopItem = (String, usize, usize, u64, Vec<(&'static str, String)>);
 // mutex; spurious wakeups are harmless and avoid a timer-driven render loop.
 static RENDER_WAKE: Condvar = Condvar::new();
 const REPEAT_TIME_MS: u64 = 500;
+const DISPLAY_TIME_MS: u64 = 750;
 
 pub(crate) const SOCKET_ENV: &str = "TM_SOCKET";
 pub(crate) const PANE_ENV: &str = "TM_PANE";
@@ -861,6 +862,7 @@ struct ServerState {
     history_limit: usize,
     prompt_history: HashMap<String, Vec<String>>,
     last_message: Option<String>,
+    last_message_token: u64,
     clipboard_pending: Option<Vec<u8>>,
     table_bindings: HashMap<(String, Vec<u8>), ConfigBinding>,
     mouse_bindings: HashMap<(String, String), ConfigBinding>,
@@ -1643,6 +1645,7 @@ impl ServerState {
             history_limit: 10_000,
             prompt_history: HashMap::new(),
             last_message: None,
+            last_message_token: 0,
             clipboard_pending: None,
             table_bindings: HashMap::new(),
             mouse_bindings: HashMap::new(),
@@ -3001,6 +3004,25 @@ impl ServerState {
         client.key_events.clear();
         client.key_deadline = None;
         client.prefix_pending = false;
+        true
+    }
+
+    fn set_message(&mut self, message: String, shared: &SharedState) {
+        self.key_timer_counter = self.key_timer_counter.saturating_add(1);
+        self.last_message = Some(message);
+        self.last_message_token = self.key_timer_counter;
+        schedule_message_expiry(
+            shared,
+            self.last_message_token,
+            Instant::now() + Duration::from_millis(DISPLAY_TIME_MS),
+        );
+    }
+
+    fn flush_expired_message(&mut self, token: u64) -> bool {
+        if self.last_message_token != token || self.last_message.is_none() {
+            return false;
+        }
+        self.last_message = None;
         true
     }
 
@@ -4755,7 +4777,7 @@ impl ServerState {
             shared,
         );
         if let Err(error) = result {
-            self.last_message = Some(error);
+            self.set_message(error, shared);
         }
     }
 
@@ -4852,7 +4874,7 @@ impl ServerState {
         shared: &SharedState,
     ) {
         if let Err(error) = self.execute_bound_commands(client_id, session_id, binding, shared) {
-            self.last_message = Some(error);
+            self.set_message(error, shared);
         }
     }
 
@@ -4953,13 +4975,14 @@ impl ServerState {
                 continue;
             }
             if command[0] == "display" || command[0] == "display-message" {
-                self.last_message = Some(
+                self.set_message(
                     command
                         .iter()
                         .skip(1)
                         .cloned()
                         .collect::<Vec<_>>()
                         .join(" "),
+                    shared,
                 );
                 continue;
             }
@@ -10822,9 +10845,6 @@ fn render_copy_mode_position(
         return;
     }
     let position_limit = mode.position_limit(parser);
-    if position_limit == 0 {
-        return;
-    }
     let values = [
         ("copy_position", mode.scroll_offset.to_string()),
         ("copy_position_limit", position_limit.to_string()),
@@ -11969,7 +11989,6 @@ fn execute_request_inner(
     shared: &SharedState,
     request: Request,
 ) -> CommandResult {
-    state.last_message = None;
     match request {
         Request::NewSession {
             name,
@@ -12689,6 +12708,23 @@ fn schedule_key_flush(shared: &SharedState, client_id: u64, token: u64, deadline
             }
             if let Ok(mut state) = shared.lock()
                 && state.flush_expired_key(client_id, token)
+            {
+                state.mark_render_dirty();
+            }
+        });
+}
+
+fn schedule_message_expiry(shared: &SharedState, token: u64, deadline: Instant) {
+    let shared = Arc::clone(shared);
+    let _ = thread::Builder::new()
+        .name("tm-message-deadline".to_owned())
+        .spawn(move || {
+            let now = Instant::now();
+            if deadline > now {
+                thread::sleep(deadline - now);
+            }
+            if let Ok(mut state) = shared.lock()
+                && state.flush_expired_message(token)
             {
                 state.mark_render_dirty();
             }
