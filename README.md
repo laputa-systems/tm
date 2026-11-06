@@ -20,8 +20,12 @@ tm attach-session -t work       # attach to the session
 tm kill-session -t work
 ```
 
-The default socket is `tm-<uid>.sock` in `$TMPDIR`, or in `/tmp` when `TMPDIR` is
-unset, where `<uid>` is the effective user id. `TM_SOCKET` overrides that
+The default socket is `tm-<uid>/default` in `$TMPDIR`, or in `/tmp` when `TMPDIR`
+is unset, where `<uid>` is the effective user id. tm creates the `tm-<uid>`
+directory with mode 0700 and refuses to start when it is a symlink, is owned by
+another user, or has group or other permission bits. The client refuses a
+socket that another user owns, and the daemon replaces an existing path only
+when it is a socket owned by the same user. `TM_SOCKET` overrides the default
 path and `-S path` overrides both. A daemon first started on the socket named by `TM_SOCKET` uses the baseline settings and
 bindings, including the `C-b` prefix.
 
@@ -93,6 +97,12 @@ upgrade, send `SIGTERM` to the `tm --daemon <socket>` process instead. A client
 that meets a daemon of another version prints the message above and exits
 nonzero. A command with more
 than 1024 arguments is refused by the client.
+
+Default socket: the default socket moved from `<tmpdir>/tm-<uid>.sock` to
+`<tmpdir>/tm-<uid>/default` in a private directory. A daemon started by an older
+build keeps its old path and is not found; stop it with that build's
+`kill-server` or `SIGTERM`. A `-S` or `TM_SOCKET` path that names an existing
+file that is not your socket is now an error instead of being deleted.
 
 Environment: panes export `TM_SOCKET` and `TM_PANE` and omitted targets resolve
 from the calling pane. A daemon started with `-S` from inside a pane no longer

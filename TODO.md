@@ -1,19 +1,10 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, and TMUX-40 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, and TMUX-52 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
-
-### TMUX-50 · P1 · The default socket in shared /tmp trusts whoever listens there
-
-- **Area:** Security
-- **Where:** `src/server.rs:55-64`, `src/server.rs:88-98`, `src/server.rs:185-192`, `src/client.rs:181-184`
-- **Problem:** Without `TMPDIR` (Linux default) the socket is `/tmp/tm-<euid>.sock` in sticky world-writable `/tmp`; `ensure_socket_parent` makes no private directory because `/tmp` exists. The client connects with no check of the socket's owner, and the daemon never checks the peer uid. Another local user who binds that name first receives every command and the keystrokes of each later `attach`, and can write arbitrary terminal bytes back; a pre-created regular file at the name, `.lock` or `.log` makes the victim's daemon fail to start, because the sticky bit stops the victim removing it. `bind` creates the socket under the umask before the chmod to 0600. Proven by reading the connect and bind paths; no second uid was available to run the attack. This host has `protected_symlinks=1` (mitigates symlink variants) and `protected_regular=0`.
-- **Recommendation:** Default to a per-user directory created 0700 (`$XDG_RUNTIME_DIR/tm/` or `/tmp/tm-<uid>/`), verified with `symlink_metadata` to be owned by the euid with no group or other bits; have the client require the socket's owner to be the euid before sending; bind under a restrictive umask.
-- **Fix with:** os-boundaries
-- **Effort:** M
 
 ### TMUX-51 · P1 · After an upgrade the documented kill-server cannot stop the old daemon
 
@@ -22,15 +13,6 @@ suites do not cover.
 - **Problem:** A new client sends its protocol version first; an older daemon answers with its own and hangs up before reading a request. The mismatch message tells the user to run `tm -S <socket> kill-server`, which goes through the same handshake and fails the same way. Proven: a daemon started from `target/dist/tm` refused both `ls` and `kill-server` from `target/debug/tm` with that message (rc 1); only the old binary's `kill-server` worked. `PROTOCOL_VERSION` changed about 12 times in the last 180 commits, and every change strands running daemons, whose only exit is finding the pid and signalling it. The mismatch test never sends `kill-server` to a mismatched daemon.
 - **Recommendation:** Make shutdown version-independent: on a mismatch for `kill-server`, read the daemon pid with `SO_PEERCRED` and send SIGTERM (already handled gracefully), or accept a frozen shutdown frame before the version check. Fix the message to name a command that works, and test it against a mismatched daemon.
 - **Fix with:** durable-state
-- **Effort:** S
-
-### TMUX-52 · P2 · `-S` naming a regular file deletes it
-
-- **Area:** Data
-- **Where:** `src/server.rs:185-190`
-- **Problem:** When connecting to the socket path fails, the daemon removes whatever exists there without checking that it is a socket. Proven: `tm -S precious.txt new-session -d` replaced a regular file with content by a socket and created `.lock` and `.log` beside it. A mistyped `-S` or `TM_SOCKET` destroys user data.
-- **Recommendation:** Check `symlink_metadata`; unlink only a socket owned by the euid, otherwise fail with an error naming the path.
-- **Fix with:** os-boundaries
 - **Effort:** S
 
 ### TMUX-53 · P2 · Pane programs run with SIGPIPE ignored

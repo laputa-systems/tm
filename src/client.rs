@@ -179,6 +179,7 @@ fn connect_failure(socket: &std::path::Path, error: &io::Error) -> String {
 }
 
 fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream, String> {
+    crate::server::require_own_socket(socket)?;
     let refusal = match UnixStream::connect(socket) {
         Ok(stream) => return Ok(stream),
         Err(error) => error,
@@ -186,6 +187,7 @@ fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream,
     if !start {
         return Err(connect_failure(socket, &refusal));
     }
+    crate::server::ensure_socket_parent(socket).map_err(|error| error.to_string())?;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut daemon = Command::new(executable);
     daemon
@@ -239,6 +241,7 @@ fn attach_loop(
     if !stdin_is_terminal() {
         return Err(NOT_A_TERMINAL.to_owned());
     }
+    crate::server::require_own_socket(socket)?;
     let mut stream = UnixStream::connect(socket).map_err(|error| error.to_string())?;
     let size = terminal::size();
     let term = std::env::var("TERM").unwrap_or_default();

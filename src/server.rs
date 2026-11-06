@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -59,8 +59,91 @@ pub(crate) fn socket_path(explicit: Option<&Path>) -> PathBuf {
     if let Some(path) = std::env::var_os(SOCKET_ENV) {
         return PathBuf::from(path);
     }
+    default_socket_directory().join("default")
+}
+
+fn default_socket_directory() -> PathBuf {
+    // SAFETY: geteuid has no preconditions.
     let uid = unsafe { libc::geteuid() };
-    std::env::temp_dir().join(format!("tm-{uid}.sock"))
+    std::env::temp_dir().join(format!("tm-{uid}"))
+}
+
+fn ensure_private_directory(directory: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("couldn't create directory {} ({error})", directory.display()),
+            ));
+        }
+    }
+    let metadata = fs::symlink_metadata(directory).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("couldn't read directory {} ({error})", directory.display()),
+        )
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(io::Error::other(format!(
+            "{} is not a directory",
+            directory.display()
+        )));
+    }
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    if metadata.uid() != euid || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(io::Error::other(format!(
+            "directory {} has unsafe permissions",
+            directory.display()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn require_own_socket(path: &Path) -> Result<(), String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(()),
+    };
+    // SAFETY: geteuid has no preconditions.
+    if metadata.uid() == unsafe { libc::geteuid() } {
+        Ok(())
+    } else {
+        Err(format!(
+            "socket {} is not owned by the current user",
+            path.display()
+        ))
+    }
+}
+
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    if !metadata.file_type().is_socket() || metadata.uid() != euid {
+        return Err(io::Error::other(format!(
+            "{} exists and is not a socket owned by the current user",
+            path.display()
+        )));
+    }
+    fs::remove_file(path)
+}
+
+fn bind_private(path: &Path) -> io::Result<UnixListener> {
+    // SAFETY: umask has no preconditions; the daemon is single-threaded here.
+    let previous = unsafe { libc::umask(0o177) };
+    let listener = UnixListener::bind(path);
+    // SAFETY: restores the mask read above.
+    unsafe { libc::umask(previous) };
+    listener
 }
 
 fn binding_table(bindings: &[config::CompiledBinding]) -> HashMap<Vec<u8>, ConfigBinding> {
@@ -85,10 +168,13 @@ fn binding_table(bindings: &[config::CompiledBinding]) -> HashMap<Vec<u8>, Confi
         .collect()
 }
 
-fn ensure_socket_parent(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_socket_parent(path: &Path) -> io::Result<()> {
     let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
         return Ok(());
     };
+    if parent == default_socket_directory() {
+        return ensure_private_directory(parent);
+    }
     if parent.exists() {
         return Ok(());
     }
@@ -185,11 +271,8 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
     if UnixStream::connect(path).is_ok() {
         return Ok(());
     }
-    if path.exists() {
-        let _ = fs::remove_file(path);
-    }
-    let listener = UnixListener::bind(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    remove_stale_socket(path)?;
+    let listener = bind_private(path)?;
     log.write(&format!("listening on {}", path.display()));
     drop(lock);
     let gate = Arc::new(ShutdownGate::new(path));
