@@ -1,19 +1,10 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, and TMUX-52 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, and TMUX-53 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
-
-### TMUX-53 · P2 · Pane programs run with SIGPIPE ignored
-
-- **Area:** Errors
-- **Where:** `src/pty.rs:258-302`
-- **Problem:** The Rust runtime ignores SIGPIPE, and the forked child resets the signal mask but not dispositions, so the ignore survives `exec`. Proven: `/proc/self/status` in a pane shows `SigIgn: 0x1000`, and `(cat /dev/zero; echo $?) | head -c10` prints a write error with status 1 inside tm instead of exiting silently with 141. Programs that ignore write errors can spin after their reader exits.
-- **Recommendation:** Reset SIGPIPE (and any other runtime-ignored signal) to `SIG_DFL` in the child before `exec`.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** S
 
 ### TMUX-54 · P2 · An oversized window size aborts the daemon and every session
 

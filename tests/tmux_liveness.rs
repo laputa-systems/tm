@@ -226,3 +226,23 @@ fn a_stalled_attach_client_does_not_block_other_sessions() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+#[test]
+fn pane_programs_start_with_default_signal_dispositions() {
+    let scratch = Scratch::new("liveness-sigign");
+    let tm = Mux::tm(&scratch, "tm");
+    let output = scratch.root().join("sigign.txt");
+    create_session(
+        &tm,
+        "S",
+        &format!(
+            "sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status > {0}.tmp; mv {0}.tmp {0}; sleep 30",
+            output.display()
+        ),
+    );
+    assert!(wait_for_path(&output, Duration::from_secs(5)));
+    assert_eq!(
+        std::fs::read_to_string(&output).expect("sigign").trim(),
+        "0000000000000000"
+    );
+}
