@@ -6,6 +6,9 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[path = "support/pty_reap.rs"]
+mod pty_reap;
+
 static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
 
 const ROWS: u16 = 6;
@@ -161,8 +164,7 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
     terminal
         .assert_terminal_restored(&baseline)
         .expect("attached client restores applicable terminal modes");
-    terminal
-        .finish(terminal.deadline(Duration::from_secs(3)))
+    pty_reap::reap(&mut terminal, Duration::from_secs(3))
         .expect("reap attached client");
 }
 
@@ -390,8 +392,7 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
     terminal
         .assert_terminal_restored(&baseline)
         .expect("restore terminal after pane capture");
-    terminal
-        .finish(terminal.deadline(Duration::from_secs(3)))
+    pty_reap::reap(&mut terminal, Duration::from_secs(3))
         .expect("reap pane capture client");
 }
 
@@ -484,8 +485,7 @@ fn attached_client_forwards_application_mouse_events_without_entering_copy_mode(
     terminal
         .assert_terminal_restored(&baseline)
         .expect("restore terminal after application mouse test");
-    terminal
-        .finish(terminal.deadline(Duration::from_secs(3)))
+    pty_reap::reap(&mut terminal, Duration::from_secs(3))
         .expect("reap attached client");
 }
 
@@ -553,7 +553,6 @@ fn opening_pane_from_attached_client_preserves_existing_pane_contents() {
     terminal
         .assert_terminal_restored(&baseline)
         .expect("restore terminal after split");
-    terminal
-        .finish(terminal.deadline(Duration::from_secs(3)))
+    pty_reap::reap(&mut terminal, Duration::from_secs(3))
         .expect("reap split client");
 }

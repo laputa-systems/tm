@@ -317,8 +317,7 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
                     .expect("detached by binding"),
                 ptytest::ExitStatus::Code(0)
             );
-            client
-                .finish(client.deadline(Duration::from_secs(3)))
+            pty_harness::reap(&mut client, Duration::from_secs(3))
                 .expect("reap detached binding client");
         } else {
             pty_harness::detach(&mut client, &baseline);

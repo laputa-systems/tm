@@ -6,6 +6,11 @@ use ptytest::{
 
 use super::parity::Mux;
 
+#[path = "pty_reap.rs"]
+mod pty_reap;
+
+pub use pty_reap::reap;
+
 pub fn spawn_attached(
     mux: &Mux,
     name: &str,
@@ -83,7 +88,5 @@ pub fn detach(terminal: &mut PtyTest, baseline: &ptytest::TerminalBaseline) {
     terminal
         .assert_terminal_restored(baseline)
         .expect("restore terminal on detach");
-    terminal
-        .finish(terminal.deadline(Duration::from_secs(5)))
-        .expect("reap detached client");
+    reap(terminal, Duration::from_secs(5)).expect("reap detached client");
 }

@@ -90,8 +90,7 @@ fn terminate_signal_restores_termios_and_screen() {
     client
         .assert_terminal_restored(&baseline)
         .expect("restore after SIGTERM");
-    client
-        .finish(client.deadline(Duration::from_secs(3)))
+    pty_harness::reap(&mut client, Duration::from_secs(3))
         .expect("reap signalled client");
 }
 
@@ -120,8 +119,7 @@ fn stop_signal_restores_the_screen_before_stopping() {
     );
     client.signal(libc::SIGKILL).expect("send SIGKILL");
     let _ = client.wait_for_exit(client.deadline(Duration::from_secs(3)));
-    client
-        .finish(client.deadline(Duration::from_secs(3)))
+    pty_harness::reap(&mut client, Duration::from_secs(3))
         .expect("reap stopped client");
 }
 

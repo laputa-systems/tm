@@ -111,9 +111,7 @@ fn vim_edits_and_restores_the_attached_screen() {
     client
         .assert_terminal_restored(&baseline)
         .expect("restore after vim");
-    client
-        .finish(client.deadline(Duration::from_secs(5)))
-        .expect("reap vim client");
+    pty_harness::reap(&mut client, Duration::from_secs(5)).expect("reap vim client");
 }
 
 #[test]
