@@ -20,8 +20,9 @@ tm attach-session -t work       # attach to the session
 tm kill-session -t work
 ```
 
-The default socket is `$TMPDIR/tm-$UID.sock`. Pass `-S path` to select another
-socket. A daemon first started on the socket named by `TM_SOCKET` uses the baseline settings and
+The default socket is `tm-<uid>.sock` in `$TMPDIR`, or in `/tmp` when `TMPDIR` is
+unset, where `<uid>` is the effective user id. `TM_SOCKET` overrides that
+path and `-S path` overrides both. A daemon first started on the socket named by `TM_SOCKET` uses the baseline settings and
 bindings, including the `C-b` prefix.
 
 Each pane runs with `TM_SOCKET` set to its server's socket path and `TM_PANE`
@@ -36,7 +37,8 @@ exists, the command resolves as if run outside any pane.
 The client and daemon check a protocol version on every connection. After an
 upgrade, a client that finds a daemon started by another version prints
 `tm server at <socket> runs a different protocol; run tm -S <socket> kill-server`
-and exits nonzero. A command with more than 1024 command arguments is refused
+and exits nonzero. That command fails the same way from the new binary. See
+[Wire protocol](docs/architecture.md#wire-protocol) for the recovery steps. A command with more than 1024 command arguments is refused
 by the client before it connects.
 
 The normal prefix is `C-a`. `C-a %` and `C-a "` split panes, `C-a h`, `C-a j`,
@@ -85,14 +87,20 @@ Changed behavior:
   request.
 
 Wire protocol: client and daemon exchange a protocol version on every
-connection, and the version changes whenever the format does. After an upgrade
-run `tm kill-server` or `tm -S <socket> kill-server`; a client that meets an
-older daemon prints the message above and exits nonzero. A command with more
+connection, and the version changes whenever the format does. Before an
+upgrade, stop the daemon with `kill-server` from the old binary. After an
+upgrade, send `SIGTERM` to the `tm --daemon <socket>` process instead. A client
+that meets a daemon of another version prints the message above and exits
+nonzero. A command with more
 than 1024 arguments is refused by the client.
 
 Environment: panes export `TM_SOCKET` and `TM_PANE` and omitted targets resolve
 from the calling pane. A daemon started with `-S` from inside a pane no longer
 inherits the baseline profile unless `TM_SOCKET` names its own socket.
+
+The daemon writes `<socket>.log` next to the socket. It holds the listening
+address, daemon errors, and received signals, is truncated when the daemon
+starts, and is capped at 1 MiB.
 
 Run `tm help` for the command summary. Report problems in the
 [issue tracker](https://github.com/laputa-systems/tm/issues). The project is

@@ -23,8 +23,8 @@ interactive profile requires editing the compiled data and rebuilding.
 The command and interactive surface is a tested subset of tmux, not a promise
 of full CLI parity. Add support when a concrete workflow or regression test
 needs it. A daemon can outlive its launching client and continues running the
-binary that started it; use `tm kill-server` before checking rebuilt daemon
-behavior.
+binary that started it; stop it before checking rebuilt daemon behavior,
+as described in [Wire protocol](#wire-protocol).
 
 Long-lived helpers follow the same separation as attach clients: foreground
 commands run outside the shared state lock, pane input and pipe-pane writes use
@@ -45,6 +45,12 @@ connection accepted during shutdown gets the error `server is shutting down`,
 never a silent EOF. The client does not retry a request, because a mutating
 request may already have run.
 
+The daemon writes `<socket>.log` with mode `0600`. It holds the listening
+address, daemon errors, and the number of each received signal. The daemon
+truncates it at start and again when it would pass 1 MiB. The daemon handles
+`SIGTERM`, `SIGHUP`, `SIGINT`, and `SIGQUIT` by closing the listener and
+removing the socket.
+
 ## Wire protocol
 
 Every connection starts with a little-endian `u32` `PROTOCOL_VERSION` from the
@@ -52,8 +58,11 @@ client, and the daemon answers with its own before any other byte. On a
 mismatch, or on EOF before any response byte, which is how an older daemon
 reacts, the client prints
 `tm server at <socket> runs a different protocol; run tm -S <socket> kill-server`
-and exits nonzero. Run `tm kill-server` after an upgrade so the next command
-starts a daemon of the new version. The encoder refuses more than 1024 command
+and exits nonzero. A new client's version preamble is refused by an old daemon before it reads any
+request, so `kill-server` from the new binary fails with the same message.
+Run `kill-server` with the old binary before you upgrade. If you already
+upgraded, send `SIGTERM` to the `tm --daemon <socket>` process. The next
+command then starts a daemon of the new version. The encoder refuses more than 1024 command
 arguments, so the client fails before it connects. Golden-byte tests in
 [`src/protocol.rs`](../src/protocol.rs) fail when the format changes without a
 version bump.

@@ -9,7 +9,7 @@ The manually triggered GitHub Actions release workflow builds these targets:
 
 Linux executables must have no ELF interpreter or shared-library dependency.
 The workflow zips the two Linux executables and creates a prerelease named
-`release-<commit>` when run through `workflow_dispatch`. The macOS executable
+`release-<sha>`, where `<sha>` is the full 40-character commit SHA, when run through `workflow_dispatch`. The macOS executable
 is built and tested in the workflow and is not attached to that release. Linux
 builds use the toolchain in [`Dockerfile`](../Dockerfile).
 
@@ -19,8 +19,17 @@ macOS, `make install` builds the default target, copies it to `~/.local/bin/tm`,
 and applies an ad hoc code signature.
 
 `make qualify` runs `make release` and `make verify-release`, then the full
-test suite and `make parity` against the dist binary through `TM_BIN`. See
-[testing](testing.md).
+test suite and `make parity` against the dist binary through `TM_BIN`. The release workflow does
+not run it: it runs the tests only in the macOS job and only `make release`
+and `make verify-release` for Linux. Run `make qualify` by hand before you
+dispatch a release. See [testing](testing.md).
+
+## Cargo registry mirror
+
+[`.cargo/config.toml`](../.cargo/config.toml) replaces crates.io with the
+mirror `sparse+https://crates.17166969.xyz/current/crates-io/`. Every build
+that fetches crates needs that mirror reachable, and fetches fail when it is
+not. `Cargo.lock` checksums still pin the crates.io content.
 
 ## Local Linux verification
 

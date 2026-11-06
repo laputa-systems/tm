@@ -118,7 +118,7 @@ the cargo-built `tm`. [`tests/support/tm_bin.rs`](../tests/support/tm_bin.rs)
 is the only place that resolves it, and `tests/parity_contract.rs` fails when a
 test uses `CARGO_BIN_EXE_tm` directly. `make qualify` runs `make release` and
 `make verify-release`, then the full suite and `make parity` against
-`target/$(TARGET)/dist/tm`. Run it before a release; it takes about 90 seconds
+`target/$(TARGET)/dist/tm`. The release workflow does not run it, so run it by hand before a release; it takes about 90 seconds
 on x86_64 Linux.
 
 Input timing follows the compiled profile. With `escape-time=0`, a partial
