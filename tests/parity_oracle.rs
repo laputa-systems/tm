@@ -10,7 +10,7 @@ mod raw_pty;
 use std::process::Command;
 use std::time::Duration;
 
-use parity::{ExitStatus, Field, KnownDifference, Mux, Outcome, Scratch};
+use parity::{ExitStatus, Field, GridLimit, IntentionalDifference, Mux, Outcome, Scratch};
 use raw_pty::RawClient;
 
 fn create_session(mux: &Mux) {
@@ -70,10 +70,10 @@ fn listed_difference_must_persist_and_unlisted_difference_fails() {
     let command: &[&str] = &["display-message", "-p", "-t", "S", "hello"];
     let mut diverged = tm.clone();
     diverged.stderr = b"extra".to_vec();
-    let known = [KnownDifference {
+    let known = [IntentionalDifference {
         test: "listed",
         command,
-        parity_row: "row",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stderr,
         tm: "extra",
         reference: "",

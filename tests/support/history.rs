@@ -1,7 +1,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::parity::{
-    KNOWN_DIFFERENCES, Mux, Outcome, Scratch, check_command, observation_difference,
+    INTENTIONAL_DIFFERENCES, Mux, Outcome, Scratch, check_command, observation_difference,
 };
 
 pub struct Rng(u64);
@@ -109,7 +109,7 @@ impl Pair {
     pub fn both(&self, test: &str, arguments: &[&str]) -> Result<(Outcome, Outcome), String> {
         let tm = self.tm.outcome(arguments);
         let reference = self.reference.outcome(arguments);
-        check_command(KNOWN_DIFFERENCES, test, arguments, &tm, &reference)?;
+        check_command(INTENTIONAL_DIFFERENCES, test, arguments, &tm, &reference)?;
         Ok((tm, reference))
     }
 

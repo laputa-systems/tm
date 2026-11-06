@@ -58,11 +58,12 @@ for the whole tmux command or configuration surface.
 A differential test runs one scenario against tm and the reference and
 compares exit status, stdout, and stderr byte for byte, then the resulting
 `list-*` state. Only the scratch paths, the version string, and the
-`tm: `/`tmux: ` error prefix are normalized. A difference that is not yet
-fixed is pinned in `KNOWN_DIFFERENCES` in
+`tm: `/`tmux: ` error prefix are normalized. A difference that comes from a
+limit of tm's `vt100` grid is pinned in `INTENTIONAL_DIFFERENCES` in
 [`tests/support/parity.rs`](../tests/support/parity.rs). The test fails if the
-difference changes or disappears, so fixing it forces the entry out. Each
-entry names its row in the [parity matrix](parity.md).
+difference changes or disappears, so replacing the grid forces the entries
+out. Each entry names its `GridLimit`, which names its row in the
+[parity matrix](parity.md).
 
 Attached observations use the raw-PTY runner in
 [`tests/support/raw_pty.rs`](../tests/support/raw_pty.rs): it opens a PTY,

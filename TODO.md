@@ -11,7 +11,8 @@ Next: 50
 - **Effort:** S
 
 TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-38, TMUX-39, and TMUX-40 are closed
-with tests and commits recorded in git history. Add a new entry here only for a reproduced defect that the current
+with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
+(`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
 
 ### TMUX-12 · P3 · Default pane_title is empty instead of the hostname
@@ -232,33 +233,6 @@ suites do not cover.
 - **Where:** `src/model.rs` layout resize
 - **Problem:** When a client attach or resize changes the size of a window with two or more panes, tm and tmux round the pane rows or columns differently (a 3-pane column at 9 rows is 2/1/4 in tm and 2/2/3 in tmux).
 - **Recommendation:** Redistribute the change over siblings as tmux's `layout_resize` does (see TMUX-15), and drop the `ResizeOfSplitWindow` exclusion.
-- **Fix with:** reference-parity
-- **Effort:** M
-
-### TMUX-41 · P3 · A wide character that cannot fit at the right margin does not mark its row wrapped
-
-- **Area:** Terminal
-- **Where:** `src/terminal.rs` `write_terminal_character`; `vt100` 0.16.2 `Screen::text`
-- **Problem:** tmux marks a row wrapped when a wide character cannot fit in the last column and moves to the next row. `vt100` sets the wrapped flag only when the last cell already has contents, so `capture-pane -J` leaves a break where tmux joins (`abcdefghi` then `中Z` in a 10-column pane). Pinned by the `wide_characters_margin_wrap` entries in `KNOWN_DIFFERENCES`.
-- **Recommendation:** Carry the wrapped flag in tm's own grid layer, or patch the grid so a wide character that does not fit wraps with the flag set.
-- **Fix with:** reference-parity
-- **Effort:** M
-
-### TMUX-42 · P2 · A resize does not reflow wrapped lines
-
-- **Area:** Terminal
-- **Where:** `src/model.rs` `resize_parser_to_rect`; `vt100` `Screen::set_size`
-- **Problem:** tmux reflows wrapped lines and their history when a window narrows or widens, and restores them when it widens again. tm truncates rows on a narrower resize and never recovers the text; a program that does not redraw loses its output. Pinned by the `wide_characters_resize_narrower` and `wide_characters_resize_wider` entries in `KNOWN_DIFFERENCES`.
-- **Recommendation:** Keep per-row wrapped flags and written extents in tm's grid and port `grid_reflow` from tmux 3.8 `grid.c`.
-- **Fix with:** reference-parity
-- **Effort:** L
-
-### TMUX-43 · P3 · History trims one line at a time instead of a tenth of the limit
-
-- **Area:** History
-- **Where:** `src/model.rs` parser scrollback length
-- **Problem:** When the history reaches `history-limit`, tmux 3.8 drops `limit / 10` lines at once (`grid_collect_history`), so the retained history oscillates between 90% and 100%. `vt100` drops one line per scrolled line, so `capture-pane -S -` starts at a different line after the limit is reached. Pinned by the `history_limit_trim_chunk` entries in `KNOWN_DIFFERENCES`.
-- **Recommendation:** Own the scrollback in tm and trim it in tmux's chunks, with a differential probe that prints past the limit one line at a time.
 - **Fix with:** reference-parity
 - **Effort:** M
 

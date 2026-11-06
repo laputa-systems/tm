@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use history::{Pair, Rng};
-use parity::{ExitStatus, KNOWN_DIFFERENCES, Outcome, check_command};
+use parity::{ExitStatus, INTENTIONAL_DIFFERENCES, Outcome, check_command};
 use raw_pty::RawClient;
 
 const DEFAULT_SEEDS: u64 = 64;
@@ -1281,7 +1281,7 @@ impl World {
     fn per_impl(&self, arguments: &[&str], reference_arguments: &[&str]) -> Result<(), String> {
         let tm = self.pair.tm.outcome(arguments);
         let reference = self.pair.reference.outcome(reference_arguments);
-        check_command(KNOWN_DIFFERENCES, "attached", arguments, &tm, &reference)
+        check_command(INTENTIONAL_DIFFERENCES, "attached", arguments, &tm, &reference)
     }
 
     fn reap(&mut self, slot: usize, killed: Option<AttachedExclusion>) -> Result<(), String> {

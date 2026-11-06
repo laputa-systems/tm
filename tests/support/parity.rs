@@ -373,212 +373,231 @@ pub fn observation_difference<T: std::fmt::Debug + PartialEq>(
     (tm != reference).then(|| format!("{what} differ\n tm: {tm:?}\nref: {reference:?}"))
 }
 
-pub struct KnownDifference {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridLimit {
+    ErasedCellExtent,
+    WideCharacterMarginWrap,
+    NoResizeReflow,
+    HistoryTrimGranularity,
+}
+
+impl GridLimit {
+    pub const fn parity_row(self) -> &'static str {
+        match self {
+            Self::ErasedCellExtent => "capture of erased cells",
+            Self::WideCharacterMarginWrap => "wide character at the margin",
+            Self::NoResizeReflow => "resize reflow",
+            Self::HistoryTrimGranularity => "history trim granularity",
+        }
+    }
+}
+
+pub struct IntentionalDifference {
     pub test: &'static str,
     pub command: &'static [&'static str],
-    pub parity_row: &'static str,
+    pub limit: GridLimit,
     pub field: Field,
     pub tm: &'static str,
     pub reference: &'static str,
 }
 
-pub const KNOWN_DIFFERENCES: &[KnownDifference] = &[
-    KnownDifference {
+pub const INTENTIONAL_DIFFERENCES: &[IntentionalDifference] = &[
+    IntentionalDifference {
         test: "capture_keeps_cells_erased_after_being_written",
         command: &["capture-pane", "-p", "-J", "-t", "S"],
-        parity_row: "capture of erased cells",
+        limit: GridLimit::ErasedCellExtent,
         field: Field::Stdout,
         tm: "e\nEND\n\n\n",
         reference: "e     \nEND\n\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "capture_keeps_cells_erased_after_being_written",
         command: &["capture-pane", "-p", "-N", "-t", "S"],
-        parity_row: "capture of erased cells",
+        limit: GridLimit::ErasedCellExtent,
         field: Field::Stdout,
         tm: "e    \nEND  \n\n\n",
         reference: "e         \nEND  \n\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_margin_wrap",
         command: &["capture-pane", "-p", "-e", "-J", "-S", "-", "-t", "S"],
-        parity_row: "wide character at the margin",
+        limit: GridLimit::WideCharacterMarginWrap,
         field: Field::Stdout,
         tm: "READY\nabcdefghi\n中Z\nabcdefgh中Y\nabcdefghi\n😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefghi中Z\nabcdefgh中Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_margin_wrap",
         command: &["capture-pane", "-p", "-J", "-S", "-3", "-E", "2", "-t", "S"],
-        parity_row: "wide character at the margin",
+        limit: GridLimit::WideCharacterMarginWrap,
         field: Field::Stdout,
         tm: "Y\nabcdefghi\n😀Z\nabcdefgh😀Y\n0123456789\n",
         reference: "Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "history_limit_trim_chunk",
         command: &["capture-pane", "-p", "-S", "-", "-t", "S"],
-        parity_row: "history trim granularity",
+        limit: GridLimit::HistoryTrimGranularity,
         field: Field::Stdout,
         tm: "中😀\nL30 abcdef\n中😀\nL31 abcdef\n中😀\nL32 abcdef\n中😀\nL33 abcdef\n中😀\nL34 abcdef\n中😀\nL35 abcdef\n中😀\nL36 abcdef\n中😀\nL37 abcdef\n中😀\nL38 abcdef\n中😀\nL39 abcdef\n中😀\nL40 abcdef\n中😀\nM02\nM03\n\n",
         reference: "L30 abcdef\n中😀\nL31 abcdef\n中😀\nL32 abcdef\n中😀\nL33 abcdef\n中😀\nL34 abcdef\n中😀\nL35 abcdef\n中😀\nL36 abcdef\n中😀\nL37 abcdef\n中😀\nL38 abcdef\n中😀\nL39 abcdef\n中😀\nL40 abcdef\n中😀\nM02\nM03\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "history_limit_trim_chunk",
         command: &["capture-pane", "-p", "-S", "-", "-E", "-", "-t", "S"],
-        parity_row: "history trim granularity",
+        limit: GridLimit::HistoryTrimGranularity,
         field: Field::Stdout,
         tm: "中😀\nL30 abcdef\n中😀\nL31 abcdef\n中😀\nL32 abcdef\n中😀\nL33 abcdef\n中😀\nL34 abcdef\n中😀\nL35 abcdef\n中😀\nL36 abcdef\n中😀\nL37 abcdef\n中😀\nL38 abcdef\n中😀\nL39 abcdef\n中😀\nL40 abcdef\n中😀\nM02\nM03\n\n",
         reference: "L30 abcdef\n中😀\nL31 abcdef\n中😀\nL32 abcdef\n中😀\nL33 abcdef\n中😀\nL34 abcdef\n中😀\nL35 abcdef\n中😀\nL36 abcdef\n中😀\nL37 abcdef\n中😀\nL38 abcdef\n中😀\nL39 abcdef\n中😀\nL40 abcdef\n中😀\nM02\nM03\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "history_limit_trim_chunk",
         command: &["capture-pane", "-p", "-e", "-J", "-S", "-", "-t", "S"],
-        parity_row: "history trim granularity",
+        limit: GridLimit::HistoryTrimGranularity,
         field: Field::Stdout,
         tm: "中😀\nL30 abcdef中😀\nL31 abcdef中😀\nL32 abcdef中😀\nL33 abcdef中😀\nL34 abcdef中😀\nL35 abcdef中😀\nL36 abcdef中😀\nL37 abcdef中😀\nL38 abcdef中😀\nL39 abcdef中😀\nL40 abcdef中😀\nM02\nM03\n\n",
         reference: "L30 abcdef中😀\nL31 abcdef中😀\nL32 abcdef中😀\nL33 abcdef中😀\nL34 abcdef中😀\nL35 abcdef中😀\nL36 abcdef中😀\nL37 abcdef中😀\nL38 abcdef中😀\nL39 abcdef中😀\nL40 abcdef中😀\nM02\nM03\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "h😀Y\n0123456\n789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-J", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "h😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-e", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "h😀Y\n0123456\n789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-e", "-J", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "h😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-N", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY  \n0123456\ne\u{301}中    \nM01    \n\n",
         reference: "h😀Y   \n0123456\n789\ne\u{301}中  \nM01  \n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-S", "-", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "READY\nabcdefg\n中Z\nabcdefg\nY\nabcdefg\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefg\nhi中Z\nabcdefg\nh中Y\nabcdefg\nhi😀Z\nabcdefg\nh😀Y\n0123456\n789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-S", "-", "-E", "-", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "READY\nabcdefg\n中Z\nabcdefg\nY\nabcdefg\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefg\nhi中Z\nabcdefg\nh中Y\nabcdefg\nhi😀Z\nabcdefg\nh😀Y\n0123456\n789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-e", "-J", "-S", "-", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "READY\nabcdefg\n中Z\nabcdefgY\nabcdefg\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefghi中Z\nabcdefgh中Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_narrower",
         command: &["capture-pane", "-p", "-J", "-S", "-3", "-E", "2", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "Y\nabcdefg\n😀Z\nabcdefg\nY\n0123456\n",
         reference: "abcdefghi😀Z\nabcdefgh😀Y\n0123456789\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "abcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-J", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "abcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-e", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "abcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-e", "-J", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "abcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-N", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "abcdefg       \nY  \n0123456       \ne\u{301}中    \nM01    \n\n",
         reference: "abcdefghi😀Z  \nabcdefgh😀Y   \n0123456789    \ne\u{301}中  \nM01  \n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-S", "-", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "READY\nabcdefghi\n中Z\nabcdefgh中\nY\nabcdefghi\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefghi中Z\nabcdefgh中Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-S", "-", "-E", "-", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "READY\nabcdefghi\n中Z\nabcdefgh中\nY\nabcdefghi\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefghi中Z\nabcdefgh中Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-e", "-J", "-S", "-", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "READY\nabcdefghi\n中Z\nabcdefgh中Y\nabcdefghi\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefghi中Z\nabcdefgh中Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
-    KnownDifference {
+    IntentionalDifference {
         test: "wide_characters_resize_wider",
         command: &["capture-pane", "-p", "-J", "-S", "-3", "-E", "2", "-t", "S"],
-        parity_row: "resize reflow",
+        limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
         tm: "Y\nabcdefghi\n😀Z\nabcdefg\nY\n0123456\n",
         reference: "READY\nabcdefghi中Z\nabcdefgh中Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\n",
@@ -586,7 +605,7 @@ pub const KNOWN_DIFFERENCES: &[KnownDifference] = &[
 ];
 
 pub fn check_command(
-    known: &[KnownDifference],
+    known: &[IntentionalDifference],
     test: &str,
     arguments: &[&str],
     tm: &Outcome,
@@ -603,8 +622,8 @@ pub fn check_command(
             difference.field, difference.tm, difference.reference
         )),
         (Some(entry), None) => Err(format!(
-            "{test} {arguments:?}: now matches the reference; remove its KNOWN_DIFFERENCES entry ({})",
-            entry.parity_row
+            "{test} {arguments:?}: now matches the reference; remove its INTENTIONAL_DIFFERENCES entry ({})",
+            entry.limit.parity_row()
         )),
         (Some(entry), Some(difference)) => {
             if difference.field == entry.field
@@ -614,8 +633,8 @@ pub fn check_command(
                 Ok(())
             } else {
                 Err(format!(
-                    "{test} {arguments:?}: difference no longer matches its KNOWN_DIFFERENCES entry ({})\n tm: {}\nref: {}",
-                    entry.parity_row, difference.tm, difference.reference
+                    "{test} {arguments:?}: difference no longer matches its INTENTIONAL_DIFFERENCES entry ({})\n tm: {}\nref: {}",
+                    entry.limit.parity_row(), difference.tm, difference.reference
                 ))
             }
         }
@@ -625,7 +644,7 @@ pub fn check_command(
 pub fn compare_commands(test: &str, tm: &Mux, reference: &Mux, commands: &[&[&str]]) {
     for arguments in commands {
         if let Err(message) = check_command(
-            KNOWN_DIFFERENCES,
+            INTENTIONAL_DIFFERENCES,
             test,
             arguments,
             &tm.outcome(arguments),
