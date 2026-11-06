@@ -11504,12 +11504,19 @@ fn render_status_line(
     message: Option<&str>,
     prompt: Option<&str>,
 ) {
-    let effective_options: HashMap<String, String> = global_options
-        .iter()
-        .chain(&session.options)
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    let options = &effective_options;
+    let effective_options: std::borrow::Cow<'_, HashMap<String, String>> =
+        if session.options.is_empty() {
+            std::borrow::Cow::Borrowed(global_options)
+        } else {
+            std::borrow::Cow::Owned(
+                global_options
+                    .iter()
+                    .chain(&session.options)
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            )
+        };
+    let options = effective_options.as_ref();
     if options
         .get("status")
         .is_some_and(|value| !parse_on_off(value).unwrap_or(true))
