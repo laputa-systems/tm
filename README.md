@@ -20,31 +20,24 @@ tm attach-session -t work       # attach to the session
 tm kill-session -t work
 ```
 
-The default socket is `tm-<uid>/default` in `$TMPDIR`, or in `/tmp` when `TMPDIR`
-is unset, where `<uid>` is the effective user id. tm creates the `tm-<uid>`
-directory with mode 0700 and refuses to start when it is a symlink, is owned by
-another user, or has group or other permission bits. The client refuses a
-socket that another user owns, and the daemon replaces an existing path only
-when it is a socket owned by the same user. `TM_SOCKET` overrides the default
-path and `-S path` overrides both. A daemon first started on the socket named by `TM_SOCKET` uses the baseline settings and
-bindings, including the `C-b` prefix.
+The default socket is `tm-<uid>/default` in `$TMPDIR`, or in `/tmp` when
+`TMPDIR` is unset, where `<uid>` is the effective user id. tm keeps that
+directory private (mode 0700, owned by you) and refuses to use it otherwise,
+and it refuses to connect to a socket another user owns. `TM_SOCKET` overrides
+the default path and `-S path` overrides both. A daemon first started on the
+socket named by `TM_SOCKET` uses the baseline settings and bindings, including
+the `C-b` prefix. The daemon writes errors and received signals to
+`<socket>.log` beside the socket.
 
-Each pane runs with `TM_SOCKET` set to its server's socket path and `TM_PANE`
-set to `%<pane id>`. A `tm` command run in a pane without `-S` therefore talks
-to that pane's server, and an omitted target resolves from that pane: its
-session, that session's current window, and the window's active pane, as tmux
-does with `TMUX` and `TMUX_PANE`. tm never reads or sets `TMUX` or `TMUX_PANE`,
-so it can run inside a real tmux. The client sends `TM_PANE` only when the
-socket it connects to is the one named by `TM_SOCKET`. If that pane no longer
-exists, the command resolves as if run outside any pane.
+Each pane runs with `TM_SOCKET` set to its server's socket and `TM_PANE` set to
+`%<pane id>`, so a `tm` command run in a pane talks to that pane's server, and
+an omitted target resolves from that pane, as tmux does with `TMUX` and
+`TMUX_PANE`. tm never reads or sets `TMUX` or `TMUX_PANE`, so it can run inside
+a real tmux.
 
 The client and daemon check a protocol version on every connection. After an
-upgrade, a client that finds a daemon started by another version prints
-`tm server at <socket> runs a different protocol; run tm -S <socket> kill-server`
-and exits nonzero. `kill-server` works across versions: it signals the old
-daemon with `SIGTERM`. See
-[Wire protocol](docs/architecture.md#wire-protocol) for the recovery steps. A command with more than 1024 command arguments is refused
-by the client before it connects.
+upgrade, other commands fail against a daemon started by the old version until
+you stop it with `tm -S <socket> kill-server`, which works across versions.
 
 The normal prefix is `C-a`. `C-a %` and `C-a "` split panes, `C-a h`, `C-a j`,
 and `C-a l` move between panes, `C-a k` kills the current pane, `C-a d`
@@ -90,29 +83,16 @@ Changed behavior:
   ending a client prints `[detached (from session <name>)]` or `[exited]`.
 - Status messages disappear after `display-time` instead of at the next
   request.
-
-Wire protocol: client and daemon exchange a protocol version on every
-connection, and the version changes whenever the format does. After an
-upgrade, run `tm -S <socket> kill-server` with the new binary: on a version
-mismatch it reads the daemon's pid from the socket, checks that the daemon runs
-as you, sends `SIGTERM`, and returns once the socket stops accepting. Any other
-command that meets a daemon of another version prints the message above and
-exits nonzero. A command with more
-than 1024 arguments is refused by the client.
-
-Default socket: the default socket moved from `<tmpdir>/tm-<uid>.sock` to
-`<tmpdir>/tm-<uid>/default` in a private directory. A daemon started by an older
-build keeps its old path and is not found; stop it with that build's
-`kill-server` or `SIGTERM`. A `-S` or `TM_SOCKET` path that names an existing
-file that is not your socket is now an error instead of being deleted.
-
-Environment: panes export `TM_SOCKET` and `TM_PANE` and omitted targets resolve
-from the calling pane. A daemon started with `-S` from inside a pane no longer
-inherits the baseline profile unless `TM_SOCKET` names its own socket.
-
-The daemon writes `<socket>.log` next to the socket. It holds the listening
-address, daemon errors, and received signals, is truncated when the daemon
-starts, and is capped at 1 MiB.
+- Client and daemon check a protocol version on every connection, and a
+  command with more than 1024 arguments is refused by the client.
+- The default socket moved from `<tmpdir>/tm-<uid>.sock` to the private
+  `<tmpdir>/tm-<uid>/default`. A daemon started by an older build is not found
+  there; stop it with that build's `kill-server` or `SIGTERM`. A `-S` or
+  `TM_SOCKET` path naming an existing file that is not your socket is an error
+  instead of being deleted.
+- Panes export `TM_SOCKET` and `TM_PANE`, and omitted targets resolve from the
+  calling pane. A daemon started with `-S` from inside a pane no longer
+  inherits the baseline profile unless `TM_SOCKET` names its own socket.
 
 Run `tm help` for the command summary. Report problems in the
 [issue tracker](https://github.com/laputa-systems/tm/issues). The project is

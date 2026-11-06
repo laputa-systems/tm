@@ -6,11 +6,14 @@ a local Unix socket and attached clients render that state in the user's
 terminal.
 
 The entry point and command parser are in [`src/main.rs`](../src/main.rs) and
-[`src/command.rs`](../src/command.rs). The client and daemon are in
+[`src/command.rs`](../src/command.rs), and the wire format is in
+[`src/protocol.rs`](../src/protocol.rs). The client and daemon are in
 [`src/client.rs`](../src/client.rs) and [`src/server.rs`](../src/server.rs).
 PTY creation and terminal output handling are in [`src/pty.rs`](../src/pty.rs)
-and [`src/terminal.rs`](../src/terminal.rs). Display width, wide cells,
-combining marks, tab stops, and column mapping live in
+and [`src/terminal.rs`](../src/terminal.rs); copy mode and capture are in
+[`src/copy_mode.rs`](../src/copy_mode.rs) and [`src/capture.rs`](../src/capture.rs).
+The tmux option table is [`src/options.rs`](../src/options.rs). Display width,
+wide cells, combining marks, tab stops, and column mapping live in
 [`src/cells.rs`](../src/cells.rs).
 
 Interactive startup settings and key bindings live in
@@ -71,8 +74,6 @@ version bump.
 
 ## Pane context
 
-Each pane runs with `TM_SOCKET` set to its server's socket path and `TM_PANE`
-set to `%<pane id>`. tm never reads or sets `TMUX` or `TMUX_PANE`. The client
-sends `TM_PANE` with each request only when it connects to the socket named by
-`TM_SOCKET`, and the daemon resolves omitted targets from that pane. A pane
-that no longer exists resolves as outside any pane.
+Pane context follows the rules in the [README](../README.md#use): the client
+sends `TM_PANE` with a request only when it connects to the socket named by
+`TM_SOCKET`, and a pane that no longer exists resolves as outside any pane.
