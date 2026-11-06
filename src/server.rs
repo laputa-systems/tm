@@ -2555,7 +2555,9 @@ impl ServerState {
                         client.key_events.clear();
                         client.key_deadline = None;
                     }
-                    self.write_active_key(session_id, &key, cursor);
+                    if key.focus.is_some() {
+                        self.write_active_key(session_id, &key, cursor);
+                    }
                     break;
                 }
                 let mut remainder = key.clone();
@@ -2586,15 +2588,15 @@ impl ServerState {
                     schedule_key_flush(shared, client_id, timer_token, deadline);
                     break;
                 }
-                let (events, _) = {
+                {
                     let Some(client) = self.clients.get_mut(&client_id) else {
                         return;
                     };
                     client.prefix_pending = false;
                     client.key_buffer.clear();
                     client.key_deadline = None;
-                    (std::mem::take(&mut client.key_events), ())
-                };
+                    client.key_events.clear();
+                }
                 if let Some(binding) = exact {
                     if binding._repeat {
                         let deadline = Instant::now() + Duration::from_millis(REPEAT_TIME_MS);
@@ -2616,7 +2618,6 @@ impl ServerState {
                         client.repeat_binding = None;
                         client.repeat_deadline = None;
                     }
-                    self.write_active_key_events(session_id, &events);
                 }
                 break;
             }
@@ -2632,6 +2633,7 @@ impl ServerState {
         if offset > 0 {
             key.codepoint = None;
             key.modifier = 1;
+                        client.prefix_pending = candidate == self.prefix;
         }
         self.write_active_key_events(session_id, &[key]);
     }
@@ -2969,26 +2971,14 @@ impl ServerState {
     }
 
     fn flush_expired_key(&mut self, client_id: u64, token: u64) -> bool {
-        let (session_id, events) = {
-            let Some(client) = self.clients.get(&client_id) else {
-                return false;
-            };
-            let Some((deadline, stored)) = client.key_deadline else {
-                return false;
-            };
-            if stored != token || Instant::now() < deadline || !client.prefix_pending {
-                return false;
-            }
-            let client = self.clients.get_mut(&client_id).unwrap();
-            client.key_buffer.clear();
-            (client.session_id, std::mem::take(&mut client.key_events))
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return false;
         };
-        if let Some(client) = self.clients.get_mut(&client_id) {
-            client.key_deadline = None;
-            client.prefix_pending = false;
-        }
-        if !events.is_empty() {
-            self.write_active_key_events(session_id, &events);
+        let Some((deadline, stored)) = client.key_deadline else {
+            return false;
+        };
+        if stored != token || Instant::now() < deadline || !client.prefix_pending {
+            return false;
         }
         true
     }
@@ -3007,6 +2997,10 @@ impl ServerState {
             client.repeat_key = None;
             client.repeat_binding = None;
             client.repeat_deadline = None;
+        client.key_buffer.clear();
+        client.key_events.clear();
+        client.key_deadline = None;
+        client.prefix_pending = false;
         }
         true
     }

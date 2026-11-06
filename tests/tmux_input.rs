@@ -113,30 +113,6 @@ fn wait_window(mux: &Mux, session: &str, expected: &str) -> String {
     }
 }
 
-#[test]
-fn lone_escape_after_prefix_is_forwarded_once() {
-    let scratch = Scratch::new("input-lone-escape");
-    let tm = Mux::tm(&scratch, "tm");
-    create_byte_session(&tm, "S", 1);
-    let (mut client, baseline) = attach(&tm, "S", "escape");
-    send(&mut client, b"\x01");
-    std::thread::sleep(Duration::from_millis(20));
-    send(&mut client, b"\x1b");
-    wait_hex(&tm, "S", "1b");
-    pty_harness::detach(&mut client, &baseline);
-}
-
-#[test]
-fn unknown_key_after_prefix_drops_the_prefix() {
-    let scratch = Scratch::new("input-unknown");
-    let tm = Mux::tm(&scratch, "tm");
-    create_byte_session(&tm, "S", 1);
-    let (mut client, baseline) = attach(&tm, "S", "unknown");
-    send(&mut client, b"\x01q");
-    wait_hex(&tm, "S", "71");
-    pty_harness::detach(&mut client, &baseline);
-}
-
 fn prefix_bytes_reach_the_pane(mux: &Mux, label: &str, keys: &[u8], count: usize, expected: &str) {
     create_byte_session(mux, "S", count);
     let mut client = RawClient::spawn(mux, label, &["attach-session", "-t", "S"], 24, 80);
@@ -389,6 +365,69 @@ fn split_prefix_window_switch_follows_the_reference() {
 // has not answered its DA2, XDA, DECRQM 2026 and OSC 10/11 queries, and the raw
 // PTY runner answers only DA1, so the pause must exceed that raised delay.
 const PAUSE_PAST_UNANSWERED_QUERY_ESCAPE_DELAY: Duration = Duration::from_millis(700);
+
+fn bytes_after_unbound_prefix_keys(mux: &Mux, label: &str, steps: &[&[u8]]) -> String {
+    mux.ok(&[
+        "new-session",
+        "-d",
+        "-s",
+        "S",
+        "-x",
+        "80",
+        "-y",
+        "24",
+        "--",
+        "sh",
+        "-c",
+        "stty -echo raw; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done",
+    ]);
+    let mut client = RawClient::spawn(mux, label, &["attach-session", "-t", "S"], 24, 80);
+    client.wait_for_text("(S)", Duration::from_secs(3));
+    for step in steps {
+        client.write(step);
+        std::thread::sleep(PAUSE_PAST_UNANSWERED_QUERY_ESCAPE_DELAY);
+    }
+    client.write(b"z");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let observed = loop {
+        let captured = mux.ok(&["capture-pane", "-p", "-t", "S"]);
+        let tokens = captured
+            .split_whitespace()
+            .filter(|token| token.len() == 2 && token.chars().all(|c| c.is_ascii_hexdigit()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if tokens.ends_with("7a") || Instant::now() >= deadline {
+            break tokens;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(client.detach(), Some(0));
+    observed
+}
+
+#[test]
+fn keys_unbound_in_the_prefix_table_are_dropped_like_the_reference() {
+    let scratch = Scratch::new("in-unbound-prefix");
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    let cases: [(&str, &[&[u8]]); 5] = [
+        ("printable", &[b"\x01q"]),
+        ("second prefix then printable", &[b"\x01\x01q"]),
+        ("lone escape", &[b"\x01", b"\x1b"]),
+        ("escape then printable", &[b"\x01", b"\x1bq"]),
+        ("prefix then unbound control key", &[b"\x01\x07"]),
+    ];
+    let mut mismatches = Vec::new();
+    for (name, steps) in cases {
+        let observed = [&tm, &reference].map(|mux| {
+            let observed = bytes_after_unbound_prefix_keys(mux, "unbound-prefix", steps);
+            mux.ok(&["kill-server"]);
+            observed
+        });
+        mismatches.extend((observed[0] != observed[1]).then_some(name));
+    }
+    assert!(mismatches.is_empty(), "differs from the reference: {mismatches:?}");
+}
 
 #[test]
 fn escape_then_a_delay_longer_than_escape_time_follows_the_reference() {

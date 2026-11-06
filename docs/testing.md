@@ -24,7 +24,8 @@ suite establishes compatibility only for the exercised flows, not for the
 whole tmux command or configuration surface.
 
 Input timing follows the compiled profile. With `escape-time=0`, a partial
-prefix or terminal sequence gets a 1 ms deadline before it is forwarded, while
+terminal sequence gets a 1 ms deadline before it is forwarded and a key that
+is unbound in the prefix table is dropped, as tmux drops it, while
 repeat mode uses tmux's 500 ms `repeat-time` window and refreshes on each
 repeat. Paste payloads and repeat deadlines are covered by their focused
 suites; tests wait for pane bytes or terminal state instead of assuming a
