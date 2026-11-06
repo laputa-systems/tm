@@ -856,12 +856,9 @@ fn parse_copy_mode(
         source: flags.value('s').map(str::to_owned),
         exit_on_scroll: flags.has('e'),
         hide_position: flags.has('H'),
-        kill_on_exit: false,
         page,
         page_down: flags.has('d'),
         reset: flags.has('q'),
-        mouse_start: false,
-        scroll_to_mouse: false,
     }))
 }
 
@@ -874,15 +871,11 @@ fn parse_display_panes(arguments: &[String]) -> Result<InvocationSpec, String> {
     }
     Ok(InvocationSpec::plain(Request::DisplayPanes {
         target: flags.value('t').map(str::to_owned),
-        source: None,
-        no_zoom: false,
-        no_mode: false,
         command: flags
             .positional
             .first()
             .map(|template| crate::config::tokenize(template))
             .unwrap_or_default(),
-        kill_on_exit: false,
     }))
 }
 
@@ -906,32 +899,18 @@ fn choose_target(
 fn parse_choose_tree(arguments: &[String]) -> Result<InvocationSpec, String> {
     Ok(InvocationSpec::plain(Request::ChooseTree {
         target: choose_target("choose-tree", arguments, "F:f:GhK:kNO:rst:wyZ")?,
-        filter: None,
-        format: None,
-        sort: "index".to_owned(),
-        reverse: false,
-        hide_source: false,
-        kill_on_exit: false,
     }))
 }
 
 fn parse_choose_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
     Ok(InvocationSpec::plain(Request::ChooseBuffer {
         target: choose_target("choose-buffer", arguments, "F:f:K:kNO:rt:yZ")?,
-        filter: None,
-        format: None,
-        sort: "index".to_owned(),
-        reverse: false,
-        kill_on_exit: false,
     }))
 }
 
 fn parse_choose_client(arguments: &[String]) -> Result<InvocationSpec, String> {
     Ok(InvocationSpec::plain(Request::ChooseClient {
         target: choose_target("choose-client", arguments, "F:f:hiK:kNO:rt:yZ")?,
-        filter: None,
-        format: None,
-        kill_on_exit: false,
     }))
 }
 

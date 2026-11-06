@@ -398,7 +398,6 @@ pub(crate) struct CopyModeState {
     pub mark: Option<CopyPosition>,
     pub scroll_offset: usize,
     pub exit_on_scroll: bool,
-    pub kill_on_exit: bool,
     pub hide_position: bool,
     pub refresh_active: bool,
     pub line_numbers: bool,
@@ -424,7 +423,6 @@ pub(crate) struct CopyActionResult {
     pub copied: Option<String>,
     pub append: bool,
     pub exit: bool,
-    pub kill_pane: bool,
     pub pipe_command: Option<String>,
     pub store_buffer: bool,
     pub buffer_prefix: Option<String>,
@@ -436,7 +434,6 @@ pub(crate) struct CopyActionResult {
 pub(crate) struct CopyModeOptions<'a> {
     pub keys: CopyModeKeys,
     pub exit_on_scroll: bool,
-    pub kill_on_exit: bool,
     pub hide_position: bool,
     pub wrap_search: bool,
     pub word_separators: &'a str,
@@ -466,7 +463,6 @@ impl CopyModeState {
             mark: None,
             scroll_offset,
             exit_on_scroll: options.exit_on_scroll,
-            kill_on_exit: options.kill_on_exit,
             hide_position: options.hide_position,
             refresh_active: false,
             line_numbers: false,
@@ -1097,7 +1093,6 @@ impl CopyModeState {
         self.update_cursor_x(parser);
         self.sync_parser(parser);
         if result.exit {
-            result.kill_pane = self.kill_on_exit;
             parser.screen_mut().set_scrollback(0);
         }
         result

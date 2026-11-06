@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_000c;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_000d;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -134,12 +134,9 @@ pub(crate) enum Request {
         source: Option<String>,
         exit_on_scroll: bool,
         hide_position: bool,
-        kill_on_exit: bool,
         page: bool,
         page_down: bool,
         reset: bool,
-        mouse_start: bool,
-        scroll_to_mouse: bool,
     },
     CopyModeCommand {
         target: Option<String>,
@@ -148,34 +145,16 @@ pub(crate) enum Request {
     },
     ChooseTree {
         target: Option<String>,
-        filter: Option<String>,
-        format: Option<String>,
-        sort: String,
-        reverse: bool,
-        hide_source: bool,
-        kill_on_exit: bool,
     },
     ChooseBuffer {
         target: Option<String>,
-        filter: Option<String>,
-        format: Option<String>,
-        sort: String,
-        reverse: bool,
-        kill_on_exit: bool,
     },
     ChooseClient {
         target: Option<String>,
-        filter: Option<String>,
-        format: Option<String>,
-        kill_on_exit: bool,
     },
     DisplayPanes {
         target: Option<String>,
-        source: Option<String>,
-        no_zoom: bool,
-        no_mode: bool,
         command: Vec<String>,
-        kill_on_exit: bool,
     },
     DisplayMessage {
         target: Option<String>,
@@ -643,24 +622,18 @@ fn request_payload(request: &Request, caller_pane: Option<u64>) -> io::Result<Ve
             source,
             exit_on_scroll,
             hide_position,
-            kill_on_exit,
             page,
             page_down,
             reset,
-            mouse_start,
-            scroll_to_mouse,
         } => {
             payload.push(21);
             put_optional_string(&mut payload, target);
             put_optional_string(&mut payload, source);
             put_bool(&mut payload, *exit_on_scroll);
             put_bool(&mut payload, *hide_position);
-            put_bool(&mut payload, *kill_on_exit);
             put_bool(&mut payload, *page);
             put_bool(&mut payload, *page_down);
             put_bool(&mut payload, *reset);
-            put_bool(&mut payload, *mouse_start);
-            put_bool(&mut payload, *scroll_to_mouse);
         }
         Request::CopyModeCommand {
             target,
@@ -963,67 +936,22 @@ fn request_payload(request: &Request, caller_pane: Option<u64>) -> io::Result<Ve
             put_bool(&mut payload, delay_ms.is_some());
             payload.extend_from_slice(&delay_ms.unwrap_or_default().to_le_bytes());
         }
-        Request::ChooseTree {
-            target,
-            filter,
-            format,
-            sort,
-            reverse,
-            hide_source,
-            kill_on_exit,
-        } => {
+        Request::ChooseTree { target } => {
             payload.push(53);
             put_optional_string(&mut payload, target);
-            put_optional_string(&mut payload, filter);
-            put_optional_string(&mut payload, format);
-            put_string(&mut payload, sort);
-            put_bool(&mut payload, *reverse);
-            put_bool(&mut payload, *hide_source);
-            put_bool(&mut payload, *kill_on_exit);
         }
-        Request::ChooseBuffer {
-            target,
-            filter,
-            format,
-            sort,
-            reverse,
-            kill_on_exit,
-        } => {
+        Request::ChooseBuffer { target } => {
             payload.push(54);
             put_optional_string(&mut payload, target);
-            put_optional_string(&mut payload, filter);
-            put_optional_string(&mut payload, format);
-            put_string(&mut payload, sort);
-            put_bool(&mut payload, *reverse);
-            put_bool(&mut payload, *kill_on_exit);
         }
-        Request::ChooseClient {
-            target,
-            filter,
-            format,
-            kill_on_exit,
-        } => {
+        Request::ChooseClient { target } => {
             payload.push(55);
             put_optional_string(&mut payload, target);
-            put_optional_string(&mut payload, filter);
-            put_optional_string(&mut payload, format);
-            put_bool(&mut payload, *kill_on_exit);
         }
-        Request::DisplayPanes {
-            target,
-            source,
-            no_zoom,
-            no_mode,
-            command,
-            kill_on_exit,
-        } => {
+        Request::DisplayPanes { target, command } => {
             payload.push(56);
             put_optional_string(&mut payload, target);
-            put_optional_string(&mut payload, source);
-            put_bool(&mut payload, *no_zoom);
-            put_bool(&mut payload, *no_mode);
             put_strings(&mut payload, command)?;
-            put_bool(&mut payload, *kill_on_exit);
         }
     }
     put_optional_u64(&mut payload, caller_pane);
@@ -1179,12 +1107,9 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<(Request, Optio
             source: decoder.optional_string()?,
             exit_on_scroll: decoder.bool()?,
             hide_position: decoder.bool()?,
-            kill_on_exit: decoder.bool()?,
             page: decoder.bool()?,
             page_down: decoder.bool()?,
             reset: decoder.bool()?,
-            mouse_start: decoder.bool()?,
-            scroll_to_mouse: decoder.bool()?,
         },
         22 => Request::CopyModeCommand {
             target: decoder.optional_string()?,
@@ -1363,34 +1288,16 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<(Request, Optio
         }
         53 => Request::ChooseTree {
             target: decoder.optional_string()?,
-            filter: decoder.optional_string()?,
-            format: decoder.optional_string()?,
-            sort: decoder.string()?,
-            reverse: decoder.bool()?,
-            hide_source: decoder.bool()?,
-            kill_on_exit: decoder.bool()?,
         },
         54 => Request::ChooseBuffer {
             target: decoder.optional_string()?,
-            filter: decoder.optional_string()?,
-            format: decoder.optional_string()?,
-            sort: decoder.string()?,
-            reverse: decoder.bool()?,
-            kill_on_exit: decoder.bool()?,
         },
         55 => Request::ChooseClient {
             target: decoder.optional_string()?,
-            filter: decoder.optional_string()?,
-            format: decoder.optional_string()?,
-            kill_on_exit: decoder.bool()?,
         },
         56 => Request::DisplayPanes {
             target: decoder.optional_string()?,
-            source: decoder.optional_string()?,
-            no_zoom: decoder.bool()?,
-            no_mode: decoder.bool()?,
             command: decoder.strings()?,
-            kill_on_exit: decoder.bool()?,
         },
         _ => return Err(invalid_data("unknown request tag")),
     };
@@ -1792,62 +1699,16 @@ mod tests {
     }
 
     #[test]
-    fn choose_tree_request_round_trip_preserves_mode_contract() {
-        let request = Request::ChooseTree {
-            target: Some("work:1".to_owned()),
-            filter: Some("#{==:#{session_name},work}".to_owned()),
-            format: Some("#{session_name}:#{window_index}".to_owned()),
-            sort: "name".to_owned(),
-            reverse: true,
-            hide_source: true,
-            kill_on_exit: true,
-        };
-        let bytes = encode_request(&request, None).expect("encode");
-        let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
-        let decoded = read_request_from_payload(&mut cursor).expect("decode");
-        assert!(matches!(
-            decoded,
-            Request::ChooseTree {
-                target: Some(target),
-                filter: Some(filter),
-                format: Some(format),
-                sort,
-                reverse: true,
-                hide_source: true,
-                kill_on_exit: true,
-            } if target == "work:1"
-                && filter == "#{==:#{session_name},work}"
-                && format == "#{session_name}:#{window_index}"
-                && sort == "name"
-        ));
-    }
-
-    #[test]
-    fn buffer_and_client_chooser_requests_round_trip() {
+    fn chooser_requests_round_trip_their_target() {
         for request in [
-            Request::ChooseBuffer {
-                target: Some("work:0".to_owned()),
-                filter: Some("#{==:#{buffer_name},log}".to_owned()),
-                format: Some("#{buffer_name}".to_owned()),
-                sort: "name".to_owned(),
-                reverse: true,
-                kill_on_exit: true,
-            },
-            Request::ChooseClient {
-                target: None,
-                filter: Some("#{==:#{client_session},work}".to_owned()),
-                format: Some("#{client_session}".to_owned()),
-                kill_on_exit: false,
-            },
+            Request::ChooseTree { target: Some("work:1".to_owned()) },
+            Request::ChooseBuffer { target: Some("work:0".to_owned()) },
+            Request::ChooseClient { target: None },
         ] {
             let bytes = encode_request(&request, None).expect("encode");
             let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
             let decoded = read_request_from_payload(&mut cursor).expect("decode");
-            assert!(matches!(
-                (request, decoded),
-                (Request::ChooseBuffer { .. }, Request::ChooseBuffer { .. })
-                    | (Request::ChooseClient { .. }, Request::ChooseClient { .. })
-            ));
+            assert_eq!(decoded, request);
         }
     }
 
@@ -1880,16 +1741,12 @@ mod tests {
     fn display_panes_request_round_trip_preserves_selection_contract() {
         let request = Request::DisplayPanes {
             target: Some("%3".to_owned()),
-            source: Some("work:1".to_owned()),
-            no_zoom: true,
-            no_mode: false,
             command: vec![
                 "set-option".to_owned(),
                 "-g".to_owned(),
                 "@picked".to_owned(),
                 "%%".to_owned(),
             ],
-            kill_on_exit: true,
         };
         let bytes = encode_request(&request, None).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
@@ -1898,13 +1755,8 @@ mod tests {
             decoded,
             Request::DisplayPanes {
                 target: Some(target),
-                source: Some(source),
-                no_zoom: true,
-                no_mode: false,
                 command,
-                kill_on_exit: true,
             } if target == "%3"
-                && source == "work:1"
                 && command == ["set-option", "-g", "@picked", "%%"]
         ));
     }
@@ -1917,24 +1769,18 @@ mod tests {
                 source: Some("work:1.2".to_owned()),
                 exit_on_scroll: true,
                 hide_position: true,
-                kill_on_exit: false,
                 page: false,
                 page_down: true,
                 reset: false,
-                mouse_start: true,
-                scroll_to_mouse: true,
             },
             Request::CopyMode {
                 target: Some("work:0".to_owned()),
                 source: None,
                 exit_on_scroll: false,
                 hide_position: false,
-                kill_on_exit: false,
                 page: false,
                 page_down: false,
                 reset: true,
-                mouse_start: false,
-                scroll_to_mouse: false,
             },
         ] {
             let bytes = encode_request(&request, None).expect("encode");
@@ -1944,23 +1790,13 @@ mod tests {
                 (
                     Request::CopyMode {
                         source: Some(source),
-                        mouse_start,
-                        scroll_to_mouse,
                         ..
                     },
                     Request::CopyMode {
                         source: Some(decoded_source),
-                        mouse_start: decoded_mouse_start,
-                        scroll_to_mouse: decoded_scroll_to_mouse,
                         ..
                     },
-                ) => {
-                    assert_eq!(source, decoded_source);
-                    assert!(mouse_start);
-                    assert!(scroll_to_mouse);
-                    assert_eq!(mouse_start, decoded_mouse_start);
-                    assert_eq!(scroll_to_mouse, decoded_scroll_to_mouse);
-                }
+                ) => assert_eq!(source, decoded_source),
                 (
                     Request::CopyMode { source: None, .. },
                     Request::CopyMode { source: None, .. },
@@ -2291,12 +2127,9 @@ mod tests {
                 source: source.opt_text(),
                 exit_on_scroll: source.flag(),
                 hide_position: source.flag(),
-                kill_on_exit: source.flag(),
                 page: source.flag(),
                 page_down: source.flag(),
                 reset: source.flag(),
-                mouse_start: source.flag(),
-                scroll_to_mouse: source.flag(),
         },
         23 => Request::CopyModeCommand {
                 target: source.opt_text(),
@@ -2305,34 +2138,16 @@ mod tests {
         },
         24 => Request::ChooseTree {
                 target: source.opt_text(),
-                filter: source.opt_text(),
-                format: source.opt_text(),
-                sort: source.text(),
-                reverse: source.flag(),
-                hide_source: source.flag(),
-                kill_on_exit: source.flag(),
         },
         25 => Request::ChooseBuffer {
                 target: source.opt_text(),
-                filter: source.opt_text(),
-                format: source.opt_text(),
-                sort: source.text(),
-                reverse: source.flag(),
-                kill_on_exit: source.flag(),
         },
         26 => Request::ChooseClient {
                 target: source.opt_text(),
-                filter: source.opt_text(),
-                format: source.opt_text(),
-                kill_on_exit: source.flag(),
         },
         27 => Request::DisplayPanes {
                 target: source.opt_text(),
-                source: source.opt_text(),
-                no_zoom: source.flag(),
-                no_mode: source.flag(),
                 command: source.texts(),
-                kill_on_exit: source.flag(),
         },
         28 => Request::DisplayMessage {
                 target: source.opt_text(),
@@ -2601,7 +2416,7 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_000c;
+    const GOLDEN_VERSION: u32 = 0x544d_000d;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
         "3800000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a90901030000007431325000180000",
@@ -2626,12 +2441,12 @@ mod tests {
         "090000002a0102000000743200",
         "1b00000013010200000074320001fbffffff00010100010300000074313100",
         "020000001400",
-        "12000000150102000000743200010100010100010100",
+        "0f000000150102000000743200010100010100",
         "1300000016010200000074320200000074330400000100",
-        "1a0000003501020000007432000102000000743502000000743601010000",
-        "1900000036010200000074320001020000007435020000007436010100",
-        "12000000370102000000743200010200000074350000",
-        "1e00000038010200000074320001010200000002000000743603000000c3a9090100",
+        "09000000350102000000743200",
+        "09000000360102000000743200",
+        "09000000370102000000743200",
+        "1a00000038010200000074320200000002000000743303000000c3a90900",
         "110000001701020000007432020000007433010100",
         "18000000180102000000743200030000000004ff0102000000743600",
         "09000000190102000000743200",

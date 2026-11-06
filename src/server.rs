@@ -1121,7 +1121,6 @@ struct PaneDisplayMode {
     target_pane: u64,
     previous_zoomed: bool,
     command: Option<Vec<String>>,
-    kill_on_exit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1138,15 +1137,10 @@ struct TreeMode {
     filter: Option<String>,
     filter_input: Option<Vec<u8>>,
     format: String,
-    sort: TreeSort,
-    reverse: bool,
-    hide_source: bool,
-    source_pane: Option<u64>,
     collapsed: HashSet<TreeKey>,
     no_matches: bool,
     confirmation: Option<TreeEntry>,
     confirmation_label: Option<String>,
-    kill_on_exit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1165,12 +1159,9 @@ struct BufferMode {
     filter: Option<String>,
     filter_input: Option<Vec<u8>>,
     format: String,
-    sort: TreeSort,
-    reverse: bool,
     no_matches: bool,
     source_pane: u64,
     tagged: HashSet<String>,
-    kill_on_exit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1187,8 +1178,6 @@ struct ClientMode {
     filter_input: Option<Vec<u8>>,
     format: String,
     no_matches: bool,
-    source_pane: u64,
-    kill_on_exit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1201,12 +1190,6 @@ struct ClientEntry {
 enum TreeKey {
     Session(u64),
     Window(u64),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TreeSort {
-    Index,
-    Name,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1542,10 +1525,6 @@ fn parent_table(table: OptionTable) -> OptionTable {
 struct TreeEntriesOptions<'a> {
     filter: Option<&'a str>,
     format: &'a str,
-    sort: TreeSort,
-    reverse: bool,
-    hide_source: bool,
-    source_pane: Option<u64>,
     collapsed: &'a HashSet<TreeKey>,
 }
 
@@ -3481,7 +3460,7 @@ impl ServerState {
                     let _ = self.execute_copy_action(pane_id, action, 1);
                 } else if !motion {
                     let target = format!("%{pane_id}");
-                    let _ = self.enter_copy_mode(Some(&target), None, false, false, false, false);
+                    let _ = self.enter_copy_mode(Some(&target), None, false, false, false);
                     let _ = self.execute_copy_action(pane_id, action, 1);
                 }
             }
@@ -3551,7 +3530,7 @@ impl ServerState {
                 .find_pane(pane_id)
                 .is_some_and(|pane| pane.copy_mode.is_none())
             {
-                let _ = self.enter_copy_mode(Some(&target), None, false, true, false, false);
+                let _ = self.enter_copy_mode(Some(&target), None, false, true, false);
             }
             let history_limit = self.history_limit;
             if let Some(pane) = self.find_pane_mut(pane_id) {
@@ -3587,7 +3566,7 @@ impl ServerState {
                 .is_some_and(|pane| pane.copy_mode.is_none())
             {
                 let target = format!("%{pane_id}");
-                let _ = self.enter_copy_mode(Some(&target), None, true, false, false, false);
+                let _ = self.enter_copy_mode(Some(&target), None, true, false, false);
             }
             let action = if button == 64 {
                 CopyAction::ScrollUp
@@ -3608,7 +3587,7 @@ impl ServerState {
         }
         if motion && !release && !pane_in_copy_mode {
             let target = format!("%{pane_id}");
-            let _ = self.enter_copy_mode(Some(&target), None, false, false, false, false);
+            let _ = self.enter_copy_mode(Some(&target), None, false, false, false);
         }
         if release && dragging {
             let history_limit = self.history_limit;
@@ -3878,17 +3857,8 @@ impl ServerState {
         };
         match action {
             Some('q') | Some('\x1b') => {
-                let (source_pane, kill_on_exit) = self
-                    .clients
-                    .get(&client_id)
-                    .and_then(|client| client.tree_mode.as_ref())
-                    .map(|mode| (mode.source_pane, mode.kill_on_exit))
-                    .unwrap_or((None, false));
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.tree_mode = None;
-                }
-                if let (Some(source_pane), true) = (source_pane, kill_on_exit) {
-                    let _ = self.kill_pane(Some(&format!("%{source_pane}")), false, None);
                 }
             }
             Some('j') => {
@@ -4055,16 +4025,11 @@ impl ServerState {
     }
 
     fn activate_tree_entry(&mut self, client_id: u64) {
-        let Some((entry, source_pane, kill_on_exit)) = self
+        let Some(entry) = self
             .clients
             .get(&client_id)
             .and_then(|client| client.tree_mode.as_ref())
-            .and_then(|mode| {
-                mode.entries
-                    .get(mode.cursor)
-                    .cloned()
-                    .map(|entry| (entry, mode.source_pane, mode.kill_on_exit))
-            })
+            .and_then(|mode| mode.entries.get(mode.cursor).cloned())
         else {
             return;
         };
@@ -4095,9 +4060,6 @@ impl ServerState {
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.session_id = entry.session_id;
             client.tree_mode = None;
-        }
-        if let (Some(source_pane), true) = (source_pane, kill_on_exit) {
-            let _ = self.kill_pane(Some(&format!("%{source_pane}")), false, None);
         }
     }
 
@@ -4180,17 +4142,8 @@ impl ServerState {
         };
         match action {
             Some('q') | Some('\x1b') => {
-                let (source_pane, kill_on_exit) = self
-                    .clients
-                    .get(&client_id)
-                    .and_then(|client| client.buffer_mode.as_ref())
-                    .map(|mode| (mode.source_pane, mode.kill_on_exit))
-                    .unwrap_or((0, false));
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.buffer_mode = None;
-                }
-                if kill_on_exit {
-                    let _ = self.kill_pane(Some(&format!("%{source_pane}")), false, None);
                 }
             }
             Some('j') => {
@@ -4297,14 +4250,14 @@ impl ServerState {
     }
 
     fn activate_buffer_mode_entry(&mut self, client_id: u64) {
-        let Some((name, pane_id, kill_on_exit)) = self
+        let Some((name, pane_id)) = self
             .clients
             .get(&client_id)
             .and_then(|client| client.buffer_mode.as_ref())
             .and_then(|mode| {
                 mode.entries
                     .get(mode.cursor)
-                    .map(|entry| (entry.name.clone(), mode.source_pane, mode.kill_on_exit))
+                    .map(|entry| (entry.name.clone(), mode.source_pane))
             })
         else {
             return;
@@ -4318,9 +4271,6 @@ impl ServerState {
         );
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.buffer_mode = None;
-        }
-        if kill_on_exit {
-            let _ = self.kill_pane(Some(&format!("%{pane_id}")), false, None);
         }
     }
 
@@ -4403,17 +4353,8 @@ impl ServerState {
         };
         match action {
             Some('q') | Some('\x1b') => {
-                let (source_pane, kill_on_exit) = self
-                    .clients
-                    .get(&client_id)
-                    .and_then(|client| client.client_mode.as_ref())
-                    .map(|mode| (mode.source_pane, mode.kill_on_exit))
-                    .unwrap_or((0, false));
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.client_mode = None;
-                }
-                if kill_on_exit {
-                    let _ = self.kill_pane(Some(&format!("%{source_pane}")), false, None);
                 }
             }
             Some('j') => {
@@ -4471,26 +4412,16 @@ impl ServerState {
     }
 
     fn activate_client_mode_entry(&mut self, client_id: u64) {
-        let (selected, source_pane, kill_on_exit) = self
+        let selected = self
             .clients
             .get(&client_id)
             .and_then(|client| client.client_mode.as_ref())
-            .map(|mode| {
-                (
-                    mode.entries.get(mode.cursor).map(|entry| entry.client_id),
-                    mode.source_pane,
-                    mode.kill_on_exit,
-                )
-            })
-            .unwrap_or((None, 0, false));
+            .and_then(|mode| mode.entries.get(mode.cursor).map(|entry| entry.client_id));
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.client_mode = None;
         }
         if let Some(selected) = selected {
             let _ = self.detach_client(Some(&format!("client{selected}")), false);
-        }
-        if kill_on_exit {
-            let _ = self.kill_pane(Some(&format!("%{source_pane}")), false, None);
         }
     }
 
@@ -4849,22 +4780,6 @@ impl ServerState {
                 Some(layout) => Err(format!("unknown layout: {layout}")),
                 None => Err("select-layout requires a layout".to_owned()),
             },
-            "display-panes" => {
-                parse_panes_mode_command(&command[1..])?;
-                Ok(String::new())
-            }
-            "choose-tree" => {
-                parse_tree_mode_command(&command[1..])?;
-                Ok(String::new())
-            }
-            "choose-buffer" => {
-                parse_buffer_mode_command(&command[1..])?;
-                Ok(String::new())
-            }
-            "choose-client" => {
-                parse_client_mode_command(&command[1..])?;
-                Ok(String::new())
-            }
             _ => {
                 crate::command::parse(command)?;
                 Ok(String::new())
@@ -4998,54 +4913,6 @@ impl ServerState {
                 }
                 continue;
             }
-            if command[0] == "display-panes" {
-                let PanesModeOptions {
-                    target,
-                    source,
-                    no_zoom,
-                    no_mode,
-                    command: selection_command,
-                    kill_on_exit,
-                } = parse_panes_mode_command(&command[1..])?;
-                if no_mode {
-                    if !selection_command.is_empty() {
-                        self.execute_bound_commands(
-                            client_id,
-                            session_id,
-                            ConfigBinding {
-                                _repeat: false,
-                                commands: vec![selection_command],
-                            },
-                            shared,
-                        )?;
-                    }
-                } else {
-                    self.enter_panes_mode(
-                        client_id,
-                        target.as_deref(),
-                        source.as_deref(),
-                        no_zoom,
-                        (!selection_command.is_empty()).then_some(selection_command),
-                        kill_on_exit,
-                    )?;
-                }
-                continue;
-            }
-            if command[0] == "choose-tree" {
-                let options = parse_tree_mode_command(&command[1..])?;
-                self.enter_tree_mode(client_id, options)?;
-                continue;
-            }
-            if command[0] == "choose-buffer" {
-                let options = parse_buffer_mode_command(&command[1..])?;
-                self.enter_buffer_mode(client_id, options)?;
-                continue;
-            }
-            if command[0] == "choose-client" {
-                let options = parse_client_mode_command(&command[1..])?;
-                self.enter_client_mode(client_id, options)?;
-                continue;
-            }
             let mut command = command.clone();
             let current_path = self
                 .sessions
@@ -5065,9 +4932,28 @@ impl ServerState {
                     }
                 }
             }
-            let invocation = crate::command::parse(&command)?;
-            let context = self.exec_context_for_client(session_id);
-            execute_request(self, shared, invocation.request, Some(context))?;
+            match crate::command::parse(&command)?.request {
+                Request::ChooseTree { .. } => {
+                    self.enter_tree_mode(client_id)?;
+                }
+                Request::ChooseBuffer { target } => {
+                    self.enter_buffer_mode(client_id, target)?;
+                }
+                Request::ChooseClient { .. } => {
+                    self.enter_client_mode(client_id)?;
+                }
+                Request::DisplayPanes { target, command } => {
+                    self.enter_panes_mode(
+                        client_id,
+                        target.as_deref(),
+                        (!command.is_empty()).then_some(command),
+                    )?;
+                }
+                request => {
+                    let context = self.exec_context_for_client(session_id);
+                    execute_request(self, shared, request, Some(context))?;
+                }
+            }
         }
         Ok(String::new())
     }
@@ -5409,7 +5295,6 @@ impl ServerState {
         source: Option<&str>,
         exit_on_scroll: bool,
         hide_position: bool,
-        kill_on_exit: bool,
         page: bool,
     ) -> CommandResult {
         let (session_index, window_index, pane_id) = self.resolve_pane_target(target)?;
@@ -5469,7 +5354,6 @@ impl ServerState {
             CopyModeOptions {
                 keys,
                 exit_on_scroll,
-                kill_on_exit,
                 hide_position,
                 wrap_search,
                 word_separators: &word_separators,
@@ -5498,10 +5382,7 @@ impl ServerState {
         &mut self,
         client_id: u64,
         target: Option<&str>,
-        source: Option<&str>,
-        no_zoom: bool,
         command: Option<Vec<String>>,
-        kill_on_exit: bool,
     ) -> CommandResult {
         if self
             .clients
@@ -5533,13 +5414,7 @@ impl ServerState {
             let pane_id = self.sessions[session_index].windows[window_index].active_pane;
             (session_index, window_index, pane_id)
         };
-        let (source_session, source_window, _) = source
-            .map(|source| self.resolve_pane_target(Some(source)))
-            .transpose()?
-            .unwrap_or((target_session, target_window, target_pane));
-        if source_session != target_session {
-            return Err("display-panes source and target must share a session".to_owned());
-        }
+        let (source_session, source_window) = (target_session, target_window);
         let source_window_id = self.sessions[source_session].windows[source_window].id;
         let display_format = self.sessions[source_session].windows[source_window]
             .options
@@ -5590,10 +5465,8 @@ impl ServerState {
         if let Some(pane) = self.find_pane_mut(target_pane) {
             pane.panes_mode = true;
         }
-        if !no_zoom {
-            self.sessions[target_session].windows[target_window].zoomed = true;
-            self.reflow_session(self.sessions[target_session].id);
-        }
+        self.sessions[target_session].windows[target_window].zoomed = true;
+        self.reflow_session(self.sessions[target_session].id);
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.tree_mode = None;
             client.buffer_mode = None;
@@ -5603,7 +5476,6 @@ impl ServerState {
                 target_pane,
                 previous_zoomed,
                 command,
-                kill_on_exit,
             });
         }
         Ok(String::new())
@@ -5627,9 +5499,6 @@ impl ServerState {
         }
         self.sessions[session_index].windows[window_index].zoomed = mode.previous_zoomed;
         self.reflow_session(self.sessions[session_index].id);
-        if mode.kill_on_exit {
-            let _ = self.kill_pane(Some(&format!("%{}", mode.target_pane)), false, None);
-        }
     }
 
     fn activate_panes_mode_entry(&mut self, client_id: u64, pane_id: u64, shared: &SharedState) {
@@ -5694,39 +5563,20 @@ impl ServerState {
     fn enter_tree_mode(
         &mut self,
         client_id: u64,
-        options: TreeModeOptions,
     ) -> CommandResult {
-        let source_pane = options
-            .target
-            .as_deref()
-            .map(|target| {
-                self.resolve_pane_target(Some(target))
-                    .map(|(_, _, pane)| pane)
-            })
-            .transpose()?;
-        let sort = match options.sort.as_str() {
-            "name" => TreeSort::Name,
-            "index" | "" => TreeSort::Index,
-            value => return Err(format!("unknown choose-tree sort: {value}")),
-        };
         let Some(client) = self.clients.get_mut(&client_id) else {
             return Err("client not found".to_owned());
         };
         client.tree_mode = Some(TreeMode {
             entries: Vec::new(),
             cursor: 0,
-            filter: options.filter,
+            filter: None,
             filter_input: None,
-            format: options.format.unwrap_or_default(),
-            sort,
-            reverse: options.reverse,
-            hide_source: options.hide_source,
-            source_pane,
+            format: String::new(),
             collapsed: HashSet::new(),
             no_matches: false,
             confirmation: None,
             confirmation_label: None,
-            kill_on_exit: options.kill_on_exit,
         });
         self.rebuild_tree_mode(client_id);
         Ok(String::new())
@@ -5773,19 +5623,13 @@ impl ServerState {
     fn enter_buffer_mode(
         &mut self,
         client_id: u64,
-        options: BufferModeOptions,
+        target: Option<String>,
     ) -> CommandResult {
-        let source_pane = options
-            .target
+        let source_pane = target
             .as_deref()
             .map(|target| self.resolve_pane_target(Some(target)).map(|(_, _, id)| id))
             .transpose()?
             .unwrap_or(self.client_active_pane(client_id)?);
-        let sort = match options.sort.as_str() {
-            "name" => TreeSort::Name,
-            "index" | "" => TreeSort::Index,
-            value => return Err(format!("unknown choose-buffer sort: {value}")),
-        };
         let Some(client) = self.clients.get_mut(&client_id) else {
             return Err("client not found".to_owned());
         };
@@ -5794,15 +5638,12 @@ impl ServerState {
         client.buffer_mode = Some(BufferMode {
             entries: Vec::new(),
             cursor: 0,
-            filter: options.filter,
+            filter: None,
             filter_input: None,
-            format: options.format.unwrap_or_default(),
-            sort,
-            reverse: options.reverse,
+            format: String::new(),
             no_matches: false,
             source_pane,
             tagged: HashSet::new(),
-            kill_on_exit: options.kill_on_exit,
         });
         self.rebuild_buffer_mode(client_id);
         Ok(String::new())
@@ -5818,8 +5659,6 @@ impl ServerState {
         let (entries, no_matches) = self.build_buffer_entries(
             mode.filter.as_deref(),
             &mode.format,
-            mode.sort,
-            mode.reverse,
         );
         if let Some(mode) = self
             .clients
@@ -5836,8 +5675,6 @@ impl ServerState {
         &self,
         filter: Option<&str>,
         format: &str,
-        sort: TreeSort,
-        reverse: bool,
     ) -> (Vec<BufferEntry>, bool) {
         let mut matching = self
             .buffers
@@ -5858,19 +5695,10 @@ impl ServerState {
         if no_matches {
             matching.extend(self.buffers.iter().map(|buffer| buffer.name.clone()));
         }
-        let mut buffers = self
+        let entries = self
             .buffers
             .iter()
             .filter(|buffer| matching.contains(&buffer.name))
-            .collect::<Vec<_>>();
-        if sort == TreeSort::Name {
-            buffers.sort_by_key(|buffer| buffer.name.clone());
-        }
-        if reverse {
-            buffers.reverse();
-        }
-        let entries = buffers
-            .into_iter()
             .map(|buffer| BufferEntry {
                 name: buffer.name.clone(),
                 text: if format.is_empty() {
@@ -5894,29 +5722,20 @@ impl ServerState {
     fn enter_client_mode(
         &mut self,
         client_id: u64,
-        options: ClientModeOptions,
     ) -> CommandResult {
         if !self.clients.contains_key(&client_id) {
             return Err("client not found".to_owned());
         }
-        let source_pane = options
-            .target
-            .as_deref()
-            .map(|target| self.resolve_pane_target(Some(target)).map(|(_, _, id)| id))
-            .transpose()?
-            .unwrap_or(self.client_active_pane(client_id)?);
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.tree_mode = None;
             client.buffer_mode = None;
             client.client_mode = Some(ClientMode {
                 entries: Vec::new(),
                 cursor: 0,
-                filter: options.filter,
+                filter: None,
                 filter_input: None,
-                format: options.format.unwrap_or_default(),
+                format: String::new(),
                 no_matches: false,
-                source_pane,
-                kill_on_exit: options.kill_on_exit,
             });
         }
         self.rebuild_client_mode(client_id);
@@ -6019,18 +5838,10 @@ impl ServerState {
         };
         let filter = mode.filter.clone();
         let format = mode.format.clone();
-        let sort = mode.sort;
-        let reverse = mode.reverse;
-        let hide_source = mode.hide_source;
-        let source_pane = mode.source_pane;
         let collapsed = mode.collapsed.clone();
         let (entries, no_matches) = self.build_tree_entries(TreeEntriesOptions {
             filter: filter.as_deref(),
             format: &format,
-            sort,
-            reverse,
-            hide_source,
-            source_pane,
             collapsed: &collapsed,
         });
         if let Some(mode) = self
@@ -6048,10 +5859,6 @@ impl ServerState {
         let TreeEntriesOptions {
             filter,
             format,
-            sort,
-            reverse,
-            hide_source,
-            source_pane,
             collapsed,
         } = options;
         let mut matching = HashSet::new();
@@ -6080,25 +5887,10 @@ impl ServerState {
             }
         }
 
-        let mut session_indices = (0..self.sessions.len()).collect::<Vec<_>>();
-        if sort == TreeSort::Name {
-            session_indices.sort_by_key(|index| self.sessions[*index].name.clone());
-        }
-        if reverse {
-            session_indices.reverse();
-        }
         let mut entries = Vec::new();
-        for session_index in session_indices {
-            let session = &self.sessions[session_index];
-            let mut window_indices = session.windows.iter().enumerate().collect::<Vec<_>>();
-            if sort == TreeSort::Name {
-                window_indices.sort_by_key(|(_, window)| window.name.clone());
-            }
-            if reverse {
-                window_indices.reverse();
-            }
+        for session in &self.sessions {
             let mut session_has_match = false;
-            for (_, window) in &window_indices {
+            for window in &session.windows {
                 if window.panes.iter().any(|pane| matching.contains(&pane.id)) {
                     session_has_match = true;
                     break;
@@ -6118,7 +5910,7 @@ impl ServerState {
             if collapsed.contains(&session_key) {
                 continue;
             }
-            for (_, window) in window_indices {
+            for window in &session.windows {
                 let matching_panes = window
                     .panes
                     .iter()
@@ -6139,9 +5931,6 @@ impl ServerState {
                     continue;
                 }
                 for pane in matching_panes {
-                    if hide_source && source_pane == Some(pane.id) {
-                        continue;
-                    }
                     entries.push(TreeEntry {
                         session_id: session.id,
                         window_id: Some(window.id),
@@ -6236,7 +6025,6 @@ impl ServerState {
         let (
             result,
             append,
-            should_kill,
             pipe_command,
             store_buffer,
             buffer_prefix,
@@ -6257,7 +6045,6 @@ impl ServerState {
             pane.copy_prompt_history = mode.prompt_history().to_vec();
             let result = action_result.copied;
             let append = action_result.append;
-            let should_kill = action_result.kill_pane;
             let pipe_command = action_result.pipe_command;
             let store_buffer = action_result.store_buffer;
             let buffer_prefix = action_result.buffer_prefix;
@@ -6279,7 +6066,6 @@ impl ServerState {
             (
                 result,
                 append,
-                should_kill,
                 pipe_command,
                 store_buffer,
                 buffer_prefix,
@@ -6330,10 +6116,6 @@ impl ServerState {
             } else if set_paste {
                 self.store_copy_buffer(buffer_prefix, data);
             }
-        }
-        if should_kill {
-            let target = format!("%{pane_id}");
-            self.kill_pane(Some(&target), false, None)?;
         }
         Ok(String::new())
     }
@@ -12338,12 +12120,9 @@ fn execute_request_inner(
             source,
             exit_on_scroll,
             hide_position,
-            kill_on_exit,
             page,
             page_down,
             reset,
-            mouse_start,
-            scroll_to_mouse,
         } => {
             if reset {
                 let (_, _, pane_id) = state.resolve_pane_target(target.as_deref())?;
@@ -12368,52 +12147,15 @@ fn execute_request_inner(
                 }
                 Ok(String::new())
             } else {
-                // Mouse-triggered copy-mode commands are dispatched with the
-                // event pane in `mouse_context`.  tmux's -M/-S flags use that
-                // pane even when the command was installed as a custom
-                // binding without an explicit target.
-                let mouse_target = state
-                    .mouse_context
-                    .as_ref()
-                    .filter(|_| mouse_start || scroll_to_mouse)
-                    .map(|mouse| format!("%{}", mouse.pane_id));
-                let target = mouse_target.as_deref().or(target.as_deref());
                 state.enter_copy_mode(
-                    target,
+                    target.as_deref(),
                     source.as_deref(),
                     exit_on_scroll,
                     hide_position,
-                    kill_on_exit,
                     page,
                 )?;
-                let pane_id = state.resolve_pane_target(target)?.2;
-                if let Some((mouse_row, mouse_col)) = state
-                    .mouse_context
-                    .as_ref()
-                    .filter(|mouse| mouse.pane_id == pane_id)
-                    .map(|mouse| (mouse.y, mouse.x))
-                {
-                    if mouse_start {
-                        let history_limit = state.history_limit;
-                        if let Some(pane) = state.find_pane_mut(pane_id) {
-                            let mut source_parser = copy_source_parser(pane, history_limit);
-                            if let Some(mode) = pane.copy_mode.as_mut() {
-                                let parser = source_parser
-                                    .as_mut()
-                                    .map_or(&mut pane.parser, |parser| parser);
-                                mode.mouse_position(parser, mouse_row, mouse_col, true, false);
-                            }
-                        }
-                    }
-                    if scroll_to_mouse {
-                        let _ = state.execute_copy_action(
-                            pane_id,
-                            CopyAction::ScrollToMouse(Some(mouse_row)),
-                            1,
-                        );
-                    }
-                }
                 if page_down {
+                    let pane_id = state.resolve_pane_target(target.as_deref())?.2;
                     let _ = state.execute_copy_action(pane_id, CopyAction::PageDown, 1);
                 }
                 Ok(String::new())
@@ -12436,15 +12178,7 @@ fn execute_request_inner(
             }
             state.execute_copy_action(pane_id, parse_copy_action(&action)?, repeat as usize)
         }
-        Request::ChooseTree {
-            target,
-            filter,
-            format,
-            sort,
-            reverse,
-            hide_source,
-            kill_on_exit,
-        } => {
+        Request::ChooseTree { target } => {
             let client_id = if let Some(target) = target.as_deref() {
                 let session_index = state.resolve_pane_target(Some(target))?.0;
                 let session_id = state.sessions[session_index].id;
@@ -12458,90 +12192,23 @@ fn execute_request_inner(
             };
             let client_id =
                 client_id.ok_or_else(|| "choose-tree requires an attached client".to_owned())?;
-            state.enter_tree_mode(
-                client_id,
-                TreeModeOptions {
-                    target,
-                    format,
-                    filter,
-                    sort,
-                    reverse,
-                    hide_source,
-                    kill_on_exit,
-                },
-            )
+            state.enter_tree_mode(client_id)
         }
-        Request::ChooseBuffer {
-            target,
-            filter,
-            format,
-            sort,
-            reverse,
-            kill_on_exit,
-        } => {
+        Request::ChooseBuffer { target } => {
             let client_id = state.client_for_mode_target(target.as_deref())?;
-            state.enter_buffer_mode(
-                client_id,
-                BufferModeOptions {
-                    target,
-                    format,
-                    filter,
-                    sort,
-                    reverse,
-                    kill_on_exit,
-                },
-            )
+            state.enter_buffer_mode(client_id, target)
         }
-        Request::ChooseClient {
-            target,
-            filter,
-            format,
-            kill_on_exit,
-        } => {
+        Request::ChooseClient { target } => {
             let client_id = state.client_for_mode_target(target.as_deref())?;
-            state.enter_client_mode(
-                client_id,
-                ClientModeOptions {
-                    target,
-                    format,
-                    filter,
-                    kill_on_exit,
-                },
-            )
+            state.enter_client_mode(client_id)
         }
-        Request::DisplayPanes {
-            target,
-            source,
-            no_zoom,
-            no_mode,
-            command,
-            kill_on_exit,
-        } => {
+        Request::DisplayPanes { target, command } => {
             let client_id = state.client_for_mode_target(target.as_deref())?;
-            if no_mode {
-                if !command.is_empty() {
-                    let session_id = state.clients[&client_id].session_id;
-                    state.execute_bound_commands(
-                        client_id,
-                        session_id,
-                        ConfigBinding {
-                            _repeat: false,
-                            commands: vec![command],
-                        },
-                        shared,
-                    )?;
-                }
-                Ok(String::new())
-            } else {
-                state.enter_panes_mode(
-                    client_id,
-                    target.as_deref(),
-                    source.as_deref(),
-                    no_zoom,
-                    (!command.is_empty()).then_some(command),
-                    kill_on_exit,
-                )
-            }
+            state.enter_panes_mode(
+                client_id,
+                target.as_deref(),
+                (!command.is_empty()).then_some(command),
+            )
         }
         Request::DisplayMessage {
             target,
@@ -15254,293 +14921,6 @@ fn format_buffer(buffer: &Buffer, format: &str, options: &HashMap<String, String
     render_format_with_options(format, &buffer_values(buffer), options)
 }
 
-struct TreeModeOptions {
-    target: Option<String>,
-    format: Option<String>,
-    filter: Option<String>,
-    sort: String,
-    reverse: bool,
-    hide_source: bool,
-    kill_on_exit: bool,
-}
-
-fn parse_tree_mode_command(arguments: &[String]) -> Result<TreeModeOptions, String> {
-    let mut target = None;
-    let mut format = None;
-    let mut filter = None;
-    let mut sort = "index".to_owned();
-    let mut reverse = false;
-    let mut hide_source = false;
-    let mut kill_on_exit = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-tree -t requires a target".to_owned())?
-                        .clone(),
-                );
-            }
-            "-F" => {
-                index += 1;
-                format = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-tree -F requires a format".to_owned())?
-                        .clone(),
-                );
-            }
-            "-f" => {
-                index += 1;
-                filter = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-tree -f requires a filter".to_owned())?
-                        .clone(),
-                );
-            }
-            "-O" => {
-                index += 1;
-                sort = arguments
-                    .get(index)
-                    .ok_or_else(|| "choose-tree -O requires a sort order".to_owned())?
-                    .clone();
-            }
-            "-r" => reverse = true,
-            "-h" => hide_source = true,
-            "-k" => kill_on_exit = true,
-            "-N" | "-Z" | "-G" => {}
-            value => return Err(format!("unknown choose-tree option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(TreeModeOptions {
-        target,
-        format,
-        filter,
-        sort,
-        reverse,
-        hide_source,
-        kill_on_exit,
-    })
-}
-
-struct PanesModeOptions {
-    target: Option<String>,
-    source: Option<String>,
-    no_zoom: bool,
-    no_mode: bool,
-    command: Vec<String>,
-    kill_on_exit: bool,
-}
-
-fn parse_panes_mode_command(arguments: &[String]) -> Result<PanesModeOptions, String> {
-    let mut target = None;
-    let mut source = None;
-    let mut no_zoom = false;
-    let mut no_mode = false;
-    let mut kill_on_exit = false;
-    let mut command = Vec::new();
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "display-panes -t requires a target".to_owned())?
-                        .clone(),
-                );
-            }
-            "-s" => {
-                index += 1;
-                source = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "display-panes -s requires a source".to_owned())?
-                        .clone(),
-                );
-            }
-            "-Z" => no_zoom = true,
-            "-k" => kill_on_exit = true,
-            "-N" => no_mode = true,
-            "-Nd" => {
-                no_mode = true;
-                if arguments
-                    .get(index + 1)
-                    .is_some_and(|value| !value.starts_with('-'))
-                {
-                    index += 1;
-                }
-            }
-            "-Zd" => {
-                no_zoom = true;
-                if arguments
-                    .get(index + 1)
-                    .is_some_and(|value| !value.starts_with('-'))
-                {
-                    index += 1;
-                }
-            }
-            "-d" => {
-                if arguments
-                    .get(index + 1)
-                    .is_some_and(|value| !value.starts_with('-'))
-                {
-                    index += 1;
-                }
-            }
-            value if value.starts_with("-d") && value.len() > 2 => {}
-            value if value.starts_with('-') => {
-                return Err(format!("unknown display-panes option: {value}"));
-            }
-            _ => {
-                command.extend_from_slice(&arguments[index..]);
-                break;
-            }
-        }
-        index += 1;
-    }
-    Ok(PanesModeOptions {
-        target,
-        source,
-        no_zoom,
-        no_mode,
-        command,
-        kill_on_exit,
-    })
-}
-
-struct BufferModeOptions {
-    target: Option<String>,
-    format: Option<String>,
-    filter: Option<String>,
-    sort: String,
-    reverse: bool,
-    kill_on_exit: bool,
-}
-
-fn parse_buffer_mode_command(arguments: &[String]) -> Result<BufferModeOptions, String> {
-    let mut target = None;
-    let mut format = None;
-    let mut filter = None;
-    let mut sort = "index".to_owned();
-    let mut reverse = false;
-    let mut kill_on_exit = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-buffer -t requires a target".to_owned())?
-                        .clone(),
-                );
-            }
-            "-F" => {
-                index += 1;
-                format = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-buffer -F requires a format".to_owned())?
-                        .clone(),
-                );
-            }
-            "-f" => {
-                index += 1;
-                filter = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-buffer -f requires a filter".to_owned())?
-                        .clone(),
-                );
-            }
-            "-O" => {
-                index += 1;
-                sort = arguments
-                    .get(index)
-                    .ok_or_else(|| "choose-buffer -O requires a sort order".to_owned())?
-                    .clone();
-            }
-            "-r" => reverse = true,
-            "-k" => kill_on_exit = true,
-            "-N" | "-Z" | "-G" => {}
-            value => return Err(format!("unknown choose-buffer option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(BufferModeOptions {
-        target,
-        format,
-        filter,
-        sort,
-        reverse,
-        kill_on_exit,
-    })
-}
-
-struct ClientModeOptions {
-    target: Option<String>,
-    format: Option<String>,
-    filter: Option<String>,
-    kill_on_exit: bool,
-}
-
-fn parse_client_mode_command(arguments: &[String]) -> Result<ClientModeOptions, String> {
-    let mut target = None;
-    let mut format = None;
-    let mut filter = None;
-    let mut kill_on_exit = false;
-    let mut index = 0;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "-t" => {
-                index += 1;
-                target = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-client -t requires a target".to_owned())?
-                        .clone(),
-                );
-            }
-            "-F" => {
-                index += 1;
-                format = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-client -F requires a format".to_owned())?
-                        .clone(),
-                );
-            }
-            "-f" => {
-                index += 1;
-                filter = Some(
-                    arguments
-                        .get(index)
-                        .ok_or_else(|| "choose-client -f requires a filter".to_owned())?
-                        .clone(),
-                );
-            }
-            "-k" => kill_on_exit = true,
-            "-N" | "-Z" | "-G" => {}
-            value => return Err(format!("unknown choose-client option: {value}")),
-        }
-        index += 1;
-    }
-    Ok(ClientModeOptions {
-        target,
-        format,
-        filter,
-        kill_on_exit,
-    })
-}
-
 fn parse_copy_action(value: &str) -> Result<CopyAction, String> {
     let (name, argument) = value
         .split_once('\0')
@@ -16419,19 +15799,11 @@ mod tests {
             .expect("register tree client");
 
         state
-            .enter_tree_mode(
-                client_id,
-                TreeModeOptions {
-                    target: Some("aaa:0".to_owned()),
-                    format: Some("#{session_name}:F".to_owned()),
-                    filter: Some("#{==:#{session_name},aaa}".to_owned()),
-                    sort: "index".to_owned(),
-                    reverse: false,
-                    hide_source: false,
-                    kill_on_exit: false,
-                },
-            )
+            .enter_tree_mode(client_id)
             .expect("enter tree mode");
+        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:F".to_owned();
+        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").filter = Some("#{==:#{session_name},aaa}".to_owned());
+        state.rebuild_tree_mode(client_id);
         let session_id = state.clients[&client_id].session_id;
         let rendered = state
             .render_session(session_id, Some(client_id))
@@ -16453,19 +15825,10 @@ mod tests {
         assert!(state.clients[&client_id].tree_mode.is_none());
 
         state
-            .enter_tree_mode(
-                client_id,
-                TreeModeOptions {
-                    target: Some("aaa:0".to_owned()),
-                    format: Some("#{session_name}:F".to_owned()),
-                    filter: None,
-                    sort: "index".to_owned(),
-                    reverse: false,
-                    hide_source: false,
-                    kill_on_exit: false,
-                },
-            )
+            .enter_tree_mode(client_id)
             .expect("re-enter tree mode");
+        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:F".to_owned();
+        state.rebuild_tree_mode(client_id);
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render unfiltered tree mode");
@@ -16501,19 +15864,11 @@ mod tests {
         );
         state.handle_client_input(client_id, b"c", &shared);
         state
-            .enter_tree_mode(
-                client_id,
-                TreeModeOptions {
-                    target: Some("aaa:0".to_owned()),
-                    format: Some("#{session_name}:F".to_owned()),
-                    filter: Some("#{==:#{session_name},nosuch}".to_owned()),
-                    sort: "index".to_owned(),
-                    reverse: false,
-                    hide_source: true,
-                    kill_on_exit: false,
-                },
-            )
+            .enter_tree_mode(client_id)
             .expect("enter no-match tree mode");
+        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:F".to_owned();
+        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").filter = Some("#{==:#{session_name},nosuch}".to_owned());
+        state.rebuild_tree_mode(client_id);
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render no-match tree mode");
@@ -16545,19 +15900,10 @@ mod tests {
             )
             .expect("add tree window for kill test");
         state
-            .enter_tree_mode(
-                client_id,
-                TreeModeOptions {
-                    target: Some("zzz:0".to_owned()),
-                    format: Some("#{session_name}:G".to_owned()),
-                    filter: None,
-                    sort: "index".to_owned(),
-                    reverse: false,
-                    hide_source: false,
-                    kill_on_exit: false,
-                },
-            )
+            .enter_tree_mode(client_id)
             .expect("re-enter tree mode for kill test");
+        state.clients.get_mut(&client_id).and_then(|client| client.tree_mode.as_mut()).expect("tree mode").format = "#{session_name}:G".to_owned();
+        state.rebuild_tree_mode(client_id);
         state.handle_client_input(client_id, b"gjjjjx", &shared);
         let session_id = state.clients[&client_id].session_id;
         let rendered = state
@@ -16633,18 +15979,11 @@ mod tests {
             .expect("buffer");
 
         state
-            .enter_buffer_mode(
-                client_a,
-                BufferModeOptions {
-                    target: Some("aaa:0".to_owned()),
-                    format: Some("B".to_owned()),
-                    filter: Some("#{m:*log*,#{buffer_sample}}".to_owned()),
-                    sort: "name".to_owned(),
-                    reverse: false,
-                    kill_on_exit: false,
-                },
-            )
+            .enter_buffer_mode(client_a, Some("aaa:0".to_owned()))
             .expect("enter buffer mode");
+        state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").format = "B".to_owned();
+        state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").filter = Some("#{m:*log*,#{buffer_sample}}".to_owned());
+        state.rebuild_buffer_mode(client_a);
         let session_id = state.clients[&client_a].session_id;
         let rendered = state
             .render_session(session_id, Some(client_a))
@@ -16662,18 +16001,11 @@ mod tests {
         state.handle_client_input(client_a, b"q", &shared);
 
         state
-            .enter_buffer_mode(
-                client_a,
-                BufferModeOptions {
-                    target: Some("aaa:0".to_owned()),
-                    format: Some("B".to_owned()),
-                    filter: Some("#{==:#{buffer_name},nosuch}".to_owned()),
-                    sort: "index".to_owned(),
-                    reverse: false,
-                    kill_on_exit: false,
-                },
-            )
+            .enter_buffer_mode(client_a, Some("aaa:0".to_owned()))
             .expect("enter no-match buffer mode");
+        state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").format = "B".to_owned();
+        state.clients.get_mut(&client_a).and_then(|client| client.buffer_mode.as_mut()).expect("buffer mode").filter = Some("#{==:#{buffer_name},nosuch}".to_owned());
+        state.rebuild_buffer_mode(client_a);
         let rendered = state
             .render_session(session_id, Some(client_a))
             .expect("render no-match buffer mode");
@@ -16690,32 +16022,17 @@ mod tests {
             .set_paste_buffer(Some("bufa".to_owned()), b"paste".to_vec(), false)
             .expect("buffer");
         state
-            .enter_buffer_mode(
-                client_a,
-                BufferModeOptions {
-                    target: Some("aaa:0".to_owned()),
-                    format: None,
-                    filter: None,
-                    sort: "index".to_owned(),
-                    reverse: false,
-                    kill_on_exit: false,
-                },
-            )
+            .enter_buffer_mode(client_a, Some("aaa:0".to_owned()))
             .expect("re-enter buffer mode");
         state.handle_client_input(client_a, b"\r", &shared);
         assert!(state.clients[&client_a].buffer_mode.is_none());
 
         state
-            .enter_client_mode(
-                client_a,
-                ClientModeOptions {
-                    target: Some("aaa:0".to_owned()),
-                    format: Some("C=#{client_session}".to_owned()),
-                    filter: Some("#{==:#{client_session},bbb}".to_owned()),
-                    kill_on_exit: false,
-                },
-            )
+            .enter_client_mode(client_a)
             .expect("enter client mode");
+        state.clients.get_mut(&client_a).and_then(|client| client.client_mode.as_mut()).expect("client mode").format = "C=#{client_session}".to_owned();
+        state.clients.get_mut(&client_a).and_then(|client| client.client_mode.as_mut()).expect("client mode").filter = Some("#{==:#{client_session},bbb}".to_owned());
+        state.rebuild_client_mode(client_a);
         let rendered = state
             .render_session(session_id, Some(client_a))
             .expect("render client mode");
@@ -16780,7 +16097,7 @@ mod tests {
         let pane1 = state.sessions[0].windows[0].panes[1].id;
         let target = format!("%{pane0}");
         state
-            .enter_panes_mode(client_id, Some(&target), None, false, None, false)
+            .enter_panes_mode(client_id, Some(&target), None)
             .expect("enter panes mode");
         assert!(state.sessions[0].windows[0].zoomed);
         assert!(state.find_pane(pane0).is_some_and(|pane| pane.panes_mode));
@@ -16809,9 +16126,8 @@ mod tests {
         assert!(state.find_pane(pane0).is_some_and(|pane| !pane.panes_mode));
 
         state
-            .enter_panes_mode(client_id, Some(&target), None, true, None, false)
-            .expect("enter unzoomed panes mode");
-        assert!(!state.sessions[0].windows[0].zoomed);
+            .enter_panes_mode(client_id, Some(&target), None)
+            .expect("enter panes mode again");
         state.handle_client_input(client_id, b"1", &shared);
         assert_eq!(state.sessions[0].windows[0].active_pane, pane1);
         assert!(state.clients[&client_id].panes_mode.is_none());
@@ -16823,15 +16139,12 @@ mod tests {
             .enter_panes_mode(
                 client_id,
                 Some(&target),
-                None,
-                true,
                 Some(vec![
                     "set-option".to_owned(),
                     "-g".to_owned(),
                     "@picked".to_owned(),
                     "%%".to_owned(),
                 ]),
-                false,
             )
             .expect("enter panes selection command");
         state.handle_client_input(client_id, b"1", &shared);
@@ -16841,10 +16154,10 @@ mod tests {
         );
 
         state
-            .enter_copy_mode(Some(&target), None, false, false, false, false)
+            .enter_copy_mode(Some(&target), None, false, false, false)
             .expect("enter copy mode before panes stack");
         state
-            .enter_panes_mode(client_id, Some(&target), None, true, None, false)
+            .enter_panes_mode(client_id, Some(&target), None)
             .expect("stack panes mode over copy mode");
         assert_eq!(
             state
@@ -16862,10 +16175,10 @@ mod tests {
             .execute_copy_action(pane0, CopyAction::Cancel, 1)
             .expect("cancel stacked copy mode");
         state
-            .enter_panes_mode(client_id, Some(&target), None, true, None, false)
+            .enter_panes_mode(client_id, Some(&target), None)
             .expect("enter panes mode before copy replacement");
         state
-            .enter_copy_mode(Some(&target), None, false, false, false, false)
+            .enter_copy_mode(Some(&target), None, false, false, false)
             .expect("replace panes mode with copy mode");
         assert!(
             state
@@ -17350,107 +16663,6 @@ mod tests {
     }
 
     #[test]
-    fn mode_kill_flags_remove_the_pane_that_entered_each_mode_headlessly() {
-        let shared = Arc::new(Mutex::new(ServerState::new()));
-        let mut state = shared.lock().expect("server state lock");
-        state
-            .create_session(
-                &shared,
-                CreateSessionOptions {
-                    name: Some("mode-kill"),
-                    attach_existing: false,
-                    group_target: None,
-                    format: None,
-                    window_name: None,
-                    empty: true,
-                    command: &[],
-                    cwd: None,
-                    size: Size::new(40, 8),
-                },
-            )
-            .expect("create mode-kill session");
-        state
-            .set_paste_buffer(Some("kill-buffer".to_owned()), b"buffer".to_vec(), false)
-            .expect("buffer");
-        let (_, client_id) = state
-            .register_client(Some("mode-kill"), Size::new(40, 8))
-            .expect("register mode-kill client");
-
-        for mode in ["tree", "buffer", "client", "panes"] {
-            if state.sessions[0].windows[0].panes.len() == 1 {
-                state
-                    .split_window(
-                        &shared,
-                        SplitWindowOptions {
-                            target: Some("mode-kill:0"),
-                            horizontal: true,
-                            before: false,
-                            detached: false,
-                            zoom: false,
-                            empty: true,
-                            split_size: None,
-                            percentage: None,
-                            command: &[],
-                            cwd: None,
-                            format: None,
-                        },
-                    )
-                    .expect("split mode-kill pane");
-            }
-            let pane_id = state.sessions[0].windows[0].active_pane;
-            let _ = match mode {
-                "tree" => state
-                    .enter_tree_mode(
-                        client_id,
-                        TreeModeOptions {
-                            target: Some("mode-kill:0".to_owned()),
-                            format: None,
-                            filter: None,
-                            sort: "index".to_owned(),
-                            reverse: false,
-                            hide_source: false,
-                            kill_on_exit: true,
-                        },
-                    )
-                    .expect("enter kill tree mode"),
-                "buffer" => state
-                    .enter_buffer_mode(
-                        client_id,
-                        BufferModeOptions {
-                            target: Some("mode-kill:0".to_owned()),
-                            format: None,
-                            filter: None,
-                            sort: "index".to_owned(),
-                            reverse: false,
-                            kill_on_exit: true,
-                        },
-                    )
-                    .expect("enter kill buffer mode"),
-                "client" => state
-                    .enter_client_mode(
-                        client_id,
-                        ClientModeOptions {
-                            target: Some("mode-kill:0".to_owned()),
-                            format: None,
-                            filter: None,
-                            kill_on_exit: true,
-                        },
-                    )
-                    .expect("enter kill client mode"),
-                "panes" => state
-                    .enter_panes_mode(client_id, Some("mode-kill:0"), None, true, None, true)
-                    .expect("enter kill panes mode"),
-                _ => unreachable!(),
-            };
-            state.handle_client_input(client_id, b"q", &shared);
-            assert!(
-                state.find_pane(pane_id).is_none(),
-                "{mode} -k left the entering pane alive"
-            );
-        }
-    }
-
-    #[test]
     fn synchronized_panes_receive_active_input_headlessly() {
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let left = vec![
@@ -17622,7 +16834,7 @@ mod tests {
         pane.parser.process(b"one\ntwo\nthree\nfour\n");
         pane.raw_output = b"one\ntwo\nthree\nfour\n".to_vec();
         state
-            .enter_copy_mode(Some("render-copy"), None, false, false, false, false)
+            .enter_copy_mode(Some("render-copy"), None, false, false,  false)
             .expect("enter copy mode");
         let pane_id = state.sessions[0].windows[0].panes[0].id;
         state
@@ -17702,7 +16914,7 @@ mod tests {
         pane.raw_output = output.as_bytes().to_vec();
         let session_id = state.sessions[0].id;
         state
-            .enter_copy_mode(Some("redraw-tail"), None, false, true, false, false)
+            .enter_copy_mode(Some("redraw-tail"), None, false, true,  false)
             .expect("enter redraw copy mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -17797,7 +17009,6 @@ mod tests {
                 false,
                 true,
                 false,
-                false,
             )
             .expect("enter source copy mode");
         let rendered = state
@@ -17841,7 +17052,7 @@ mod tests {
         pane.parser.process(output);
         pane.raw_output = output.to_vec();
         state
-            .enter_copy_mode(Some("copy-format"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-format"), None, false, false,  false)
             .expect("enter copy format mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -17888,7 +17099,7 @@ mod tests {
             .set_global_option("copy-mode-line-numbers", "absolute")
             .expect("set absolute line numbers");
         state
-            .enter_copy_mode(Some("copy-lines"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-lines"), None, false, false,  false)
             .expect("enter absolute copy mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -17906,7 +17117,7 @@ mod tests {
             .set_global_option("copy-mode-line-numbers", "relative")
             .expect("set relative line numbers");
         state
-            .enter_copy_mode(Some("copy-lines"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-lines"), None, false, false,  false)
             .expect("enter relative copy mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -17927,7 +17138,7 @@ mod tests {
             .set_global_option("copy-mode-line-numbers", "hybrid")
             .expect("set hybrid line numbers");
         state
-            .enter_copy_mode(Some("copy-lines"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-lines"), None, false, false,  false)
             .expect("enter hybrid copy mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -18018,7 +17229,7 @@ mod tests {
         pane.parser.process(b"copy me\n");
         pane.raw_output = b"copy me\n".to_vec();
         state
-            .enter_copy_mode(Some("clipboard"), None, false, false, false, false)
+            .enter_copy_mode(Some("clipboard"), None, false, false,  false)
             .expect("enter clipboard copy mode");
         for action in [
             CopyAction::HistoryTop,
@@ -18078,7 +17289,7 @@ mod tests {
         pane.parser.process(b"copy me without clipboard\n");
         pane.raw_output = b"copy me without clipboard\n".to_vec();
         state
-            .enter_copy_mode(Some("clipboard-flag"), None, false, false, false, false)
+            .enter_copy_mode(Some("clipboard-flag"), None, false, false,  false)
             .expect("enter clipboard flag copy mode");
         for action in [
             CopyAction::HistoryTop,
@@ -18130,7 +17341,7 @@ mod tests {
         pane.parser.process(b"refresh me\n");
         pane.raw_output = b"refresh me\n".to_vec();
         state
-            .enter_copy_mode(Some("copy-refresh"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-refresh"), None, false, false,  false)
             .expect("enter copy refresh mode");
 
         assert_eq!(
@@ -18193,7 +17404,7 @@ mod tests {
         pane.parser.process(b"first\nsecond\n");
         pane.raw_output = b"first\nsecond\n".to_vec();
         state
-            .enter_copy_mode(Some("copy-refresh-now"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-refresh-now"), None, false, false,  false)
             .expect("enter refresh-now copy mode");
         let before = state
             .display_message(Some("copy-refresh-now"), "#{copy_cursor_y}")
@@ -18919,7 +18130,7 @@ bind -T copy-mode C-a send -X end-of-line
             .register_client(Some("copy-key-table"), Size::new(40, 8))
             .expect("register copy key table client");
         state
-            .enter_copy_mode(Some("copy-key-table"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-key-table"), None, false, false,  false)
             .expect("enter copy key table mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -18967,7 +18178,7 @@ bind -T copy-mode C-a send -X end-of-line
             .register_client(Some("copy-prompt-edit"), Size::new(40, 8))
             .expect("register copy prompt edit client");
         state
-            .enter_copy_mode(Some("copy-prompt-edit"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-prompt-edit"), None, false, false,  false)
             .expect("enter copy prompt edit mode");
 
         state.handle_client_input(client_id, b"\x13", &shared);
@@ -19039,7 +18250,6 @@ bind -T copy-mode C-a send -X end-of-line
                 false,
                 false,
                 false,
-                false,
             )
             .expect("enter copy search prefill mode");
         state
@@ -19092,7 +18302,6 @@ bind -T copy-mode C-a send -X end-of-line
                 false,
                 false,
                 false,
-                false,
             )
             .expect("enter copy prompt behavior mode");
 
@@ -19128,7 +18337,6 @@ bind -T copy-mode C-a send -X end-of-line
             .enter_copy_mode(
                 Some("copy-prompt-behavior"),
                 None,
-                false,
                 false,
                 false,
                 false,
@@ -19238,7 +18446,7 @@ bind -T copy-mode C-a send -X end-of-line
             .register_client(Some("attached-copy-keys"), Size::new(30, 6))
             .expect("register attached copy key client");
         state
-            .enter_copy_mode(Some("attached-copy-keys"), None, false, false, false, false)
+            .enter_copy_mode(Some("attached-copy-keys"), None, false, false,  false)
             .expect("enter attached copy key mode");
         state.prefix = vec![1];
         state
@@ -19324,7 +18532,6 @@ bind -T copy-mode C-a send -X end-of-line
                 false,
                 false,
                 false,
-                false,
             )
             .expect("enter modified copy key mode");
 
@@ -19380,7 +18587,6 @@ bind -T copy-mode C-a send -X end-of-line
                 false,
                 false,
                 false,
-                false,
             )
             .expect("enter attached vi selection mode");
 
@@ -19432,7 +18638,7 @@ bind -T copy-mode C-a send -X end-of-line
             .register_client(Some("attached-vi-r"), Size::new(30, 6))
             .expect("register attached vi r client");
         state
-            .enter_copy_mode(Some("attached-vi-r"), None, false, false, false, false)
+            .enter_copy_mode(Some("attached-vi-r"), None, false, false,  false)
             .expect("enter attached vi r mode");
 
         let (actions, consumed) = copy_input_actions(&mut state, pane_id, b"r");
@@ -19474,7 +18680,7 @@ bind -T copy-mode C-a send -X end-of-line
         pane.parser.process(b"alpha beta\n");
         pane.raw_output = b"alpha beta\n".to_vec();
         state
-            .enter_copy_mode(Some("copy-line-state"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-line-state"), None, false, false,  false)
             .expect("enter copy-line state mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -19588,7 +18794,7 @@ bind -r Right next-window
         pane.parser.process(b"zero\none\ntwo\nthree\nfour\nfive\n");
         pane.raw_output = b"zero\none\ntwo\nthree\nfour\nfive\n".to_vec();
         state
-            .enter_copy_mode(Some("mouse"), None, false, false, false, false)
+            .enter_copy_mode(Some("mouse"), None, false, false,  false)
             .expect("enter mouse copy mode");
         let (session_id, client_id) = state
             .register_client(Some("mouse"), Size::new(20, 5))
@@ -19714,7 +18920,7 @@ bind -r Right next-window
         pane.parser.process(output.as_bytes());
         pane.raw_output = output.into_bytes();
         state
-            .enter_copy_mode(Some("wheel-selection"), None, false, false, false, false)
+            .enter_copy_mode(Some("wheel-selection"), None, false, false,  false)
             .expect("enter wheel selection copy mode");
         for action in [
             (CopyAction::HistoryTop, 1),
@@ -19787,7 +18993,7 @@ bind -r Right next-window
         pane.parser.process(output.as_bytes());
         pane.raw_output = output.into_bytes();
         state
-            .enter_copy_mode(Some("scrollbar-mouse"), None, false, true, false, false)
+            .enter_copy_mode(Some("scrollbar-mouse"), None, false, true,  false)
             .expect("enter scrollbar copy mode");
         let (_, client_id) = state
             .register_client(Some("scrollbar-mouse"), Size::new(20, 6))
@@ -19879,7 +19085,7 @@ bind -r Right next-window
         pane.parser.process(output.as_bytes());
         pane.raw_output = output.into_bytes();
         state
-            .enter_copy_mode(Some("scrollbar-grab"), None, false, true, false, false)
+            .enter_copy_mode(Some("scrollbar-grab"), None, false, true,  false)
             .expect("enter scrollbar grab copy mode");
         state
             .execute_copy_action(pane_id, CopyAction::PageUp, 1)
@@ -20012,7 +19218,6 @@ bind -r Right next-window
                 false,
                 true,
                 false,
-                false,
             )
             .expect("enter copy scrollbar mode");
         state
@@ -20122,99 +19327,6 @@ bind -r Right next-window
     }
 
     #[test]
-    fn copy_mode_mouse_flags_use_event_context_headlessly() {
-        let shared = Arc::new(Mutex::new(ServerState::new()));
-        let mut state = shared.lock().expect("server state lock");
-        state
-            .create_session(
-                &shared,
-                CreateSessionOptions {
-                    name: Some("copy-mouse-flags"),
-                    attach_existing: false,
-                    group_target: None,
-                    format: None,
-                    window_name: None,
-                    empty: true,
-                    command: &[],
-                    cwd: None,
-                    size: Size::new(20, 6),
-                },
-            )
-            .expect("create copy mouse flags session");
-        let pane_id = state.sessions[0].windows[0].panes[0].id;
-        let output = (0..40)
-            .map(|row| format!("line {row:02}\n"))
-            .collect::<String>();
-        let pane = state.find_pane_mut(pane_id).expect("copy mouse flags pane");
-        pane.parser.process(output.as_bytes());
-        pane.raw_output = output.into_bytes();
-
-        state.mouse_context = Some(MouseContext {
-            x: 3,
-            y: 2,
-            pane_id,
-            word: String::new(),
-            line: String::new(),
-            hyperlink: String::new(),
-            button: 1,
-        });
-        execute_request(
-            &mut state,
-            &shared,
-            Request::CopyMode {
-                target: None,
-                source: None,
-                exit_on_scroll: false,
-                hide_position: true,
-                kill_on_exit: false,
-                page: false,
-                page_down: false,
-                reset: false,
-                mouse_start: true,
-                scroll_to_mouse: false,
-            },
-            None,
-        )
-        .expect("start copy mode at mouse");
-        assert!(
-            state
-                .find_pane(pane_id)
-                .and_then(|pane| pane.copy_mode.as_ref())
-                .is_some_and(CopyModeState::selection_is_active)
-        );
-
-        state
-            .execute_copy_action(pane_id, CopyAction::Cancel, 1)
-            .expect("leave mouse-start copy mode");
-        state.mouse_context.as_mut().expect("mouse context").y = 1;
-        execute_request(
-            &mut state,
-            &shared,
-            Request::CopyMode {
-                target: None,
-                source: None,
-                exit_on_scroll: false,
-                hide_position: true,
-                kill_on_exit: false,
-                page: false,
-                page_down: false,
-                reset: false,
-                mouse_start: false,
-                scroll_to_mouse: true,
-            },
-            None,
-        )
-        .expect("scroll copy mode at mouse");
-        assert!(
-            state
-                .find_pane(pane_id)
-                .and_then(|pane| pane.copy_mode.as_ref())
-                .is_some_and(|mode| mode.scroll_position() > 0)
-        );
-        state.mouse_context = None;
-    }
-
-    #[test]
     fn copy_mode_incremental_search_commands_keep_their_action_kind() {
         assert!(matches!(
             parse_copy_action("search-forward-incremental\0needle"),
@@ -20314,7 +19426,7 @@ bind -r Right next-window
             .register_client(Some("copy-command"), Size::new(30, 6))
             .expect("register copy command client");
         state
-            .enter_copy_mode(Some("copy-command"), None, false, false, false, false)
+            .enter_copy_mode(Some("copy-command"), None, false, false,  false)
             .expect("enter copy command mode");
         for action in [
             CopyAction::HistoryTop,
@@ -20382,7 +19494,7 @@ bind -r Right next-window
         pane.parser.process(output);
         pane.raw_output = output.to_vec();
         state
-            .enter_copy_mode(Some("incremental-origin"), None, false, true, false, false)
+            .enter_copy_mode(Some("incremental-origin"), None, false, true,  false)
             .expect("enter incremental copy mode");
         state
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
@@ -20595,7 +19707,7 @@ bind -r Right next-window
         pane.parser.process("abc中\n".as_bytes());
         pane.raw_output = "abc中\n".as_bytes().to_vec();
         state
-            .enter_copy_mode(Some("mouse-wide"), None, false, false, false, false)
+            .enter_copy_mode(Some("mouse-wide"), None, false, false,  false)
             .expect("enter wide mouse copy mode");
         let (_, client_id) = state
             .register_client(Some("mouse-wide"), Size::new(20, 5))

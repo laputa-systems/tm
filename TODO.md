@@ -10,7 +10,7 @@ Next: 50
 - **Fix with:** reference-parity
 - **Effort:** S
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-38, TMUX-39, and TMUX-40 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, and TMUX-40 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
@@ -155,15 +155,6 @@ suites do not cover.
 - **Recommendation:** Rebuild the modes on the pane-mode model with the tmux line format, then re-enable the flags one at a time with raw-PTY differential tests.
 - **Fix with:** reference-parity
 - **Effort:** L
-
-### TMUX-29 · P4 · Bound choose and display-panes commands still parse flags the CLI rejects
-
-- **Area:** Bindings
-- **Where:** `src/server.rs` `parse_tree_mode_command`, `parse_buffer_mode_command`, `parse_client_mode_command`, `parse_panes_mode_command`
-- **Problem:** Commands run from bindings use these parsers, which accept flags the command line now rejects. No compiled binding uses them.
-- **Recommendation:** Route bound commands through `crate::command::parse` or delete the parsers with the unused request fields.
-- **Fix with:** delete
-- **Effort:** S
 
 ### TMUX-30 · P3 · A window moved to a session of another size is resized to it
 
