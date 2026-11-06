@@ -18,6 +18,10 @@ For local builds, `make release TARGET=<target>` builds the release. Run
 macOS, `make install` builds the default target, copies it to `~/.local/bin/tm`,
 and applies an ad hoc code signature.
 
+`make qualify` runs `make release` and `make verify-release`, then the full
+test suite and `make parity` against the dist binary through `TM_BIN`. See
+[testing](testing.md).
+
 ## Local Linux verification
 
 Use the container platform that matches the host CPU. On an arm64 Mac that is

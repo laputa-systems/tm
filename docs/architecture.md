@@ -32,3 +32,36 @@ ordered writer threads, and copy-pipe helpers run asynchronously. A pane's
 retained output checkpoints parsed scrollback plus the visible screen under the
 history budget, so replay, capture, and copy-mode search do not depend on
 replaying the entire stream on each key.
+
+## Lifecycle
+
+The daemon exits when its last session ends. A command that finds no daemon
+on the socket fails with `no server running on <socket>`, except the commands
+that start one, such as `new-session`.
+
+A successful `kill-server` response means the listener is closed and the
+socket path no longer accepts connections. Panes may still be tearing down. A
+connection accepted during shutdown gets the error `server is shutting down`,
+never a silent EOF. The client does not retry a request, because a mutating
+request may already have run.
+
+## Wire protocol
+
+Every connection starts with a little-endian `u32` `PROTOCOL_VERSION` from the
+client, and the daemon answers with its own before any other byte. On a
+mismatch, or on EOF before any response byte, which is how an older daemon
+reacts, the client prints
+`tm server at <socket> runs a different protocol; run tm -S <socket> kill-server`
+and exits nonzero. Run `tm kill-server` after an upgrade so the next command
+starts a daemon of the new version. The encoder refuses more than 1024 command
+arguments, so the client fails before it connects. Golden-byte tests in
+[`src/protocol.rs`](../src/protocol.rs) fail when the format changes without a
+version bump.
+
+## Pane context
+
+Each pane runs with `TM_SOCKET` set to its server's socket path and `TM_PANE`
+set to `%<pane id>`. tm never reads or sets `TMUX` or `TMUX_PANE`. The client
+sends `TM_PANE` with each request only when it connects to the socket named by
+`TM_SOCKET`, and the daemon resolves omitted targets from that pane. A pane
+that no longer exists resolves as outside any pane.

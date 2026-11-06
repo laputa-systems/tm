@@ -30,6 +30,14 @@ outcome with the reference. `tests/parity_contract.rs` checks every citation: th
 test function exist, `pass` is never `internal`, `differential` reaches
 `Mux::reference`, and `recorded` reads a file under `tests/reference/`.
 
+`make parity` is the run evidence. The repository keeps no results file.
+
+A `fail` row whose difference is pinned by a test also has an entry in
+`KNOWN_DIFFERENCES` in `tests/support/parity.rs`. The entry names the test,
+the command, the row, and the exact tm and reference output. The test fails
+when the difference changes or disappears, so a fix removes the entry and
+turns the row to `pass`.
+
 ## Options
 
 | Contract item | Selected semantics | Scenario | Implementation | Test | Evidence | Status | Intentional difference |
@@ -142,6 +150,17 @@ Every command and flag that tm's parser accepts is `match`, `rejected`, or
 `tm-only`. A `rejected` row exits nonzero with `tm: unsupported flag <flag> for
 <command>`; tmux 3.8 accepts or defines the flag. A `tm-only` row is an
 intentional difference. `tests/parity_contract.rs` validates the table.
+
+- `match`: tm behaves as tmux 3.8 does, shown by a `differential` test that
+  compares the outcome and the resulting `list-*` state.
+- `rejected`: the message is exactly `tm: unsupported flag <flag> for
+  <command>`. Inputs that tmux accepts and tm does not support, such as unique
+  command prefixes, are `rejected` rows, not defects.
+- `tm-only`: a command or flag tmux lacks, or one that differs on purpose, with
+  the reason in the row.
+
+An accepted flag never has a different meaning from tmux's. The contract test
+fails when a command arm in `src/command.rs` has no row.
 
 | Command | Flag | Classification | tmux 3.8 meaning | Test | Evidence |
 | --- | --- | --- | --- | --- | --- |
