@@ -25,7 +25,7 @@ lint:
 
 parity:
 	tests/support/install-tmux-ref.sh
-	$(call cargo,test) test --features parity --test tmux_parity --test tmux_histories --test tmux_unicode_history
+	$(call cargo,test) test --features parity --test tmux_parity --test tmux_histories --test tmux_unicode_history --test tmux_bindings
 
 release:
 	$(call cargo,release-static) clean -p $(NAME) --profile dist --target $(TARGET)

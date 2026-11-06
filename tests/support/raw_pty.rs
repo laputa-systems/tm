@@ -204,6 +204,19 @@ impl RawClient {
         screen.rows(0, columns).collect()
     }
 
+    pub fn screen_cells(&self) -> Vec<(String, vt100::Color, vt100::Color, bool)> {
+        let shared = lock(&self.monitor);
+        let screen = shared.parser.screen();
+        let (rows, columns) = screen.size();
+        (0..rows)
+            .flat_map(|row| (0..columns).map(move |column| (row, column)))
+            .map(|(row, column)| {
+                let cell = screen.cell(row, column).expect("cell inside the screen");
+                (cell.contents().to_owned(), cell.fgcolor(), cell.bgcolor(), cell.inverse())
+            })
+            .collect()
+    }
+
     pub fn is_closed(&self) -> bool {
         lock(&self.monitor).closed
     }
