@@ -15,7 +15,7 @@ combining marks, tab stops, and column mapping live in
 
 Interactive startup settings and key bindings live in
 [`src/config.rs`](../src/config.rs) as compiled data. A normal daemon applies
-that profile; a daemon first started with `TM_SOCKET` uses the baseline
+that profile; a daemon first started on the socket named by `TM_SOCKET` uses the baseline
 settings and bindings, including the `C-b` prefix, for isolated use. The
 program does not parse tmux configuration files. Changing the normal
 interactive profile requires editing the compiled data and rebuilding.

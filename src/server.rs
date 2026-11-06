@@ -47,11 +47,14 @@ type FormatLoopItem = (String, usize, usize, u64, Vec<(&'static str, String)>);
 static RENDER_WAKE: Condvar = Condvar::new();
 const REPEAT_TIME_MS: u64 = 500;
 
+pub(crate) const SOCKET_ENV: &str = "TM_SOCKET";
+pub(crate) const PANE_ENV: &str = "TM_PANE";
+
 pub(crate) fn socket_path(explicit: Option<&Path>) -> PathBuf {
     if let Some(path) = explicit {
         return path.to_owned();
     }
-    if let Some(path) = std::env::var_os("TM_SOCKET") {
+    if let Some(path) = std::env::var_os(SOCKET_ENV) {
         return PathBuf::from(path);
     }
     let uid = unsafe { libc::geteuid() };
@@ -190,9 +193,12 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
     let gate = Arc::new(ShutdownGate::new(path));
     let mut initial_state = ServerState::new();
     initial_state.shutdown = Some(Arc::clone(&gate));
-    // A private `TM_SOCKET` remains an isolated vanilla server for tests and
-    // tooling. The normal daemon overlays the compiled interactive profile.
-    if std::env::var_os("TM_SOCKET").is_none() {
+    initial_state.socket_path = Some(path.to_owned());
+    // A server on the socket named by `TM_SOCKET` remains an isolated vanilla
+    // server for tests and tooling. A server started with `-S` from inside a
+    // pane inherits that pane's `TM_SOCKET` for another socket and still gets
+    // the compiled interactive profile.
+    if std::env::var_os(SOCKET_ENV).is_none_or(|own| Path::new(&own) != path) {
         initial_state.apply_compiled_interactive_config();
     }
     let state = Arc::new(Mutex::new(initial_state));
@@ -425,8 +431,8 @@ fn handle_connection(
     if write_version(&mut stream).is_err() {
         return;
     }
-    let request = match read_request(&mut stream) {
-        Ok(request) => request,
+    let (request, caller_pane) = match read_request(&mut stream) {
+        Ok(call) => call,
         Err(_) => return,
     };
     if gate.is_closing() {
@@ -441,7 +447,7 @@ fn handle_connection(
     }
     if let Request::Attach { target, size, term } = request {
         drop(in_flight);
-        attach_client(stream, shared, target, size, term);
+        attach_client(stream, shared, target, size, term, caller_pane);
         return;
     }
     let request = match request {
@@ -453,7 +459,14 @@ fn handle_connection(
             delay_ms,
         } => {
             let message =
-                match run_foreground_shell(&shared, command, target.as_deref(), &cwd, delay_ms) {
+                match run_foreground_shell(
+                    &shared,
+                    command,
+                    target.as_deref(),
+                    &cwd,
+                    delay_ms,
+                    caller_pane,
+                ) {
                     Ok((status, bytes)) => ServerMessage::Output { status, bytes },
                     Err(body) => ServerMessage::Response { ok: false, body },
                 };
@@ -464,7 +477,8 @@ fn handle_connection(
     };
     let result = match shared.lock() {
         Ok(mut state) => {
-            let result = execute_request(&mut state, &shared, request, None);
+            let context = state.caller_context(caller_pane);
+            let result = execute_request(&mut state, &shared, request, context);
             state.mark_render_dirty();
             result
         }
@@ -537,22 +551,17 @@ fn run_foreground_shell(
     target: Option<&str>,
     cwd: &str,
     delay_ms: Option<u32>,
+    caller_pane: Option<u64>,
 ) -> Result<(u8, Vec<u8>), String> {
     let (expanded, environment) = {
-        let state = shared
+        let mut state = shared
             .lock()
             .map_err(|_| "server state lock is poisoned".to_owned())?;
-        if let Some(target) = target {
-            state.resolve_pane_target(Some(target))?;
-        }
-        let expanded = command
-            .as_deref()
-            .map(|command| state.display_message(target, command))
-            .transpose()?;
-        let session_index = target
-            .and_then(|target| state.resolve_pane_target(Some(target)).ok())
-            .map(|(session_index, _, _)| session_index);
-        (expanded, state.command_environment(session_index))
+        let context = state.caller_context(caller_pane);
+        let previous = std::mem::replace(&mut state.exec_context, context);
+        let resolved = state.foreground_shell_inputs(command.as_deref(), target);
+        state.exec_context = previous;
+        resolved?
     };
     let Some(command) = expanded else {
         if let Some(delay_ms) = delay_ms {
@@ -574,9 +583,15 @@ fn attach_client(
     target: Option<String>,
     size: Size,
     term: String,
+    caller_pane: Option<u64>,
 ) {
     let (_session_id, client_id) = match shared.lock() {
-        Ok(mut state) => match state.register_client_with_term(target.as_deref(), size, &term) {
+        Ok(mut state) => match state.register_client_in_caller_context(
+            target.as_deref(),
+            size,
+            &term,
+            caller_pane,
+        ) {
             Ok(client) => {
                 state.mark_render_dirty();
                 client
@@ -831,6 +846,7 @@ struct ServerState {
     buffer_limit: usize,
     global_options: HashMap<String, String>,
     environment: HashMap<String, Option<String>>,
+    socket_path: Option<PathBuf>,
     pane_pipes: HashMap<u64, PanePipe>,
     clients: HashMap<u64, AttachedClient>,
     next_client_id: u64,
@@ -1612,6 +1628,7 @@ impl ServerState {
                     Some((name.into_string().ok()?, Some(value.into_string().ok()?)))
                 })
                 .collect(),
+            socket_path: None,
             pane_pipes: HashMap::new(),
             clients: HashMap::new(),
             next_client_id: 0,
@@ -2149,7 +2166,7 @@ impl ServerState {
             cwd.map(Path::new),
             size,
             terminal,
-            &self.command_environment(session_index),
+            &self.pane_environment(session_index, pane_id),
         )
         .map_err(|error| error.to_string())?;
         let reader = pty.reader().map_err(|error| error.to_string())?;
@@ -2617,6 +2634,7 @@ impl ServerState {
                         client.repeat_key = None;
                         client.repeat_binding = None;
                         client.repeat_deadline = None;
+                        client.prefix_pending = candidate == self.prefix;
                     }
                 }
                 break;
@@ -2633,7 +2651,6 @@ impl ServerState {
         if offset > 0 {
             key.codepoint = None;
             key.modifier = 1;
-                        client.prefix_pending = candidate == self.prefix;
         }
         self.write_active_key_events(session_id, &[key]);
     }
@@ -2980,6 +2997,10 @@ impl ServerState {
         if stored != token || Instant::now() < deadline || !client.prefix_pending {
             return false;
         }
+        client.key_buffer.clear();
+        client.key_events.clear();
+        client.key_deadline = None;
+        client.prefix_pending = false;
         true
     }
 
@@ -2997,10 +3018,6 @@ impl ServerState {
             client.repeat_key = None;
             client.repeat_binding = None;
             client.repeat_deadline = None;
-        client.key_buffer.clear();
-        client.key_events.clear();
-        client.key_deadline = None;
-        client.prefix_pending = false;
         }
         true
     }
@@ -4740,6 +4757,47 @@ impl ServerState {
         if let Err(error) = result {
             self.last_message = Some(error);
         }
+    }
+
+    fn caller_context(&self, caller_pane: Option<u64>) -> Option<ExecContext> {
+        let (session_index, window_index, _) = self.find_pane_location(caller_pane?)?;
+        let window_id = self.sessions[session_index].windows[window_index].id;
+        self.sessions
+            .iter()
+            .filter(|session| session.windows.iter().any(|window| window.id == window_id))
+            .max_by_key(|session| session.activity)
+            .map(|session| self.exec_context_for_client(session.id))
+    }
+
+    fn register_client_in_caller_context(
+        &mut self,
+        target: Option<&str>,
+        size: Size,
+        term: &str,
+        caller_pane: Option<u64>,
+    ) -> Result<(u64, u64), String> {
+        let context = self.caller_context(caller_pane);
+        let previous = std::mem::replace(&mut self.exec_context, context);
+        let registered = self.register_client_with_term(target, size, term);
+        self.exec_context = previous;
+        registered
+    }
+
+    fn foreground_shell_inputs(
+        &self,
+        command: Option<&str>,
+        target: Option<&str>,
+    ) -> Result<(Option<String>, HashMap<String, String>), String> {
+        if let Some(target) = target {
+            self.resolve_pane_target(Some(target))?;
+        }
+        let expanded = command
+            .map(|command| self.display_message(target, command))
+            .transpose()?;
+        let session_index = target
+            .and_then(|target| self.resolve_pane_target(Some(target)).ok())
+            .map(|(session_index, _, _)| session_index);
+        Ok((expanded, self.command_environment(session_index)))
     }
 
     fn exec_context_for_client(&self, session_id: u64) -> ExecContext {
@@ -7030,7 +7088,8 @@ impl ServerState {
         let session = session_index
             .and_then(|index| self.sessions.get(index))
             .map(|session| &session.environment);
-        self.environment
+        let mut merged = self
+            .environment
             .iter()
             .chain(session.into_iter().flatten())
             .fold(HashMap::new(), |mut merged, (name, value)| {
@@ -7039,7 +7098,21 @@ impl ServerState {
                     None => merged.remove(name),
                 };
                 merged
-            })
+            });
+        if let Some(path) = &self.socket_path {
+            merged.insert(SOCKET_ENV.to_owned(), path.to_string_lossy().into_owned());
+        }
+        merged
+    }
+
+    fn pane_environment(
+        &self,
+        session_index: Option<usize>,
+        pane_id: u64,
+    ) -> HashMap<String, String> {
+        let mut environment = self.command_environment(session_index);
+        environment.insert(PANE_ENV.to_owned(), format!("%{pane_id}"));
+        environment
     }
 
     fn environment_scope(
@@ -8889,7 +8962,7 @@ impl ServerState {
                 self.global_options
                     .get("default-terminal")
                     .map(String::as_str),
-                &self.command_environment(Some(session_index)),
+                &self.pane_environment(Some(session_index), pane_id),
             )
             .map_err(|error| error.to_string())?
         };

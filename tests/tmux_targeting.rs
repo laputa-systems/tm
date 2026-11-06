@@ -74,6 +74,86 @@ fn window_state(mux: &Mux, session: &str) -> String {
     ])
 }
 
+const POSITION: &str = "#{session_name}:#{window_index}.#{pane_index}";
+const TOPOLOGY: [&str; 4] = [
+    "list-panes",
+    "-a",
+    "-F",
+    "#{session_name}:#{window_index}.#{pane_index} #{window_active} #{pane_active}",
+];
+
+fn pair_with_two_sessions(label: &str) -> (Scratch, Mux, Mux) {
+    let scratch = Scratch::new(label);
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    for mux in [&tm, &reference] {
+        for session in ["b", "a"] {
+            let mut create = vec!["new-session", "-d", "-s", session, "-x", "60", "-y", "10", "--"];
+            create.extend(parity::SILENT_SHELL);
+            mux.ok(&create);
+        }
+        mux.ok(&["new-window", "-d", "-t", "b:", "-n", "second", "--", "sleep", "300"]);
+    }
+    (scratch, tm, reference)
+}
+
+fn assert_same_topology(tm: &Mux, reference: &Mux, step: &str) {
+    assert_eq!(
+        tm.body(&TOPOLOGY),
+        reference.body(&TOPOLOGY),
+        "topology after {step}"
+    );
+}
+
+fn in_pane_outputs(tm: &Mux, reference: &Mux, pane: &str, words: &[&str]) -> (String, String) {
+    for mux in [tm, reference] {
+        mux.type_in_pane(pane, words, false);
+    }
+    let timeout = Duration::from_secs(6);
+    (
+        tm.in_pane_output(timeout).expect("tm in-pane output"),
+        reference
+            .in_pane_output(timeout)
+            .expect("reference in-pane output"),
+    )
+}
+
+#[test]
+fn commands_in_a_pane_resolve_omitted_targets_from_that_pane_like_the_reference() {
+    let (_scratch, tm, reference) = pair_with_two_sessions("targeting-in-pane");
+    let commands: [&[&str]; 8] = [
+        &["display-message", "-p", POSITION],
+        &["split-window", "-d", "-P", "-F", POSITION, "--", "sleep", "300"],
+        &["new-window", "-d", "-P", "-F", POSITION, "--", "sleep", "300"],
+        &["next-window"],
+        &["display-message", "-p", "-t", "1", POSITION],
+        &["break-pane", "-d", "-P", "-F", POSITION],
+        &["move-window", "-d", "-t", "a:9"],
+        &["rename-session", "renamed"],
+    ];
+    for words in commands {
+        let (tm_output, reference_output) = in_pane_outputs(&tm, &reference, "%0", words);
+        assert_eq!(tm_output, reference_output, "{words:?} run from a pane of session b");
+        assert_same_topology(&tm, &reference, &format!("{words:?}"));
+    }
+}
+
+#[test]
+fn commands_from_a_killed_pane_fall_back_like_the_reference() {
+    let (_scratch, tm, reference) = pair_with_two_sessions("targeting-killed-pane");
+    let words = ["display-message", "-p", POSITION];
+    for mux in [&tm, &reference] {
+        mux.type_in_pane("%0", &words, true);
+        mux.ok(&["kill-pane", "-t", "%0"]);
+        mux.release_in_pane();
+    }
+    let timeout = Duration::from_secs(6);
+    assert_eq!(
+        tm.in_pane_output(timeout).expect("tm in-pane output"),
+        reference.in_pane_output(timeout).expect("reference in-pane output")
+    );
+}
+
 #[test]
 fn client_bindings_use_the_attached_session_and_window() {
     let scratch = Scratch::new("targeting-bindings");

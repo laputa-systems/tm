@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 45
+Next: 47
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -19,7 +19,7 @@ Next: 45
 - **Fix with:** reference-parity
 - **Effort:** S
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-16, and TMUX-39 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-16, TMUX-38, TMUX-39, and TMUX-40 are closed
 with tests and commits recorded in git history. Add a new entry here only for a reproduced defect that the current
 suites do not cover.
 
@@ -244,22 +244,6 @@ suites do not cover.
 - **Fix with:** reference-parity
 - **Effort:** M
 
-### TMUX-38 · P2 · Commands run inside a pane do not default to that pane
-
-- **Area:** Targeting
-- **Where:** `src/client.rs` request context, `src/server.rs` target resolution and pane environment
-- **Problem:** tmux 3.8 sets `TMUX` and `TMUX_PANE` in each pane, and a command run from that pane with an omitted target resolves to that pane's session, window and pane. tm sets neither and resolves an omitted target from the most recently active session, so `tm split-window` typed in a pane of a second session can split a pane in another session.
-- **Recommendation:** Export the pane id and socket path into each pane's environment, send the caller's pane id with each request, resolve omitted targets from it first, and add an H2-style differential history that runs commands from inside panes of two sessions.
-- **Fix with:** reference-parity
-
-### TMUX-40 · P3 · An unbound key after the prefix is forwarded to the pane
-
-- **Area:** Input
-- **Where:** `src/server.rs` prefix handling in `handle_client_input_bytes`
-- **Problem:** tmux 3.8 drops a key that is not bound in the prefix table: `C-a q` sends nothing to the pane, and `C-a C-a q` sends nothing. tm forwards `q` (and `C-a q` after a second prefix). `tests/tmux_input.rs::unknown_key_after_prefix_drops_the_prefix` and `lone_escape_after_prefix_is_forwarded_once` assert tm's behaviour and have no reference run.
-- **Recommendation:** Compare `C-a` followed by each class of unbound key (printable, prefix, Escape) against the reference, drop the key like tmux, and turn the two tests into differential ones.
-- **Fix with:** reference-parity
-
 ### TMUX-41 · P3 · A wide character that cannot fit at the right margin does not mark its row wrapped
 
 - **Area:** Terminal
@@ -295,3 +279,19 @@ suites do not cover.
 - **Recommendation:** Add the command with the `window-size` option semantics and a differential test of each flag.
 - **Fix with:** reference-parity
 - **Effort:** M
+
+### TMUX-45 · P3 · A window target given as a pane id is rejected
+
+- **Area:** Targeting
+- **Where:** `src/server.rs` `resolve_window_target`
+- **Problem:** tmux 3.8 resolves a `%<pane id>` window target to the window holding that pane, so `kill-window -t %1` succeeds. tm exits 1 with `can't find window: %1`, while `display-message -t %1` accepts the same pane id.
+- **Recommendation:** Resolve a `%` window target through the pane's window, and add a differential probe for each window-targeting command.
+- **Fix with:** reference-parity
+
+### TMUX-46 · P3 · The status window list omits a window that overflows the line
+
+- **Area:** Status
+- **Where:** `src/server.rs` status rendering
+- **Problem:** On a 30-column client in a session with four windows, tmux 3.8 draws `(b) 1:sh 2:inpane 3:sleep 4:i>`, truncating the last window with `>`; tm draws `(b) 1:sh 2:inpane 3:sleep` and drops the fourth window. Seen as a screen difference in attached history seed 33 before the in-pane shell window was shortened.
+- **Recommendation:** Reproduce on the raw-PTY runner with a differential screen test, then truncate the overflowing window entry as tmux does.
+- **Fix with:** reference-parity

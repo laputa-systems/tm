@@ -19,6 +19,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     let socket = invocation.socket;
     let request = invocation.request;
     let attach = invocation.attach;
+    let caller_pane = caller_pane(&socket);
     let starts_server = matches!(request, crate::protocol::Request::NewSession { .. });
     if attach && starts_server && !stdin_is_terminal() {
         return Err(NOT_A_TERMINAL.to_owned());
@@ -26,7 +27,7 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
     if let crate::protocol::Request::Attach { target, .. } = &request
         && !stdin_is_terminal()
     {
-        find_session(&socket, target.as_deref().unwrap_or_default())?;
+        find_session(&socket, target.as_deref().unwrap_or_default(), caller_pane)?;
         return Err(NOT_A_TERMINAL.to_owned());
     }
     if let crate::protocol::Request::NewSession {
@@ -35,11 +36,11 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         attach_existing: true,
         ..
     } = &request
-        && find_session(&socket, &format!("={name}")).is_ok()
+        && find_session(&socket, &format!("={name}"), caller_pane).is_ok()
     {
-        return attach_loop(&socket, Some(format!("={name}")));
+        return attach_loop(&socket, Some(format!("={name}")), caller_pane);
     }
-    let frame = encode_request(&request).map_err(|error| error.to_string())?;
+    let frame = encode_request(&request, caller_pane).map_err(|error| error.to_string())?;
     let mut stream = connect_or_start(&socket, starts_server)?;
     send_request(&mut stream, &socket, &frame)?;
     let response = read_server_message(&mut stream).map_err(|error| error.to_string())?;
@@ -91,7 +92,19 @@ pub(crate) fn run(invocation: Invocation) -> Result<(), String> {
         crate::protocol::Request::Attach { target, .. } => target.clone(),
         _ => None,
     };
-    attach_loop(&socket, target)
+    attach_loop(&socket, target, caller_pane)
+}
+
+fn caller_pane(socket: &std::path::Path) -> Option<u64> {
+    let own_socket = std::env::var_os(crate::server::SOCKET_ENV)?;
+    if std::path::Path::new(&own_socket) != socket {
+        return None;
+    }
+    std::env::var(crate::server::PANE_ENV)
+        .ok()?
+        .strip_prefix('%')?
+        .parse()
+        .ok()
 }
 
 const NOT_A_TERMINAL: &str = "open terminal failed: not a terminal";
@@ -101,11 +114,18 @@ fn stdin_is_terminal() -> bool {
     unsafe { libc::isatty(0) == 1 }
 }
 
-fn find_session(socket: &std::path::Path, target: &str) -> Result<(), String> {
+fn find_session(
+    socket: &std::path::Path,
+    target: &str,
+    caller_pane: Option<u64>,
+) -> Result<(), String> {
     let mut stream = connect_or_start(socket, false)?;
-    let frame = encode_request(&crate::protocol::Request::HasSession {
-        target: target.to_owned(),
-    })
+    let frame = encode_request(
+        &crate::protocol::Request::HasSession {
+            target: target.to_owned(),
+        },
+        caller_pane,
+    )
     .map_err(|error| error.to_string())?;
     send_request(&mut stream, socket, &frame)?;
     match read_server_message(&mut stream).map_err(|error| error.to_string())? {
@@ -211,15 +231,22 @@ fn connect_or_start(socket: &std::path::Path, start: bool) -> Result<UnixStream,
     Err(message)
 }
 
-fn attach_loop(socket: &std::path::Path, target: Option<String>) -> Result<(), String> {
+fn attach_loop(
+    socket: &std::path::Path,
+    target: Option<String>,
+    caller_pane: Option<u64>,
+) -> Result<(), String> {
     if !stdin_is_terminal() {
         return Err(NOT_A_TERMINAL.to_owned());
     }
     let mut stream = UnixStream::connect(socket).map_err(|error| error.to_string())?;
     let size = terminal::size();
     let term = std::env::var("TERM").unwrap_or_default();
-    let frame = encode_request(&crate::protocol::Request::Attach { target, size, term })
-        .map_err(|error| error.to_string())?;
+    let frame = encode_request(
+        &crate::protocol::Request::Attach { target, size, term },
+        caller_pane,
+    )
+    .map_err(|error| error.to_string())?;
     send_request(&mut stream, socket, &frame)?;
     let response = read_server_message(&mut stream).map_err(|error| error.to_string())?;
     let ServerMessage::Response { ok, body } = response else {

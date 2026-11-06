@@ -6,6 +6,8 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+pub const SILENT_SHELL: [&str; 3] = ["/bin/sh", "-c", "stty -echo; PS1= exec /bin/sh +m"];
+
 static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
 
 pub struct Scratch {
@@ -207,6 +209,60 @@ impl Mux {
                 return captured;
             }
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    pub fn type_in_pane(&self, pane: &str, words: &[&str], held_until_released: bool) {
+        let quote = |word: &str| format!("'{word}'");
+        let mut invocation = vec![quote(&self.binary.to_string_lossy())];
+        if let Some(config) = &self.config {
+            invocation.push("-f".to_owned());
+            invocation.push(quote(&config.to_string_lossy()));
+        }
+        invocation.extend(words.iter().map(|word| quote(word)));
+        let output = self.root.join("in-pane.out");
+        let partial = self.root.join("in-pane.partial");
+        let release = self.root.join("in-pane.go");
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(&release);
+        let run = format!(
+            "{{ {} </dev/null 2>&1; echo status=$?; }} > '{}'; mv '{}' '{}'",
+            invocation.join(" "),
+            partial.display(),
+            partial.display(),
+            output.display()
+        );
+        let line = if held_until_released {
+            format!(
+                "( trap '' HUP TERM; until [ -e '{}' ]; do sleep 0.05; done; {run} ) </dev/null >/dev/null 2>&1 &",
+                release.display()
+            )
+        } else {
+            run
+        };
+        self.ok(&["send-keys", "-t", pane, "-l", &line]);
+        self.ok(&["send-keys", "-t", pane, "Enter"]);
+    }
+
+    pub fn release_in_pane(&self) {
+        std::fs::write(self.root.join("in-pane.go"), b"").expect("release the held pane command");
+    }
+
+    pub fn in_pane_output(&self, timeout: Duration) -> Result<String, String> {
+        let output = self.root.join("in-pane.out");
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&output) {
+                let text = text
+                    .strip_prefix("tmux: ")
+                    .or_else(|| text.strip_prefix("tm: "))
+                    .map_or(text.clone(), str::to_owned);
+                return Ok(text);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("{:?} in-pane command never finished", self.implementation));
+            }
+            std::thread::sleep(Duration::from_millis(15));
         }
     }
 

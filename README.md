@@ -21,8 +21,17 @@ tm kill-session -t work
 ```
 
 The default socket is `$TMPDIR/tm-$UID.sock`. Pass `-S path` to select another
-socket. A daemon first started with `TM_SOCKET` uses the baseline settings and
+socket. A daemon first started on the socket named by `TM_SOCKET` uses the baseline settings and
 bindings, including the `C-b` prefix.
+
+Each pane runs with `TM_SOCKET` set to its server's socket path and `TM_PANE`
+set to `%<pane id>`. A `tm` command run in a pane without `-S` therefore talks
+to that pane's server, and an omitted target resolves from that pane: its
+session, that session's current window, and the window's active pane, as tmux
+does with `TMUX` and `TMUX_PANE`. tm never reads or sets `TMUX` or `TMUX_PANE`,
+so it can run inside a real tmux. The client sends `TM_PANE` only when the
+socket it connects to is the one named by `TM_SOCKET`. If that pane no longer
+exists, the command resolves as if run outside any pane.
 
 The client and daemon check a protocol version on every connection. After an
 upgrade, a client that finds a daemon started by another version prints

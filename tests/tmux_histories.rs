@@ -1103,6 +1103,17 @@ const LIST_CLIENTS: [&str; 3] = [
 ];
 const CLIENT_NAMES: [&str; 3] = ["list-clients", "-F", "#{client_name} #{client_width}"];
 const FLOOD: [&str; 4] = ["--", "sh", "-c", "seq 1 1500; sleep 300"];
+const IN_PANE_FORMAT: &str = "#{session_name}:#{window_index}.#{pane_index}";
+const IN_PANE_COMMANDS: [&str; 7] = [
+    "display-message -p #{session_name}:#{window_index}.#{pane_index}",
+    "split-window -d -P -F #{session_name}:#{window_index}.#{pane_index} -- sleep 300",
+    "new-window -d -P -F #{session_name}:#{window_index}.#{pane_index} -- sleep 300",
+    "next-window",
+    "break-pane -d -P -F #{session_name}:#{window_index}.#{pane_index}",
+    "move-window -d -t {other}:99",
+    "rename-session r{n}",
+];
+const IN_PANE_TIMEOUT: Duration = Duration::from_secs(6);
 const PROMPT_COMMANDS: [&str; 5] = ["new-window", "rename-window", "split-window", "next-window", "rename-session"];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1119,9 +1130,10 @@ enum AttachedKind {
     WindowFlood,
     KillClientRendering,
     DetachDuringRedraw,
+    InPane,
 }
 
-const ATTACHED_WEIGHTS: [(AttachedKind, u64); 12] = [
+const ATTACHED_WEIGHTS: [(AttachedKind, u64); 13] = [
     (AttachedKind::Attach, 7),
     (AttachedKind::DetachKey, 3),
     (AttachedKind::DetachCommand, 2),
@@ -1134,6 +1146,7 @@ const ATTACHED_WEIGHTS: [(AttachedKind, u64); 12] = [
     (AttachedKind::WindowFlood, 3),
     (AttachedKind::KillClientRendering, 2),
     (AttachedKind::DetachDuringRedraw, 2),
+    (AttachedKind::InPane, 4),
 ];
 
 #[derive(Clone, Debug)]
@@ -1386,7 +1399,50 @@ impl World {
             }
             AttachedKind::OutsideCommand | AttachedKind::NewSession => true,
             AttachedKind::ChildExit | AttachedKind::WindowFlood => exists(&op.text),
+            AttachedKind::InPane => exists(op.text.split(' ').next().unwrap_or_default()),
         }
+    }
+
+    fn in_pane(&self, text: &str) -> Result<(), String> {
+        let mut parts = text.splitn(3, ' ');
+        let session = parts.next().ok_or("in-pane operation names no session")?;
+        let mode = parts.next().ok_or("in-pane operation names no mode")?;
+        let command = parts.next().ok_or("in-pane operation names no command")?;
+        let other = self.sessions.iter().find(|name| *name != session).map_or("zz", String::as_str);
+        let command = command.replace("{other}", other);
+        let words: Vec<&str> = command.split(' ').collect();
+        let target = format!("{session}:");
+        let mut open = vec!["new-window", "-d", "-t", &target, "-n", "i", "-P", "-F", "#{pane_id}", "--"];
+        open.extend(parity::SILENT_SHELL);
+        let (opened, _) = self.pair.both("attached", &open)?;
+        let pane = String::from_utf8_lossy(&opened.stdout).trim().to_owned();
+        let killed = mode == "killed";
+        for mux in [&self.pair.tm, &self.pair.reference] {
+            mux.type_in_pane(&pane, &words, killed);
+        }
+        if killed {
+            self.pair.both("attached", &["kill-pane", "-t", &pane])?;
+            for mux in [&self.pair.tm, &self.pair.reference] {
+                mux.release_in_pane();
+            }
+        }
+        let outputs = [
+            self.pair.tm.in_pane_output(IN_PANE_TIMEOUT)?,
+            self.pair.reference.in_pane_output(IN_PANE_TIMEOUT)?,
+        ];
+        if outputs[0] != outputs[1] {
+            return Err(format!(
+                "in-pane {mode} {command:?} from {session} ({IN_PANE_FORMAT})\n tm: {:?}\nref: {:?}",
+                outputs[0], outputs[1]
+            ));
+        }
+        if !killed {
+            let (active, _) = self.pair.both("attached", &["display-message", "-p", "-t", &pane, "#{window_active}"])?;
+            if active.stdout == b"0\n" {
+                self.pair.both("attached", &["kill-pane", "-t", &pane])?;
+            }
+        }
+        Ok(())
     }
 
     fn apply(&mut self, op: &AttachedOp) -> Result<(), String> {
@@ -1463,6 +1519,7 @@ impl World {
                 let target = format!("{}:", op.text);
                 self.pair.both("attached", &["new-window", "-t", &target, "-n", "flood", "--", "sh", "-c", "seq 1 150; exit"])?;
             }
+            AttachedKind::InPane => self.in_pane(&op.text)?,
             AttachedKind::KillClientRendering | AttachedKind::DetachDuringRedraw => {
                 let session = self.client_sessions[slot].clone().expect("applicable");
                 let target = format!("{session}:");
@@ -1589,6 +1646,11 @@ fn generate_attached(rng: &mut Rng, world: &World, counter: &mut u32) -> Option<
                 if readers.is_empty() { session } else { (**rng.pick(&readers)).clone() }
             }
             AttachedKind::WindowFlood => attached_session,
+            AttachedKind::InPane => {
+                let mode = if rng.chance(1, 4) { "killed" } else { "alive" };
+                let command = rng.pick(&IN_PANE_COMMANDS).replace("{n}", &n.to_string());
+                format!("{session} {mode} {command}")
+            }
         };
         let op = AttachedOp { kind, slot, text, size };
         if world.applicable(&op) && attached_exclusion(&op, world).is_none() {

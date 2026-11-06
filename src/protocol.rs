@@ -4,7 +4,7 @@ use crate::model::Size;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ARGUMENTS: usize = 1024;
-pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_000b;
+pub(crate) const PROTOCOL_VERSION: u32 = 0x544d_000c;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Request {
@@ -398,11 +398,14 @@ pub(crate) fn read_version(stream: &mut impl Read) -> io::Result<u32> {
     Ok(u32::from_le_bytes(version))
 }
 
-pub(crate) fn encode_request(request: &Request) -> io::Result<Vec<u8>> {
-    framed(&request_payload(request)?)
+pub(crate) fn encode_request(
+    request: &Request,
+    caller_pane: Option<u64>,
+) -> io::Result<Vec<u8>> {
+    framed(&request_payload(request, caller_pane)?)
 }
 
-fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
+fn request_payload(request: &Request, caller_pane: Option<u64>) -> io::Result<Vec<u8>> {
     let mut payload = Vec::new();
     match request {
         Request::NewSession {
@@ -1023,10 +1026,11 @@ fn request_payload(request: &Request) -> io::Result<Vec<u8>> {
             put_bool(&mut payload, *kill_on_exit);
         }
     }
+    put_optional_u64(&mut payload, caller_pane);
     Ok(payload)
 }
 
-pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
+pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<(Request, Option<u64>)> {
     let payload = read_frame(stream)?;
     let mut decoder = Decoder::new(&payload);
     let request = match decoder.byte()? {
@@ -1390,8 +1394,9 @@ pub(crate) fn read_request(stream: &mut impl Read) -> io::Result<Request> {
         },
         _ => return Err(invalid_data("unknown request tag")),
     };
+    let caller_pane = decoder.optional_u64()?;
     decoder.finish()?;
-    Ok(request)
+    Ok((request, caller_pane))
 }
 
 pub(crate) fn write_server_message(
@@ -1540,6 +1545,16 @@ fn put_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
 
 fn put_bool(output: &mut Vec<u8>, value: bool) {
     output.push(u8::from(value));
+}
+
+fn put_optional_u64(output: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            put_bool(output, true);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        None => put_bool(output, false),
+    }
 }
 
 fn put_optional_i32(output: &mut Vec<u8>, value: Option<i32>) {
@@ -1697,6 +1712,17 @@ impl<'a> Decoder<'a> {
         Ok(value)
     }
 
+    fn optional_u64(&mut self) -> io::Result<Option<u64>> {
+        if !self.bool()? {
+            return Ok(None);
+        }
+        let mut value = [0; 8];
+        for byte in &mut value {
+            *byte = self.byte()?;
+        }
+        Ok(Some(u64::from_le_bytes(value)))
+    }
+
     fn optional_i32(&mut self) -> io::Result<Option<i32>> {
         if !self.bool()? {
             return Ok(None);
@@ -1741,7 +1767,7 @@ mod tests {
             cwd: Some("/tmp".to_owned()),
             format: None,
         };
-        let bytes = encode_request(&request).expect("encode");
+        let bytes = encode_request(&request, None).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1751,6 +1777,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn caller_pane_round_trips_beside_the_request() {
+        let request = Request::ListSessions { format: None };
+        for caller in [None, Some(0), Some(u64::MAX)] {
+            let frame = encode_request(&request, caller).expect("encode");
+            let (decoded, decoded_caller) =
+                read_request(&mut std::io::Cursor::new(frame)).expect("decode");
+            assert_eq!(decoded, request);
+            assert_eq!(decoded_caller, caller);
+        }
     }
 
     #[test]
@@ -1764,7 +1802,7 @@ mod tests {
             hide_source: true,
             kill_on_exit: true,
         };
-        let bytes = encode_request(&request).expect("encode");
+        let bytes = encode_request(&request, None).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1802,7 +1840,7 @@ mod tests {
                 kill_on_exit: false,
             },
         ] {
-            let bytes = encode_request(&request).expect("encode");
+            let bytes = encode_request(&request, None).expect("encode");
             let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
             let decoded = read_request_from_payload(&mut cursor).expect("decode");
             assert!(matches!(
@@ -1822,7 +1860,7 @@ mod tests {
             separator: b"|".to_vec(),
             delete: true,
         };
-        let bytes = encode_request(&request).expect("encode");
+        let bytes = encode_request(&request, None).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1853,7 +1891,7 @@ mod tests {
             ],
             kill_on_exit: true,
         };
-        let bytes = encode_request(&request).expect("encode");
+        let bytes = encode_request(&request, None).expect("encode");
         let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
         let decoded = read_request_from_payload(&mut cursor).expect("decode");
         assert!(matches!(
@@ -1899,7 +1937,7 @@ mod tests {
                 scroll_to_mouse: false,
             },
         ] {
-            let bytes = encode_request(&request).expect("encode");
+            let bytes = encode_request(&request, None).expect("encode");
             let mut cursor = std::io::Cursor::new(bytes[4..].to_vec());
             let decoded = read_request_from_payload(&mut cursor).expect("decode");
             match (request, decoded) {
@@ -1937,7 +1975,7 @@ mod tests {
         let mut framed = Vec::new();
         framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         framed.extend_from_slice(&payload);
-        read_request(&mut std::io::Cursor::new(framed))
+        read_request(&mut std::io::Cursor::new(framed)).map(|(request, _)| request)
     }
 
     const REQUEST_VARIANTS: usize = 56;
@@ -2459,7 +2497,7 @@ mod tests {
     }
 
     fn decode_frame(frame: &[u8]) -> io::Result<Request> {
-        read_request(&mut std::io::Cursor::new(frame.to_vec()))
+        read_request(&mut std::io::Cursor::new(frame.to_vec())).map(|(request, _)| request)
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -2472,7 +2510,7 @@ mod tests {
         for _ in 0..200 {
             for variant in 0..REQUEST_VARIANTS {
                 let request = build(variant, &mut random);
-                let frame = encode_request(&request).expect("encode");
+                let frame = encode_request(&request, None).expect("encode");
                 assert_eq!(decode_frame(&frame).expect("decode"), request);
             }
         }
@@ -2530,10 +2568,10 @@ mod tests {
     #[test]
     fn command_arguments_at_the_limit_round_trip_and_beyond_it_are_refused() {
         let at_limit = new_window_with_commands(MAX_COMMAND_ARGUMENTS);
-        let frame = encode_request(&at_limit).expect("1024 arguments encode");
+        let frame = encode_request(&at_limit, None).expect("1024 arguments encode");
         assert_eq!(decode_frame(&frame).expect("decode"), at_limit);
 
-        let error = encode_request(&new_window_with_commands(MAX_COMMAND_ARGUMENTS + 1))
+        let error = encode_request(&new_window_with_commands(MAX_COMMAND_ARGUMENTS + 1), None)
             .expect_err("1025 arguments are refused");
         assert_eq!(error.to_string(), "too many arguments: 1025 (limit 1024)");
     }
@@ -2545,7 +2583,7 @@ mod tests {
             data: vec![0; MAX_FRAME],
         };
         assert_eq!(
-            encode_request(&request).expect_err("oversized").to_string(),
+            encode_request(&request, None).expect_err("oversized").to_string(),
             "frame is too large"
         );
         let mut header = ((MAX_FRAME + 1) as u32).to_le_bytes().to_vec();
@@ -2563,65 +2601,65 @@ mod tests {
         assert_eq!(read_version(&mut std::io::Cursor::new(bytes)).expect("read"), PROTOCOL_VERSION);
     }
 
-    const GOLDEN_VERSION: u32 = 0x544d_000b;
+    const GOLDEN_VERSION: u32 = 0x544d_000c;
 
     const GOLDEN_REQUESTS: [&str; REQUEST_VARIANTS] = [
-        "3700000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a909010300000074313250001800",
-        "12000000020102000000743250001800020000007433",
-        "080000000301020000007432",
-        "0700000004020000007431",
-        "09000000050102000000743200",
-        "3000000006010200000074320001010001020000007438000101020000000300000074313203000000c3a9090103000000743134",
-        "3700000007010200000074320001010001010200000074390103000000743131020000000300000074313203000000c3a909010300000074313400",
-        "110000000801020000007432000102000000743500",
-        "110000000901020000007432000102000000743501",
-        "080000000a02000000743103",
-        "0e0000001a01020000007432020000007433",
-        "080000000b01020000007432",
-        "080000000c01020000007432",
-        "0e0000000d01020000007432020000007433",
-        "0e0000000e01020000007432020000007433",
-        "090000000f0102000000743200",
-        "0e0000001001020000007432040101000101",
-        "1000000011010200000074320001020000007435",
-        "100000001201020000007432030000000003ff01",
-        "080000002a01020000007432",
-        "1a00000013010200000074320001fbffffff000101000103000000743131",
-        "0100000014",
-        "110000001501020000007432000101000101000101",
-        "12000000160102000000743202000000743304000001",
-        "1900000035010200000074320001020000007435020000007436010100",
-        "18000000360102000000743200010200000074350200000074360101",
-        "110000003701020000007432000102000000743500",
-        "1d00000038010200000074320001010200000002000000743603000000c3a90901",
-        "1000000017010200000074320200000074330101",
-        "17000000180102000000743200030000000004ff01020000007436",
-        "080000001901020000007432",
-        "090000001b0102000000743200",
-        "080000001c01020000007432",
-        "120000001d010200000074320001030000000005ff00",
-        "0f0000001e01020000007432030000000003ff",
-        "0f0000001f0102000000743202000000743301",
-        "1c00000020010200000074320101000101020000007439010300000074313100",
-        "2200000021010200000074320001020000007435000102000000743800010300000074313100",
-        "0c000000220102000000743200010600",
-        "18000000230102000000743200010200000074350001020000007438",
-        "140000002401020000007432000101000102000000743800",
-        "2300000025010200000074320200000002000000743303000000c3a90901020000007435000101",
-        "080000002601020000007432",
-        "080000003301020000007432",
-        "09000000270102000000743200",
-        "0a00000028010200000074320001",
-        "0d00000029010200000074320001010001",
-        "1b000000340102000000743200010200000074350200000074360108000001",
-        "090000002b0102000000743200",
-        "170000002c01020000007432010100010100010103000000743132",
-        "180000002d0102000000743200020000007434010200000074360101",
-        "110000002e01020000007432000101020000007436",
-        "0a0000002f010200000074320001",
-        "080000003001020000007432",
-        "09000000310102000000743200",
-        "0e0000003201020000007432020000007433",
+        "3800000001010200000074320001010200000074360102000000743800020000000300000074313003000000c3a90901030000007431325000180000",
+        "1300000002010200000074325000180002000000743300",
+        "09000000030102000000743200",
+        "080000000402000000743100",
+        "0a00000005010200000074320000",
+        "3100000006010200000074320001010001020000007438000101020000000300000074313203000000c3a909010300000074313400",
+        "3800000007010200000074320001010001010200000074390103000000743131020000000300000074313203000000c3a90901030000007431340000",
+        "12000000080102000000743200010200000074350000",
+        "12000000090102000000743200010200000074350100",
+        "090000000a0200000074310300",
+        "0f0000001a0102000000743202000000743300",
+        "090000000b0102000000743200",
+        "090000000c0102000000743200",
+        "0f0000000d0102000000743202000000743300",
+        "0f0000000e0102000000743202000000743300",
+        "0a0000000f010200000074320000",
+        "0f000000100102000000743204010100010100",
+        "110000001101020000007432000102000000743500",
+        "110000001201020000007432030000000003ff0100",
+        "090000002a0102000000743200",
+        "1b00000013010200000074320001fbffffff00010100010300000074313100",
+        "020000001400",
+        "12000000150102000000743200010100010100010100",
+        "1300000016010200000074320200000074330400000100",
+        "1a0000003501020000007432000102000000743502000000743601010000",
+        "1900000036010200000074320001020000007435020000007436010100",
+        "12000000370102000000743200010200000074350000",
+        "1e00000038010200000074320001010200000002000000743603000000c3a9090100",
+        "110000001701020000007432020000007433010100",
+        "18000000180102000000743200030000000004ff0102000000743600",
+        "09000000190102000000743200",
+        "0a0000001b010200000074320000",
+        "090000001c0102000000743200",
+        "130000001d010200000074320001030000000005ff0000",
+        "100000001e01020000007432030000000003ff00",
+        "100000001f010200000074320200000074330100",
+        "1d0000002001020000007432010100010102000000743901030000007431310000",
+        "230000002101020000007432000102000000743500010200000074380001030000007431310000",
+        "0d00000022010200000074320001060000",
+        "1900000023010200000074320001020000007435000102000000743800",
+        "15000000240102000000743200010100010200000074380000",
+        "2400000025010200000074320200000002000000743303000000c3a9090102000000743500010100",
+        "09000000260102000000743200",
+        "09000000330102000000743200",
+        "0a00000027010200000074320000",
+        "0b0000002801020000007432000100",
+        "0e0000002901020000007432000101000100",
+        "1c00000034010200000074320001020000007435020000007436010800000100",
+        "0a0000002b010200000074320000",
+        "180000002c0102000000743201010001010001010300000074313200",
+        "190000002d010200000074320002000000743401020000007436010100",
+        "120000002e0102000000743200010102000000743600",
+        "0b0000002f01020000007432000100",
+        "09000000300102000000743200",
+        "0a00000031010200000074320000",
+        "0f000000320102000000743202000000743300",
     ];
 
     #[test]
@@ -2633,7 +2671,7 @@ mod tests {
         let mut tags = Vec::new();
         for (variant, golden) in GOLDEN_REQUESTS.iter().enumerate() {
             let request = build(variant, &mut Canonical { calls: 0 });
-            let frame = encode_request(&request).expect("encode");
+            let frame = encode_request(&request, None).expect("encode");
             assert_eq!(hex(&frame), *golden, "request variant {variant}");
             tags.push(frame[4]);
         }
