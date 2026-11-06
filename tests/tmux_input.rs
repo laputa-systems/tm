@@ -385,7 +385,10 @@ fn split_prefix_window_switch_follows_the_reference() {
     }
 }
 
-const TM_DELAYED_ESCAPE_KNOWN_DIFFERENCE: &[u8] = b"\x1b[27;5;105~";
+// tmux 3.8 raises the partial-key delay to 500 ms while the outer terminal
+// has not answered its DA2, XDA, DECRQM 2026 and OSC 10/11 queries, and the raw
+// PTY runner answers only DA1, so the pause must exceed that raised delay.
+const PAUSE_PAST_UNANSWERED_QUERY_ESCAPE_DELAY: Duration = Duration::from_millis(700);
 
 #[test]
 fn escape_then_a_delay_longer_than_escape_time_follows_the_reference() {
@@ -402,23 +405,15 @@ fn escape_then_a_delay_longer_than_escape_time_follows_the_reference() {
         let delayed = sink.deliver_paused(
             &mut client,
             &sequence[..1],
-            Duration::from_millis(50),
+            PAUSE_PAST_UNANSWERED_QUERY_ESCAPE_DELAY,
             &sequence[1..],
         );
         assert_eq!(client.detach(), Some(0));
         observed.push((unsplit, delayed));
     }
-    let (tm_observed, reference_observed) = (&observed[0], &observed[1]);
-    assert_eq!(tm_observed.0, b"\t");
-    assert_eq!(reference_observed.0, b"\t");
-    assert_eq!(
-        reference_observed.1, b"\t",
-        "tmux 3.8 joins an Escape with input that arrives later"
-    );
-    assert_eq!(
-        tm_observed.1, TM_DELAYED_ESCAPE_KNOWN_DIFFERENCE,
-        "tm no longer differs from the reference (TMUX-39): remove the known difference"
-    );
+    assert_eq!(observed[0].0, b"\t");
+    assert_eq!(observed[0].1, sequence, "a delayed Escape is forwarded on its own");
+    assert_eq!(observed[0], observed[1]);
 }
 
 #[test]

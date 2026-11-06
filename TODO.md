@@ -19,7 +19,7 @@ Next: 41
 - **Fix with:** reference-parity
 - **Effort:** S
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, and TMUX-9 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-16, and TMUX-39 are closed
 with tests and commits recorded in git history. Add a new entry here only for a reproduced defect that the current
 suites do not cover.
 
@@ -252,18 +252,10 @@ suites do not cover.
 - **Recommendation:** Export the pane id and socket path into each pane's environment, send the caller's pane id with each request, resolve omitted targets from it first, and add an H2-style differential history that runs commands from inside panes of two sessions.
 - **Fix with:** reference-parity
 
-### TMUX-39 · P3 · tm flushes a lone Escape after escape-time but tmux 3.8 holds it
-
-- **Area:** Input
-- **Where:** `src/server.rs` `handle_client_input_bytes` and the key flush timers, which wait `escape_time.max(1)` ms
-- **Problem:** On the raw-PTY runner, tmux 3.8 with `escape-time` 0, 1, 50 or 100 never forwards a lone `ESC` on its own: the byte stays buffered and joins the next input however late it arrives (`ESC`, 50 ms, `[27;5;105~` reaches an ordinary pane as one Tab). tm forwards the `ESC` after about 1 ms, so the same input reaches the pane as `ESC` plus the literal text. The cause on the tmux side was not established; the runner answers only DA1, so an unanswered terminal query may keep the timer from firing. `tests/tmux_input.rs::escape_then_a_delay_longer_than_escape_time_follows_the_reference` pins both sides.
-- **Recommendation:** Find out why the reference holds the byte (answer the remaining terminal queries in `tests/support/raw_pty.rs` and repeat the probe); if tmux holds it in a real terminal too, change tm's flush, otherwise correct the runner and drop the known difference.
-- **Fix with:** root-cause
-
 ### TMUX-40 · P3 · An unbound key after the prefix is forwarded to the pane
 
 - **Area:** Input
 - **Where:** `src/server.rs` prefix handling in `handle_client_input_bytes`
-- **Problem:** tmux 3.8 drops a key that is not bound in the prefix table: `C-a q` sends nothing to the pane, and `C-a C-a q` sends nothing. tm forwards `q` (and `C-a q` after a second prefix). `tests/tmux_input.rs::unknown_key_after_prefix_drops_the_prefix` and `lone_escape_after_prefix_is_forwarded_once` assert tm's behaviour and have no reference run. Escape after the prefix interacts with TMUX-39 and was not isolated.
+- **Problem:** tmux 3.8 drops a key that is not bound in the prefix table: `C-a q` sends nothing to the pane, and `C-a C-a q` sends nothing. tm forwards `q` (and `C-a q` after a second prefix). `tests/tmux_input.rs::unknown_key_after_prefix_drops_the_prefix` and `lone_escape_after_prefix_is_forwarded_once` assert tm's behaviour and have no reference run.
 - **Recommendation:** Compare `C-a` followed by each class of unbound key (printable, prefix, Escape) against the reference, drop the key like tmux, and turn the two tests into differential ones.
 - **Fix with:** reference-parity
