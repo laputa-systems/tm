@@ -17,8 +17,5 @@ On failure, inspect `target/ptytest-failures/<scenario>-*/` for captured
 input/output, events, semantic screen state, and scenario metadata in
 `configuration.txt`.
 
-The parity suite selects the normal compiled profile with an explicit `-S`
-socket and no inherited `TM_SOCKET`; the reference client uses the same PTY
-harness with `tests/reference/tmux-3.8.conf`. Run it with
-`cargo test --features parity --test tmux_parity` after installing the reference
-from [`tests/support/install-tmux-ref.sh`](../tests/support/install-tmux-ref.sh).
+`ptytest` cannot attach tmux, so differential attached tests use the raw-PTY
+runner described in [testing](testing.md#differential-tests).

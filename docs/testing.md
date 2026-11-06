@@ -2,9 +2,8 @@
 
 Run the host test suite with `make test`. `make test-ci` runs it in the release
 profile. `make parity` installs the pinned tmux 3.8 reference when needed and
-runs the differential suites with `--features parity`: `tmux_parity`,
-`tmux_histories`, `tmux_unicode_history`, `tmux_bindings`, `tmux_option_rows`,
-`tmux_mode_rows`, and `tmux_lifecycle_rows`.
+runs the differential suites listed in the `parity` target of the
+[`Makefile`](../Makefile) with `--features parity`.
 
 ## Isolation
 
@@ -39,8 +38,8 @@ target that match the host CPU. On an arm64 Mac use `--platform linux/arm64`
 and `aarch64-unknown-linux-musl`; the amd64 image is emulated and much slower.
 See [release](release.md) for the commands.
 
-The integration tests use private `TM_SOCKET` paths and do not invoke tmux or
-connect to an existing tmux server. [`tests/tmux_core_compat.rs`](../tests/tmux_core_compat.rs)
+Integration tests use private `TM_SOCKET` or `-S` paths and never connect to
+an existing server; only the differential suites start the reference tmux. [`tests/tmux_core_compat.rs`](../tests/tmux_core_compat.rs)
 covers command, session, window, pane, PTY, capture, format, option, and
 `run-shell` behavior. Copy mode, buffers, and compiled startup settings have
 focused suites in [`tests/tmux_copy_mode_compat.rs`](../tests/tmux_copy_mode_compat.rs),
@@ -118,8 +117,8 @@ the cargo-built `tm`. [`tests/support/tm_bin.rs`](../tests/support/tm_bin.rs)
 is the only place that resolves it, and `tests/parity_contract.rs` fails when a
 test uses `CARGO_BIN_EXE_tm` directly. `make qualify` runs `make release` and
 `make verify-release`, then the full suite and `make parity` against
-`target/$(TARGET)/dist/tm`. The release workflow does not run it, so run it by hand before a release; it takes about 90 seconds
-on x86_64 Linux.
+`target/$(TARGET)/dist/tm`. The release workflow does not run it, so run it by hand before a release.
+It takes about 90 seconds on x86_64 Linux.
 
 Input timing follows the compiled profile. With `escape-time=0`, a partial
 terminal sequence gets a 1 ms deadline before it is forwarded and a key that

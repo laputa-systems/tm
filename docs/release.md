@@ -8,15 +8,15 @@ The manually triggered GitHub Actions release workflow builds these targets:
 - `aarch64-unknown-linux-musl`
 
 Linux executables must have no ELF interpreter or shared-library dependency.
-The workflow zips the two Linux executables and creates a prerelease named
-`release-<sha>`, where `<sha>` is the full 40-character commit SHA, when run through `workflow_dispatch`. The macOS executable
+When run through `workflow_dispatch`, the workflow zips the two Linux
+executables and creates a prerelease named `release-<sha>`, where `<sha>` is
+the full 40-character commit SHA. The macOS executable
 is built and tested in the workflow and is not attached to that release. Linux
 builds use the toolchain in [`Dockerfile`](../Dockerfile).
 
 For local builds, `make release TARGET=<target>` builds the release. Run
-`make verify-release TARGET=<target>` to check Linux static linking. On
-macOS, `make install` builds the default target, copies it to `~/.local/bin/tm`,
-and applies an ad hoc code signature.
+`make verify-release TARGET=<target>` to check Linux static linking. `make install` builds the release, copies it to `~/.local/bin/tm`, and on
+macOS applies an ad hoc code signature.
 
 `make qualify` runs `make release` and `make verify-release`, then the full
 test suite and `make parity` against the dist binary through `TM_BIN`. The release workflow does

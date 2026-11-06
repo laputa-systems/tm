@@ -29,9 +29,8 @@ medians:
 | 120×40, 4 panes | 129.6 µs | 126.6 µs |
 | 120×40 delta, 4 panes | 393.7 µs | 392.3 µs |
 
-The status row now fills the line in `status-bg` and right-aligns
-`status-right`, which adds a few bytes per frame.
-All medians stayed inside the observed spread. `tests/tmux_liveness.rs`
+All medians stayed inside the observed spread; the full-width status row
+accounts for the small full-render increase. `tests/tmux_liveness.rs`
 covers blocked helpers, nonreading pipes, nonreading panes, ordered input,
 and a stalled attached client; `tests/tmux_apps.rs` covers resize, detach,
 reattach, and idle silence.
