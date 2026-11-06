@@ -272,3 +272,52 @@ fn out_of_range_session_sizes_are_rejected_like_tmux() {
     assert_responsive(&tm, "rejected sizes");
     assert!(tm.ok(&["has-session", "-t", "S"]).is_empty());
 }
+
+fn process_has_exited(pid: &str) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat
+            .rsplit(')')
+            .next()
+            .is_some_and(|rest| rest.trim_start().starts_with('Z')),
+        Err(_) => true,
+    }
+}
+
+fn wait_for_exit(pid: &str, deadline: Duration) -> bool {
+    let deadline = Instant::now() + deadline;
+    while Instant::now() < deadline {
+        if process_has_exited(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    process_has_exited(pid)
+}
+
+#[test]
+fn a_daemon_exits_after_its_last_session_when_the_socket_file_is_gone() {
+    let scratch = Scratch::new("liveness-socket-removed");
+    let tm = Mux::tm(&scratch, "tm");
+    create_session(&tm, "S", "sleep 1");
+    let pid = tm.ok(&["display-message", "-p", "-t", "S", "#{pid}"]).trim().to_owned();
+    std::fs::remove_file(tm.socket()).expect("remove socket file");
+    assert!(
+        wait_for_exit(&pid, Duration::from_secs(5)),
+        "daemon {pid} stayed alive after its last session ended"
+    );
+}
+
+#[test]
+fn a_daemon_exits_on_sigterm_when_the_socket_file_is_gone() {
+    let scratch = Scratch::new("liveness-socket-removed-term");
+    let tm = Mux::tm(&scratch, "tm");
+    create_session(&tm, "S", "sleep 30");
+    let pid = tm.ok(&["display-message", "-p", "-t", "S", "#{pid}"]).trim().to_owned();
+    std::fs::remove_file(tm.socket()).expect("remove socket file");
+    // SAFETY: signalling the daemon pid reported by the daemon under test.
+    assert_eq!(unsafe { libc::kill(pid.parse().expect("pid"), libc::SIGTERM) }, 0);
+    assert!(
+        wait_for_exit(&pid, Duration::from_secs(5)),
+        "daemon {pid} ignored SIGTERM"
+    );
+}

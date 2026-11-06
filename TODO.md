@@ -1,7 +1,7 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, and TMUX-54 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, and TMUX-57 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
@@ -21,15 +21,6 @@ suites do not cover.
 - **Where:** `src/server.rs:651`, `src/server.rs:4948-4951`, `src/server.rs:7282-7320`, `src/server.rs:455-477`
 - **Problem:** The CLI path runs foreground `run-shell` outside the state lock, but key bindings and the command prompt reach `run_shell` from the attach input thread while it holds `state.lock()`, and run `Command::output()` and the `-d` sleep inline. Every pane reader, renderer and command waits until the script ends. Unproven: traced end to end by reading; not run in an attached client.
 - **Recommendation:** Run bound and prompted `run-shell` on a detached thread, or release the lock around the spawn as the CLI path does.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** M
-
-### TMUX-57 · P2 · A daemon whose socket was removed cannot exit
-
-- **Area:** Concurrency
-- **Where:** `src/server.rs:318-326`, `src/server.rs:384-397`, `src/server.rs:493-495`
-- **Problem:** Shutdown wakes the blocking `accept` by connecting to the public socket path and ignores failure. Proven: after `rm` of the socket, a daemon whose last session ended stayed alive, and SIGTERM was logged but did not stop it; only SIGKILL did. With `ulimit -n 16` the daemon and a `kill-server` call hung until another connection arrived (fd exhaustion as the cause is unproven). `/tmp` cleaners remove idle sockets the same way.
-- **Recommendation:** Wake the accept loop with a self-pipe or eventfd and `poll` (or a nonblocking listener) instead of connecting to the path.
 - **Fix with:** lifecycle-concurrency
 - **Effort:** M
 

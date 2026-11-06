@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -275,7 +276,7 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
     let listener = bind_private(path)?;
     log.write(&format!("listening on {}", path.display()));
     drop(lock);
-    let gate = Arc::new(ShutdownGate::new(path));
+    let gate = Arc::new(ShutdownGate::new()?);
     let mut initial_state = ServerState::new();
     initial_state.shutdown = Some(Arc::clone(&gate));
     initial_state.socket_path = Some(path.to_owned());
@@ -353,8 +354,51 @@ enum SocketAfterClose {
     Leave,
 }
 
+struct WakePipe {
+    read: OwnedFd,
+    write: OwnedFd,
+}
+
+impl WakePipe {
+    fn new() -> io::Result<Self> {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: fds is a two-element array as pipe requires.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: pipe returned two fresh descriptors that nothing else owns.
+        let pipe = unsafe {
+            Self {
+                read: OwnedFd::from_raw_fd(fds[0]),
+                write: OwnedFd::from_raw_fd(fds[1]),
+            }
+        };
+        for fd in [&pipe.read, &pipe.write] {
+            let fd = fd.as_raw_fd();
+            // SAFETY: fcntl only adjusts flags on a descriptor this pipe owns.
+            let failed = unsafe {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1
+                    || libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) == -1
+            };
+            if failed {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(pipe)
+    }
+
+    fn wake(&self) {
+        let byte = 1_u8;
+        // SAFETY: writes one byte from a live local to the owned pipe end; a
+        // full pipe already holds a pending wake, so the result is ignored.
+        unsafe {
+            libc::write(self.write.as_raw_fd(), (&raw const byte).cast(), 1);
+        }
+    }
+}
+
 struct ShutdownGate {
-    path: PathBuf,
+    wake: WakePipe,
     closing: AtomicBool,
     removes_socket: AtomicBool,
     closed: Mutex<bool>,
@@ -374,16 +418,16 @@ impl Drop for InFlight {
 }
 
 impl ShutdownGate {
-    fn new(path: &Path) -> Self {
-        Self {
-            path: path.to_owned(),
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            wake: WakePipe::new()?,
             closing: AtomicBool::new(false),
             removes_socket: AtomicBool::new(false),
             closed: Mutex::new(false),
             closed_signal: Condvar::new(),
             in_flight: Mutex::new(0),
             idle_signal: Condvar::new(),
-        }
+        })
     }
 
     fn is_closing(&self) -> bool {
@@ -404,7 +448,7 @@ impl ShutdownGate {
         if self.closing.swap(true, Ordering::SeqCst) {
             return;
         }
-        let _ = UnixStream::connect(&self.path);
+        self.wake.wake();
     }
 
     fn mark_closed(&self) {
@@ -464,18 +508,45 @@ fn serve(
     gate: &Arc<ShutdownGate>,
     path: &Path,
 ) -> io::Result<()> {
-    let outcome = loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if let Err(error) = spawn_connection(stream, state, gate) {
-                    break Err(error);
-                }
-                if gate.is_closing() {
-                    break Ok(());
-                }
+    listener.set_nonblocking(true)?;
+    let outcome = 'serving: loop {
+        if gate.is_closing() {
+            break Ok(());
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: listener.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: gate.wake.read.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: fds is a live two-element pollfd array.
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
             }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => break Err(error),
+            break Err(error);
+        }
+        if gate.is_closing() {
+            break Ok(());
+        }
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if let Err(error) = spawn_connection(stream, state, gate) {
+                        break 'serving Err(error);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => break 'serving Err(error),
+            }
         }
     };
     if gate.socket_after_close() == SocketAfterClose::Remove {
