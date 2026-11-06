@@ -18,16 +18,19 @@ state is unchanged and that its pane scenario emits one full-screen clear.
 Attached rendering suppresses byte-identical frames and waits for a render
 revision, so stable serialization and idle wakeups are part of the contract.
 
-Measured 2026-10-30 on the aarch64 macOS host with the pinned toolchain,
-interleaved against the campaign checkpoint `af1d5d7`:
+Measured 2026-11-06 on the x86_64 Linux host with the pinned toolchain,
+interleaved four times each against `d171bbd`; medians of the four run
+medians:
 
-| Fixture | Candidate median | Checkpoint median |
+| Fixture | Candidate median | Baseline median |
 | --- | --- | --- |
-| 80×24, 1 pane | 41.7 µs | 41.8 µs |
-| 80×24, 2 panes | 50.8 µs | 50.9 µs |
-| 120×40, 4 panes | 124.0 µs | 123.2 µs |
-| 120×40 delta, 4 panes | 392.2 µs | 389.3 µs |
+| 80×24, 1 pane | 38.8 µs | 37.1 µs |
+| 80×24, 2 panes | 51.4 µs | 48.5 µs |
+| 120×40, 4 panes | 129.6 µs | 126.6 µs |
+| 120×40 delta, 4 panes | 393.7 µs | 392.3 µs |
 
+The status row now fills the line in `status-bg` and right-aligns
+`status-right`, which adds a few bytes per frame.
 All medians stayed inside the observed spread. `tests/tmux_liveness.rs`
 covers blocked helpers, nonreading pipes, nonreading panes, ordered input,
 and a stalled attached client; `tests/tmux_apps.rs` covers resize, detach,
