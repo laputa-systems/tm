@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 41
+Next: 45
 
 ### TMUX-10 · P3 · A session-scoped status-left is not rendered
 
@@ -259,3 +259,39 @@ suites do not cover.
 - **Problem:** tmux 3.8 drops a key that is not bound in the prefix table: `C-a q` sends nothing to the pane, and `C-a C-a q` sends nothing. tm forwards `q` (and `C-a q` after a second prefix). `tests/tmux_input.rs::unknown_key_after_prefix_drops_the_prefix` and `lone_escape_after_prefix_is_forwarded_once` assert tm's behaviour and have no reference run.
 - **Recommendation:** Compare `C-a` followed by each class of unbound key (printable, prefix, Escape) against the reference, drop the key like tmux, and turn the two tests into differential ones.
 - **Fix with:** reference-parity
+
+### TMUX-41 · P3 · A wide character that cannot fit at the right margin does not mark its row wrapped
+
+- **Area:** Terminal
+- **Where:** `src/terminal.rs` `write_terminal_character`; `vt100` 0.16.2 `Screen::text`
+- **Problem:** tmux marks a row wrapped when a wide character cannot fit in the last column and moves to the next row. `vt100` sets the wrapped flag only when the last cell already has contents, so `capture-pane -J` leaves a break where tmux joins (`abcdefghi` then `中Z` in a 10-column pane). Pinned by the `wide_characters_margin_wrap` entries in `KNOWN_DIFFERENCES`.
+- **Recommendation:** Carry the wrapped flag in tm's own grid layer, or patch the grid so a wide character that does not fit wraps with the flag set.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-42 · P2 · A resize does not reflow wrapped lines
+
+- **Area:** Terminal
+- **Where:** `src/model.rs` `resize_parser_to_rect`; `vt100` `Screen::set_size`
+- **Problem:** tmux reflows wrapped lines and their history when a window narrows or widens, and restores them when it widens again. tm truncates rows on a narrower resize and never recovers the text; a program that does not redraw loses its output. Pinned by the `wide_characters_resize_narrower` and `wide_characters_resize_wider` entries in `KNOWN_DIFFERENCES`.
+- **Recommendation:** Keep per-row wrapped flags and written extents in tm's grid and port `grid_reflow` from tmux 3.8 `grid.c`.
+- **Fix with:** reference-parity
+- **Effort:** L
+
+### TMUX-43 · P3 · History trims one line at a time instead of a tenth of the limit
+
+- **Area:** History
+- **Where:** `src/model.rs` parser scrollback length
+- **Problem:** When the history reaches `history-limit`, tmux 3.8 drops `limit / 10` lines at once (`grid_collect_history`), so the retained history oscillates between 90% and 100%. `vt100` drops one line per scrolled line, so `capture-pane -S -` starts at a different line after the limit is reached. Pinned by the `history_limit_trim_chunk` entries in `KNOWN_DIFFERENCES`.
+- **Recommendation:** Own the scrollback in tm and trim it in tmux's chunks, with a differential probe that prints past the limit one line at a time.
+- **Fix with:** reference-parity
+- **Effort:** M
+
+### TMUX-44 · P3 · resize-window is not implemented
+
+- **Area:** Commands
+- **Where:** `src/command.rs`
+- **Problem:** tmux 3.8 has `resize-window` (`-x`, `-y`, `-A`, `-D`, `-U`, `-L`, `-R`); tm has no such command, so a detached session cannot be resized without an attached client. `tests/tmux_unicode_history.rs` resizes through attached raw-PTY clients instead.
+- **Recommendation:** Add the command with the `window-size` option semantics and a differential test of each flag.
+- **Fix with:** reference-parity
+- **Effort:** M

@@ -84,6 +84,17 @@ pub fn ddmin<T: Clone>(items: &[T], fails: &mut dyn FnMut(&[T]) -> bool) -> Vec<
     current
 }
 
+pub fn reference_pair(label: &str) -> Pair {
+    let scratch = Scratch::new(label);
+    let tm = Mux::tm(&scratch, "tm");
+    let reference = Mux::reference(&scratch, "reference");
+    Pair {
+        tm,
+        reference,
+        _scratch: scratch,
+    }
+}
+
 pub struct Pair {
     pub tm: Mux,
     pub reference: Mux,
@@ -92,14 +103,7 @@ pub struct Pair {
 
 impl Pair {
     pub fn new(label: &str) -> Self {
-        let scratch = Scratch::new(label);
-        let tm = Mux::tm(&scratch, "tm");
-        let reference = Mux::reference(&scratch, "reference");
-        Self {
-            tm,
-            reference,
-            _scratch: scratch,
-        }
+        reference_pair(label)
     }
 
     pub fn both(&self, test: &str, arguments: &[&str]) -> Result<(Outcome, Outcome), String> {

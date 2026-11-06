@@ -40,6 +40,11 @@ name = "tmux_histories"
 path = "tests/tmux_histories.rs"
 required-features = ["parity"]
 
+[[test]]
+name = "tmux_unicode_history"
+path = "tests/tmux_unicode_history.rs"
+required-features = ["parity"]
+
 [[bench]]
 name = "tm_performance"
 path = "benches/tm_performance.rs"
