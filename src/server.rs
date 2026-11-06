@@ -1795,7 +1795,7 @@ impl ServerState {
         let size = size.bounded();
         let base_index = self.global_base_index();
         let pane_id = self.next_pane_id();
-        let mut pane = self.new_pane(
+        let pane = self.new_pane(
             shared,
             NewPaneOptions {
                 pane_id,
@@ -1807,7 +1807,6 @@ impl ServerState {
                 session_index: None,
             },
         )?;
-        pane.focused = true;
         let window_id = self.next_window_id;
         self.next_window_id += 1;
         let mut window = Window::new(
