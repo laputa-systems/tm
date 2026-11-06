@@ -1,19 +1,10 @@
 Prefix: TMUX
 Next: 72
 
-TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, and TMUX-53 are closed
+TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, and TMUX-54 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
 (`vt100` grid limits listed in `INTENTIONAL_DIFFERENCES`). Add a new entry here only for a reproduced defect that the current
 suites do not cover.
-
-### TMUX-54 · P2 · An oversized window size aborts the daemon and every session
-
-- **Area:** Errors
-- **Where:** `src/model.rs:20-25`, `src/server.rs:692`, `src/server.rs:8745`, `src/protocol.rs:1587-1589`
-- **Problem:** `Size::bounded` enforces only a minimum, and sizes from `new-session -x/-y`, attach and resize frames reach `vt100::Parser::new`, which allocates the whole grid. Proven: under `ulimit -v 4GB`, `tm new-session -d -x 20000 -y 20000` killed the daemon and an unrelated session; `-x 65535 -y 65535` without the limit made the daemon exit. A typo or any same-user process loses all sessions.
-- **Recommendation:** Make the maximum part of the size type (tmux caps at 10000) and reject larger values at the command and decode boundaries with an error.
-- **Fix with:** make-invalid-states-unrepresentable
-- **Effort:** S
 
 ### TMUX-55 · P2 · run-shell output and pane input are buffered without bound
 

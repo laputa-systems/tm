@@ -246,3 +246,29 @@ fn pane_programs_start_with_default_signal_dispositions() {
         "0000000000000000"
     );
 }
+
+#[test]
+fn out_of_range_session_sizes_are_rejected_like_tmux() {
+    let scratch = Scratch::new("liveness-size");
+    let tm = Mux::tm(&scratch, "tm");
+    create_session(&tm, "S", "sleep 30");
+    for (arguments, message) in [
+        (["-x", "65536"], "width too large"),
+        (["-x", "0"], "width too small"),
+        (["-y", "65536"], "height too large"),
+        (["-y", "0"], "height too small"),
+        (["-x", "wide"], "width invalid"),
+    ] {
+        let mut command = vec!["new-session", "-d", "-s", "BAD"];
+        command.extend(arguments);
+        let outcome = tm.outcome(&command);
+        assert_ne!(outcome.status, parity::ExitStatus::Code(0), "{arguments:?}");
+        assert!(
+            String::from_utf8_lossy(&outcome.stderr).contains(message),
+            "{arguments:?}: {:?}",
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+    }
+    assert_responsive(&tm, "rejected sizes");
+    assert!(tm.ok(&["has-session", "-t", "S"]).is_empty());
+}

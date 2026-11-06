@@ -772,7 +772,7 @@ fn attach_client(
         .ok();
 
     let mut previous = Vec::new();
-    let mut terminal = vt100::Parser::new(size.rows.max(1), size.cols.max(1), 10_000);
+    let mut terminal = vt100::Parser::new(size.rows().max(1), size.cols().max(1), 10_000);
     let mut previous_screen = None;
     let mut last_size = None;
     let mut observed_revision = None;
@@ -791,7 +791,7 @@ fn attach_client(
                     break None;
                 }
                 let session_id = client.session_id;
-                let render_size = client.size.bounded();
+                let render_size = client.size;
                 let revision = state.render_revision;
                 if observed_revision == Some(revision) && last_size == Some(render_size) {
                     state = match RENDER_WAKE.wait(state) {
@@ -850,7 +850,7 @@ fn attach_client(
         observed_chrome = Some(chrome);
         last_render_at = Instant::now();
         if redraw || last_size != Some(render_size) {
-            terminal = vt100::Parser::new(render_size.rows.max(1), render_size.cols.max(1), 10_000);
+            terminal = vt100::Parser::new(render_size.rows().max(1), render_size.cols().max(1), 10_000);
             previous_screen = None;
             previous.clear();
             last_size = Some(render_size);
@@ -983,7 +983,7 @@ impl RenderBenchmark {
     #[doc(hidden)]
     pub fn new(cols: u16, rows: u16, pane_count: usize) -> Self {
         assert!(pane_count > 0, "render benchmark needs at least one pane");
-        let size = Size::new(cols, rows).bounded();
+        let size = Size::new(cols, rows);
         let shared = Arc::new(Mutex::new(ServerState::new()));
         let mut state = ServerState::new();
         state.apply_compiled_interactive_config();
@@ -1036,7 +1036,7 @@ impl RenderBenchmark {
             state,
             session_id,
             client_id,
-            terminal: vt100::Parser::new(size.rows, size.cols, 10_000),
+            terminal: vt100::Parser::new(size.rows(), size.cols(), 10_000),
             previous_screen: None,
         }
     }
@@ -1746,15 +1746,15 @@ impl ServerState {
     /// A one-row terminal cannot host both, so retain its sole row for the
     /// pane rather than creating an invalid zero-row PTY.
     fn pane_viewport(&self, size: Size, reserve_status: bool) -> Rect {
-        let size = size.bounded();
+        let size = size;
         let status_enabled = !self
             .global_options
             .get("status")
             .is_some_and(|value| !parse_on_off(value).unwrap_or(true));
-        if !reserve_status || !status_enabled || size.rows == 1 {
+        if !reserve_status || !status_enabled || size.rows() == 1 {
             return Rect {
-                cols: size.cols,
-                rows: size.rows,
+                cols: size.cols(),
+                rows: size.rows(),
                 ..Rect::default()
             };
         }
@@ -1768,8 +1768,8 @@ impl ServerState {
             } else {
                 0
             },
-            cols: size.cols,
-            rows: size.rows.saturating_sub(1),
+            cols: size.cols(),
+            rows: size.rows().saturating_sub(1),
             ..Rect::default()
         }
     }
@@ -1876,7 +1876,7 @@ impl ServerState {
                 .ok_or_else(|| "new grouped session no longer exists".to_owned())?;
             return Ok(format_session_result(session, format));
         }
-        let size = size.bounded();
+        let size = size;
         let base_index = self.global_base_index();
         let pane_id = self.next_pane_id();
         let pane = self.new_pane(
@@ -2218,7 +2218,7 @@ impl ServerState {
         });
         if empty {
             let mut pane = Pane::empty(pane_id, index, size).map_err(|error| error.to_string())?;
-            pane.parser = Parser::new(size.rows.max(1), size.cols.max(1), self.history_limit);
+            pane.parser = Parser::new(size.rows().max(1), size.cols().max(1), self.history_limit);
             pane.current_path = None;
             pane.start_path = start_path;
             pane.command_args = command.to_vec();
@@ -2246,7 +2246,7 @@ impl ServerState {
             command.join(" "),
             command.to_vec(),
         );
-        pane.parser = Parser::new(size.rows.max(1), size.cols.max(1), self.history_limit);
+        pane.parser = Parser::new(size.rows().max(1), size.cols().max(1), self.history_limit);
         pane.current_path = None;
         pane.start_path = start_path;
         spawn_reader(Arc::clone(shared), pane_id, pid, reader);
@@ -5277,7 +5277,7 @@ impl ServerState {
         else {
             return;
         };
-        session.size = size.bounded();
+        session.size = size;
         for window in &mut session.windows {
             window.set_viewport(viewport);
             for pane in &pane_iter(window) {
@@ -5509,8 +5509,8 @@ impl ServerState {
                 Rect {
                     x: 0,
                     y: 0,
-                    cols: source_size.cols,
-                    rows: source_size.rows,
+                    cols: source_size.cols(),
+                    rows: source_size.rows(),
                 },
                 &mut unzoomed_rects,
             );
@@ -5871,8 +5871,8 @@ impl ServerState {
             ("client_name", format!("client{id}")),
             ("client_session", session.name.clone()),
             ("client_session_id", format!("${}", session.id)),
-            ("client_width", client.size.cols.to_string()),
-            ("client_height", client.size.rows.to_string()),
+            ("client_width", client.size.cols().to_string()),
+            ("client_height", client.size.rows().to_string()),
             ("client_termname", "tm".to_owned()),
             ("client_control_mode", "0".to_owned()),
         ])
@@ -7252,8 +7252,8 @@ impl ServerState {
                     ("client_session_id", format!("${}", session.id)),
                     ("session_name", session.name.clone()),
                     ("session_id", format!("${}", session.id)),
-                    ("client_width", client.size.cols.to_string()),
-                    ("client_height", client.size.rows.to_string()),
+                    ("client_width", client.size.cols().to_string()),
+                    ("client_height", client.size.rows().to_string()),
                     ("client_termname", client.term.clone()),
                     ("client_control_mode", "0".to_owned()),
                 ];
@@ -8825,7 +8825,7 @@ impl ServerState {
             pane.pty.kill();
         }
         pane.pty = pty;
-        pane.parser = Parser::new(size.rows, size.cols, self.history_limit);
+        pane.parser = Parser::new(size.rows(), size.cols(), self.history_limit);
         pane.output_state = terminal::OutputState::default();
         pane.copy_mode = None;
         pane.copy_source = None;
@@ -9776,7 +9776,7 @@ impl ServerState {
                 "{left-of}" => adjacent_pane(window, window.active_pane, PaneDirection::Left),
                 "{right-of}" => adjacent_pane(window, window.active_pane, PaneDirection::Right),
                 _ => {
-                    let (columns, rows) = (i32::from(window.size.cols), i32::from(window.size.rows));
+                    let (columns, rows) = (i32::from(window.size.cols()), i32::from(window.size.rows()));
                     let (x, y) = match token {
                         "{top-left}" => (0, 0),
                         "{top-right}" => (columns - 1, 0),
@@ -11284,10 +11284,10 @@ fn render_status_prompt_cursor(
     {
         1
     } else {
-        size.rows.max(1)
+        size.rows().max(1)
     };
     let col = format_display_width(prompt)
-        .min(usize::from(size.cols.max(1)).saturating_sub(1));
+        .min(usize::from(size.cols().max(1)).saturating_sub(1));
     output.extend_from_slice(format!("\x1b[{row};{}H\x1b[?25h", col + 1).as_bytes());
 }
 
@@ -11337,14 +11337,14 @@ fn render_status_line(
     {
         return;
     }
-    let cols = usize::from(session.size.cols.max(1));
+    let cols = usize::from(session.size.cols().max(1));
     let row = if options
         .get("status-position")
         .is_some_and(|value| value == "top")
     {
         1
     } else {
-        session.size.rows.max(1)
+        session.size.rows().max(1)
     };
     output.extend_from_slice(format!("\x1b[{row};1H\x1b[K").as_bytes());
     append_status_base(output, options);
@@ -11683,8 +11683,8 @@ fn capture_absolute_offset(offset: i32, history_rows: usize) -> usize {
 
 fn render_tree_mode_overlay(output: &mut Vec<u8>, mode: &TreeMode, size: Size) {
     output.extend_from_slice(b"\x1b[?25l");
-    let rows = usize::from(size.rows.max(1));
-    let cols = usize::from(size.cols.max(1));
+    let rows = usize::from(size.rows().max(1));
+    let cols = usize::from(size.cols().max(1));
     let visible = rows.saturating_sub(1);
     for (index, entry) in mode.entries.iter().take(visible).enumerate() {
         let row = index + 1;
@@ -11766,8 +11766,8 @@ fn render_list_mode_overlay(
     size: Size,
 ) {
     output.extend_from_slice(b"\x1b[?25l");
-    let rows = usize::from(size.rows.max(1));
-    let cols = usize::from(size.cols.max(1));
+    let rows = usize::from(size.rows().max(1));
+    let cols = usize::from(size.cols().max(1));
     let visible = rows.saturating_sub(1);
     for (index, text) in texts.iter().take(visible).enumerate() {
         let row = index + 1;
@@ -14623,8 +14623,8 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         ),
         ("window_linked", "0".to_owned()),
         ("window_linked_sessions", linked_sessions.to_string()),
-        ("window_width", window.size.cols.to_string()),
-        ("window_height", window.size.rows.to_string()),
+        ("window_width", window.size.cols().to_string()),
+        ("window_height", window.size.rows().to_string()),
         (
             "window_zoomed_flag",
             if window.zoomed { "1" } else { "0" }.to_owned(),
@@ -14687,7 +14687,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         (
             "pane_at_bottom",
             if pane.rect.y.saturating_add(pane.rect.rows)
-                == window.origin_y.saturating_add(window.size.rows)
+                == window.origin_y.saturating_add(window.size.rows())
             {
                 "1"
             } else {
@@ -14701,7 +14701,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
         ),
         (
             "pane_at_right",
-            if pane.rect.x.saturating_add(pane.rect.cols) == window.size.cols {
+            if pane.rect.x.saturating_add(pane.rect.cols) == window.size.cols() {
                 "1"
             } else {
                 "0"
@@ -15673,7 +15673,7 @@ fn adjacent_pane(window: &Window, current_id: u64, direction: PaneDirection) -> 
         )
     };
     let (x, y, columns, rows) = relative(current);
-    let (window_columns, window_rows) = (i32::from(window.size.cols), i32::from(window.size.rows));
+    let (window_columns, window_rows) = (i32::from(window.size.cols()), i32::from(window.size.rows()));
     let vertical = matches!(direction, PaneDirection::Up | PaneDirection::Down);
     let edge = match direction {
         PaneDirection::Up if y == 0 => window_rows + 1,

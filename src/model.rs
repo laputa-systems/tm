@@ -6,22 +6,53 @@ use crate::copy_mode::{CopyModeKeys, CopyModeOptions, CopyModeState};
 use crate::pty::Pty;
 use crate::terminal::{self, OutputState};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Size {
-    pub cols: u16,
-    pub rows: u16,
+    cols: u16,
+    rows: u16,
+}
+
+impl Default for Size {
+    fn default() -> Self {
+        Self::new(80, 24)
+    }
 }
 
 impl Size {
+    pub(crate) const MINIMUM: u16 = 1;
+    pub(crate) const MAXIMUM: u16 = 10_000;
+
     pub(crate) const fn new(cols: u16, rows: u16) -> Self {
-        Self { cols, rows }
+        Self {
+            cols: Self::clamp(cols),
+            rows: Self::clamp(rows),
+        }
     }
 
-    pub(crate) fn bounded(self) -> Self {
-        Self {
-            cols: self.cols.max(1),
-            rows: self.rows.max(1),
+    const fn clamp(dimension: u16) -> u16 {
+        if dimension < Self::MINIMUM {
+            Self::MINIMUM
+        } else if dimension > Self::MAXIMUM {
+            Self::MAXIMUM
+        } else {
+            dimension
         }
+    }
+
+    pub(crate) const fn cols(self) -> u16 {
+        self.cols
+    }
+
+    pub(crate) const fn rows(self) -> u16 {
+        self.rows
+    }
+
+    pub(crate) const fn with_cols(self, cols: u16) -> Self {
+        Self::new(cols, self.rows)
+    }
+
+    pub(crate) const fn with_rows(self, rows: u16) -> Self {
+        Self::new(self.cols, rows)
     }
 }
 
@@ -586,7 +617,7 @@ impl Pane {
         command: String,
         command_args: Vec<String>,
     ) -> Self {
-        let size = size.bounded();
+        let size = size;
         Self {
             id,
             index,
@@ -726,7 +757,7 @@ impl Window {
             index,
             name,
             origin_y: 0,
-            size: size.bounded(),
+            size: size,
             layout: Layout::Leaf(pane.id),
             active_pane: pane.id,
             last_pane: None,
@@ -810,7 +841,7 @@ impl Window {
 
     pub(crate) fn set_viewport(&mut self, rect: Rect) {
         self.origin_y = rect.y;
-        self.size = Size::new(rect.cols, rect.rows).bounded();
+        self.size = Size::new(rect.cols, rect.rows);
         self.reflow();
     }
 

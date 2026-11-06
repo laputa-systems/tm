@@ -69,8 +69,8 @@ impl Pty {
             .transpose()?;
         #[cfg_attr(target_os = "linux", allow(unused_mut))]
         let mut winsize = libc::winsize {
-            ws_row: size.rows.max(1),
-            ws_col: size.cols.max(1),
+            ws_row: size.rows().max(1),
+            ws_col: size.cols().max(1),
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
@@ -191,8 +191,8 @@ impl Pty {
             return Ok(());
         }
         let winsize = Winsize {
-            ws_row: size.rows.max(1),
-            ws_col: size.cols.max(1),
+            ws_row: size.rows().max(1),
+            ws_col: size.cols().max(1),
             ws_xpixel: 0,
             ws_ypixel: 0,
         };

@@ -173,12 +173,12 @@ fn parse_new_session(arguments: &[String]) -> Result<InvocationSpec, String> {
     let format = flags
         .has('P')
         .then(|| flags.value('F').unwrap_or("#{session_name}:").to_owned());
-    let mut size = Size::new(80, 24);
+    let mut size = Size::default();
     if let Some(value) = flags.value('x') {
-        size.cols = parse_dimension(value, "-x")?;
+        size = size.with_cols(parse_dimension(value, "width")?);
     }
     if let Some(value) = flags.value('y') {
-        size.rows = parse_dimension(value, "-y")?;
+        size = size.with_rows(parse_dimension(value, "height")?);
     }
     Ok(InvocationSpec {
         request: Request::NewSession {
@@ -208,14 +208,14 @@ fn parse_attach(arguments: &[String]) -> Result<InvocationSpec, String> {
     })
 }
 
-fn parse_dimension(value: &str, flag: &str) -> Result<u16, String> {
+fn parse_dimension(value: &str, label: &str) -> Result<u16, String> {
     let dimension = value
-        .parse::<u16>()
-        .map_err(|_| format!("{flag} requires a positive integer"))?;
-    if dimension == 0 {
-        return Err(format!("{flag} requires a positive integer"));
+        .parse::<i64>()
+        .map_err(|_| format!("{label} invalid"))?;
+    if dimension < i64::from(Size::MINIMUM) {
+        return Err(format!("{label} too small"));
     }
-    Ok(dimension)
+    u16::try_from(dimension).map_err(|_| format!("{label} too large"))
 }
 
 fn parse_kill_session(arguments: &[String]) -> Result<InvocationSpec, String> {

@@ -1475,8 +1475,8 @@ fn put_optional_i32(output: &mut Vec<u8>, value: Option<i32>) {
 }
 
 fn put_size(output: &mut Vec<u8>, size: Size) {
-    output.extend_from_slice(&size.cols.to_le_bytes());
-    output.extend_from_slice(&size.rows.to_le_bytes());
+    output.extend_from_slice(&size.cols().to_le_bytes());
+    output.extend_from_slice(&size.rows().to_le_bytes());
 }
 
 fn direction_code(direction: PaneDirection) -> u8 {
@@ -2498,6 +2498,18 @@ mod tests {
             decode_frame(&next_tag).expect_err("tag").to_string(),
             "unknown request tag",
             "a new request variant needs a golden"
+        );
+    }
+
+    #[test]
+    fn decoded_sizes_are_clamped_to_the_window_limits() {
+        let mut bytes = vec![5, 0, 0, 0, 2];
+        bytes.extend_from_slice(&u16::MAX.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        let message = read_client_message(&mut bytes.as_slice()).expect("decode");
+        assert_eq!(
+            message,
+            ClientMessage::Resize(Size::new(10_000, 1))
         );
     }
 
