@@ -578,8 +578,22 @@ impl CopyModeState {
                         .min(self.line_width(parser, self.cursor.row));
                 }
             }
-            CopyAction::StartOfLine => self.cursor.col = 0,
-            CopyAction::EndOfLine => self.cursor.col = self.line_width(parser, self.cursor.row),
+            CopyAction::StartOfLine => {
+                let wrapped = self.wrapped_rows(parser);
+                while self.cursor.row > 0 && wrapped.get(self.cursor.row - 1) == Some(&true) {
+                    self.cursor.row -= 1;
+                }
+                self.cursor.col = 0;
+            }
+            CopyAction::EndOfLine => {
+                let wrapped = self.wrapped_rows(parser);
+                while wrapped.get(self.cursor.row) == Some(&true)
+                    && self.cursor.row + 1 < wrapped.len()
+                {
+                    self.cursor.row += 1;
+                }
+                self.cursor.col = self.line_width(parser, self.cursor.row);
+            }
             CopyAction::BeginSelection => {
                 self.selection_mode = SelectionMode::Char;
                 self.anchor = Some(self.cursor);
@@ -2203,6 +2217,14 @@ impl CopyModeState {
         (history, live)
     }
 
+    fn wrapped_rows(&self, parser: &mut Parser) -> Vec<bool> {
+        let (mut history, live) = wrapped_rows(parser);
+        let floor = self.history_floor.min(history.len());
+        history.drain(..floor);
+        history.extend(live);
+        history
+    }
+
     fn move_word(&mut self, parser: &mut Parser, action: CopyAction, repeat: usize) {
         let (history, live) = self.history_rows(parser);
         let lines = history.into_iter().chain(live).collect::<Vec<_>>();
@@ -2255,6 +2277,7 @@ impl CopyModeState {
             return Some(String::new());
         }
         let end_row = end.row.min(lines.len().saturating_sub(1));
+        let wrapped = self.wrapped_rows(parser);
         let mut output = String::new();
         if self.selection_mode == SelectionMode::Line {
             for (offset, line) in lines[start.row..=end_row].iter().enumerate() {
@@ -2295,7 +2318,7 @@ impl CopyModeState {
                 line.chars().count()
             };
             output.extend(line.chars().skip(from).take(to.saturating_sub(from)));
-            if row != end_row {
+            if row != end_row && wrapped.get(row) != Some(&true) {
                 output.push('\n');
             }
         }
@@ -2323,6 +2346,27 @@ pub(crate) fn history_rows(parser: &mut Parser) -> (Vec<String>, Vec<String>) {
     }
     parser.screen_mut().set_scrollback(0);
     let live = parser.screen().rows(0, cols).collect::<Vec<_>>();
+    parser.screen_mut().set_scrollback(saved);
+    (history, live)
+}
+
+fn wrapped_rows(parser: &mut Parser) -> (Vec<bool>, Vec<bool>) {
+    let saved = parser.screen().scrollback();
+    let rows = parser.screen().size().0;
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let max_scroll = parser.screen().scrollback();
+    let page_rows = usize::from(rows).max(1);
+    let mut history = Vec::with_capacity(max_scroll);
+    let mut start = 0;
+    while start < max_scroll {
+        let offset = max_scroll - start;
+        parser.screen_mut().set_scrollback(offset);
+        let take = offset.min(page_rows);
+        history.extend((0..take).map(|row| parser.screen().row_wrapped(row as u16)));
+        start += take;
+    }
+    parser.screen_mut().set_scrollback(0);
+    let live = (0..rows).map(|row| parser.screen().row_wrapped(row)).collect();
     parser.screen_mut().set_scrollback(saved);
     (history, live)
 }

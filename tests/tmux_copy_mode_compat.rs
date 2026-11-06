@@ -933,12 +933,21 @@ fn copy_mode_redraw_scrolls_long_and_short_rows_headlessly() {
         ]),
         "0"
     );
+    let position = || {
+        tm.body(&[
+            "display-message",
+            "-p",
+            "-t",
+            "redraw",
+            "#{scroll_position}:#{copy_cursor_line}",
+        ])
+    };
     tm.ok(&["send-keys", "-X", "history-top", "-t", "redraw"]);
-    assert!(tm.capture_until("redraw", "LONG-00").contains("LONG-00"));
+    assert_eq!(position(), "26:LONG-00-ABCDEFGHIJKL");
     tm.ok(&["send-keys", "-X", "scroll-down", "-t", "redraw"]);
-    assert!(tm.capture_until("redraw", "S-01").contains("S-01"));
+    assert_eq!(position(), "25:MNOP");
     tm.ok(&["send-keys", "-X", "scroll-down", "-t", "redraw"]);
-    assert!(tm.capture_until("redraw", "LONG-02").contains("LONG-02"));
+    assert_eq!(position(), "24:S-01");
 }
 
 #[test]

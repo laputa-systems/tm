@@ -9095,22 +9095,14 @@ impl ServerState {
         let pane = self
             .find_pane_mut(pane_id)
             .ok_or_else(|| "target pane no longer exists".to_owned())?;
-        let displayed_scrollback = pane.parser.screen().scrollback();
         let (mut history, live) = history_rows(&mut pane.parser);
         let floor = pane.history_floor.min(history.len());
         history.drain(..floor);
         let base = history.len();
         let live_rows = live.len();
         let total_rows = base.saturating_add(live_rows);
-        let default_view = start.is_none() && end.is_none();
-        let first = start.map_or_else(
-            || {
-                if default_view {
-                    base.saturating_sub(displayed_scrollback)
-                } else {
-                    base
-                }
-            },
+        let first = start.map_or(
+            base,
             |offset| {
                 if offset == i32::MIN {
                     0
@@ -9119,15 +9111,8 @@ impl ServerState {
                 }
             },
         );
-        let last = end.map_or_else(
-            || {
-                if default_view {
-                    base.saturating_sub(displayed_scrollback)
-                        .saturating_add(live_rows.saturating_sub(1))
-                } else {
-                    base.saturating_add(live_rows.saturating_sub(1))
-                }
-            },
+        let last = end.map_or(
+            base.saturating_add(live_rows.saturating_sub(1)),
             |offset| {
                 if offset == i32::MIN {
                     total_rows.saturating_sub(1)
