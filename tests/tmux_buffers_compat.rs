@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/tm_bin.rs"]
+mod tm_bin;
+
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -23,7 +26,7 @@ impl Tm {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_tm"))
+        Command::new(tm_bin::tm_bin())
             .env("TM_SOCKET", &self.socket)
             .args(args)
             .output()

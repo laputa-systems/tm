@@ -1,3 +1,6 @@
+#[path = "tm_bin.rs"]
+pub mod tm_bin;
+
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
@@ -62,7 +65,7 @@ impl Mux {
         std::fs::create_dir_all(&home).expect("create tm home");
         Self {
             implementation: Implementation::Tm,
-            binary: PathBuf::from(env!("CARGO_BIN_EXE_tm")),
+            binary: tm_bin::tm_bin(),
             socket: root.join("server.sock"),
             config: None,
             root,

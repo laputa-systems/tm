@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/tm_bin.rs"]
+mod tm_bin;
+
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -21,7 +24,7 @@ fn scratch_root() -> std::path::PathBuf {
 }
 
 fn run(socket: &str, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tm"))
+    Command::new(tm_bin::tm_bin())
         .env("TM_SOCKET", socket)
         .args(arguments)
         .output()

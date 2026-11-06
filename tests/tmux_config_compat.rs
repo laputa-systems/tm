@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/tm_bin.rs"]
+mod tm_bin;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,7 +37,7 @@ impl Tm {
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_tm"))
+        Command::new(tm_bin::tm_bin())
             .env_remove("TM_SOCKET")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")

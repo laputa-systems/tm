@@ -29,7 +29,7 @@ impl Tm {
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_tm"))
+        Command::new(parity::tm_bin::tm_bin())
             .env("TM_SOCKET", &self.socket)
             .args(arguments)
             .output()
@@ -275,8 +275,8 @@ fn targets_and_pane_ops_port_the_stable_pane_target_flow() {
         .map(|(id, _)| id)
         .collect::<Vec<_>>();
     assert_eq!(pane_ids.len(), 2, "unexpected pane listing: {panes:?}");
-    assert!(tm.capture(pane_ids[0]).contains("first"));
-    assert!(tm.capture(pane_ids[1]).contains("second"));
+    assert!(tm.capture_until_contains(pane_ids[0], "first").contains("first"));
+    assert!(tm.capture_until_contains(pane_ids[1], "second").contains("second"));
 
     tm.ok(&["select-pane", "-R", "-t", pane_ids[0]]);
     assert!(
@@ -414,7 +414,7 @@ fn grouped_windows_share_identity_and_unlink_cleanly() {
         "printf shared; sleep 30",
     ]);
     tm.ok(&["new-session", "-d", "-s", "destination", "-t", "source"]);
-    assert!(tm.capture("destination:0.0").contains("shared"));
+    assert!(tm.capture_until_contains("destination:0.0", "shared").contains("shared"));
     assert_eq!(
         tm.ok(&[
             "display-message",

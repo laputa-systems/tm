@@ -1,10 +1,13 @@
 #![cfg(unix)]
 
+#[path = "support/tm_bin.rs"]
+mod tm_bin;
+
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output};
 
 fn run(socket: &str, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tm"))
+    Command::new(tm_bin::tm_bin())
         .env("TM_SOCKET", socket)
         .args(arguments)
         .output()

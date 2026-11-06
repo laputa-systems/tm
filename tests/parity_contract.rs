@@ -54,6 +54,21 @@ fn parity_matrix_covers_every_compiled_option_and_effective_binding() {
 }
 
 #[test]
+fn only_the_binary_helper_names_the_cargo_built_tm() {
+    let needle = format!("CARGO_BIN_EXE_{}\"", "tm");
+    let sources = Sources::load();
+    let offenders: Vec<&String> = sources
+        .files
+        .iter()
+        .filter(|(path, text)| {
+            path.starts_with("tests/") && path.as_str() != "tests/support/tm_bin.rs" && text.contains(&needle)
+        })
+        .map(|(path, _)| path)
+        .collect();
+    assert!(offenders.is_empty(), "resolve the tm binary through tests/support/tm_bin.rs: {offenders:?}");
+}
+
+#[test]
 fn cli_flag_rows_are_classified_and_cited() {
     let rows = flag_rows(section(MATRIX, "## CLI flags", "## Baseline"));
     assert!(!rows.is_empty(), "CLI flag matrix is empty");

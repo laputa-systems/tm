@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/tm_bin.rs"]
+mod tm_bin;
+
 use ptytest::{Color, CommandSpec, ExitStatus, ProtocolProfile, PtyTest, Scenario, Size, TestEnv};
 use std::fs;
 use std::process::{Command, Output};
@@ -37,7 +40,7 @@ impl TestServer {
 
     fn create_fixture_session(&self) {
         let fixture = env!("CARGO_BIN_EXE_tm-pty-fixture");
-        let created = Command::new(env!("CARGO_BIN_EXE_tm"))
+        let created = Command::new(tm_bin::tm_bin())
             .env("TM_SOCKET", &self.socket)
             .args([
                 "new-session",
@@ -75,7 +78,7 @@ impl Drop for TestServer {
 }
 
 fn run_tm<const N: usize>(socket: &str, args: [&str; N]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tm"))
+    Command::new(tm_bin::tm_bin())
         .env("TM_SOCKET", socket)
         .args(args)
         .output()
@@ -92,7 +95,7 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
     let scenario = Scenario::new("tm attached client")
         .expect("valid scenario label")
         .command(
-            CommandSpec::new(env!("CARGO_BIN_EXE_tm"))
+            CommandSpec::new(tm_bin::tm_bin())
                 .env("TM_SOCKET", &socket)
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
@@ -193,7 +196,7 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
     let scenario = Scenario::new("tm attached panes")
         .expect("valid scenario label")
         .command(
-            CommandSpec::new(env!("CARGO_BIN_EXE_tm"))
+            CommandSpec::new(tm_bin::tm_bin())
                 .env("TM_SOCKET", &socket)
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
@@ -411,7 +414,7 @@ fn attached_client_forwards_application_mouse_events_without_entering_copy_mode(
     let scenario = Scenario::new("tm attached application mouse")
         .expect("valid scenario label")
         .command(
-            CommandSpec::new(env!("CARGO_BIN_EXE_tm"))
+            CommandSpec::new(tm_bin::tm_bin())
                 .env("TM_SOCKET", &socket)
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
@@ -498,7 +501,7 @@ fn opening_pane_from_attached_client_preserves_existing_pane_contents() {
     let scenario = Scenario::new("tm attached split preserves content")
         .expect("valid scenario label")
         .command(
-            CommandSpec::new(env!("CARGO_BIN_EXE_tm"))
+            CommandSpec::new(tm_bin::tm_bin())
                 .env("TM_SOCKET", &socket)
                 .args(["attach-session", "-t", "pty-e2e"]),
         )
