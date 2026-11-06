@@ -1,0 +1,1 @@
+Decide whether to publish a ptytest release. tm could then drop tests/support/pty_reap.rs and use ptytest for attached tests again.
