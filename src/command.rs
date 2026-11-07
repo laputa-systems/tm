@@ -1075,7 +1075,7 @@ fn parse_load_buffer(arguments: &[String]) -> Result<InvocationSpec, String> {
     } else {
         std::fs::read(path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::IsADirectory {
-                format!("I/O error: {path}")
+                format!("Input/output error: {path}")
             } else {
                 io_error_text(&error, path)
             }
