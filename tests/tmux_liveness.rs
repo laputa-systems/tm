@@ -237,19 +237,30 @@ fn pane_programs_start_with_default_signal_dispositions() {
     let scratch = Scratch::new("liveness-sigign");
     let tm = Mux::tm(&scratch, "tm");
     let output = scratch.root().join("sigign.txt");
-    create_session(
-        &tm,
-        "S",
-        &format!(
-            "sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status > {0}.tmp; mv {0}.tmp {0}; sleep 30",
-            output.display()
-        ),
+    #[cfg(target_os = "linux")]
+    let command = format!(
+        "sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status > {0}.tmp; mv {0}.tmp {0}; sleep 30",
+        output.display()
     );
-    assert!(wait_for_path(&output, Duration::from_secs(5)));
-    assert_eq!(
-        std::fs::read_to_string(&output).expect("sigign").trim(),
-        "0000000000000000"
-    );
+    #[cfg(not(target_os = "linux"))]
+    let command = format!("kill -13 $$; printf survived > {}", output.display());
+    create_session(&tm, "S", &command);
+    #[cfg(target_os = "linux")]
+    {
+        assert!(wait_for_path(&output, Duration::from_secs(5)));
+        assert_eq!(
+            std::fs::read_to_string(&output).expect("sigign").trim(),
+            "0000000000000000"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert!(!wait_for_path(&output, Duration::from_millis(1000)));
+        assert_ne!(
+            tm.outcome(&["has-session", "-t", "S"]).status,
+            parity::ExitStatus::Code(0)
+        );
+    }
 }
 
 #[test]
@@ -376,13 +387,28 @@ fn prompted_run_shell_does_not_block_other_commands() {
     );
 }
 
-fn peak_resident_kib(pid: &str) -> u64 {
-    std::fs::read_to_string(format!("/proc/{pid}/status"))
-        .expect("read daemon status")
-        .lines()
-        .find_map(|line| line.strip_prefix("VmHWM:"))
-        .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
-        .expect("VmHWM line")
+fn resident_kib(pid: &str) -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .expect("read daemon status")
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+            .expect("VmHWM line")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", pid])
+            .output()
+            .expect("run ps for daemon rss");
+        assert!(output.status.success(), "ps failed for {pid}");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .expect("ps rss value")
+    }
 }
 
 #[test]
@@ -391,13 +417,13 @@ fn run_shell_output_does_not_accumulate_in_the_daemon() {
     let tm = Mux::tm(&scratch, "tm");
     create_session(&tm, "S", "sleep 30");
     let pid = tm.ok(&["display-message", "-p", "-t", "S", "#{pid}"]).trim().to_owned();
-    let baseline = peak_resident_kib(&pid);
+    let baseline = resident_kib(&pid);
     let marker = scratch.root().join("flood.done");
     let flood = format!("head -c 400000000 /dev/zero; touch {}", marker.display());
     tm.ok(&["run-shell", "-b", "--", &flood]);
     assert!(wait_for_path(&marker, Duration::from_secs(30)));
     let output = tm.ok(&["run-shell", "--", "head -c 400000000 /dev/zero"]);
     assert!(output.len() <= 2 * 1024 * 1024, "foreground output was {} bytes", output.len());
-    let growth = peak_resident_kib(&pid).saturating_sub(baseline);
-    assert!(growth < 64 * 1024, "daemon peak RSS grew by {growth} KiB");
+    let growth = resident_kib(&pid).saturating_sub(baseline);
+    assert!(growth < 64 * 1024, "daemon resident size grew by {growth} KiB");
 }
