@@ -304,12 +304,24 @@ fn the_largest_session_size_keeps_one_pane_grid_affordable() {
 }
 
 fn process_has_exited(pid: &str) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => stat
-            .rsplit(')')
-            .next()
-            .is_some_and(|rest| rest.trim_start().starts_with('Z')),
-        Err(_) => true,
+    #[cfg(target_os = "linux")]
+    {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat
+                .rsplit(')')
+                .next()
+                .is_some_and(|rest| rest.trim_start().starts_with('Z')),
+            Err(_) => true,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Ok(pid) = pid.parse::<libc::pid_t>() else {
+            return true;
+        };
+        let signalled = unsafe { libc::kill(pid, 0) };
+        signalled != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     }
 }
 

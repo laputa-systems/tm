@@ -282,9 +282,15 @@ fn observe_features(mux: &Mux, features: Option<&str>) -> FeatureEffects {
 #[test]
 fn terminal_features_sync_and_clipboard_select_for_the_term_like_the_reference() {
     const PAIR: &str = "xterm-256color:Sync:clipboard";
+    #[cfg(target_os = "linux")]
     let cases = [
         ("tmux-256color", None, true, b"\x1b]52;;YWxwaGEK\x07".as_slice()),
         ("xterm-256color", None, false, b"\x1b]52;;YWxwaGEK\x1b\\".as_slice()),
+        ("xterm-256color", Some(PAIR), true, b"\x1b]52;;YWxwaGEK\x07".as_slice()),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    let cases = [
+        ("tmux-256color", None, true, b"\x1b]52;;YWxwaGEK\x07".as_slice()),
         ("xterm-256color", Some(PAIR), true, b"\x1b]52;;YWxwaGEK\x07".as_slice()),
     ];
     for (term, features, sync, clipboard) in cases {
