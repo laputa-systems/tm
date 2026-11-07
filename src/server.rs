@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -13,6 +13,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use vt100::{Color, Parser};
 
 use crate::capture::{CaptureFormat, CaptureStyle, capture_row};
@@ -6975,7 +6976,7 @@ impl ServerState {
         all: bool,
         value_only: bool,
     ) -> String {
-        let mut names = std::collections::BTreeSet::new();
+        let mut names = FxHashSet::default();
         let mut owners = vec![owner];
         if all {
             match owner {
@@ -7032,6 +7033,8 @@ impl ServerState {
             };
             names.extend(local);
         }
+        let mut names = names.into_iter().collect::<Vec<_>>();
+        names.sort_unstable();
         names
             .into_iter()
             .flat_map(|name| {
@@ -11191,7 +11194,7 @@ fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
     }
     let mut separators = Vec::new();
     window.layout.separators(window.layout_rect(), &mut separators);
-    let mut cells = BTreeMap::<(u16, u16), u8>::new();
+    let mut cells = FxHashMap::<(u16, u16), u8>::default();
     for (x, y, axis) in separators {
         let bit = match axis {
             Axis::Horizontal => 1,
@@ -11202,6 +11205,8 @@ fn render_layout_separators(output: &mut Vec<u8>, window: &Window) {
             .and_modify(|value| *value |= bit)
             .or_insert(bit);
     }
+    let mut cells = cells.into_iter().collect::<Vec<_>>();
+    cells.sort_unstable_by_key(|&((x, y), _)| (x, y));
     for ((x, y), kind) in cells {
         let glyph = match kind {
             1 => "│",

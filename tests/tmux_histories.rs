@@ -10,7 +10,6 @@ mod parity;
 #[allow(dead_code)]
 mod raw_pty;
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -50,7 +49,7 @@ const OBSERVATIONS: [&[&str]; 3] = [
     ],
 ];
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum OpKind {
     NewSession,
     NewWindow,
@@ -756,7 +755,7 @@ fn topology_histories_match_the_reference() {
     let started = Instant::now();
     let seeds = history::seeds(&(0..DEFAULT_SEEDS).collect::<Vec<_>>());
     let next = AtomicUsize::new(0);
-    let results = std::sync::Mutex::new(BTreeMap::new());
+    let results = std::sync::Mutex::new(rustc_hash::FxHashMap::default());
     std::thread::scope(|scope| {
         for _ in 0..WORKERS {
             scope.spawn(|| {
@@ -772,9 +771,9 @@ fn topology_histories_match_the_reference() {
         }
     });
     let results = results.into_inner().expect("results");
-    let failures: Vec<&String> = results
-        .values()
-        .filter_map(|result| result.as_ref().err())
+    let failures: Vec<&String> = by_seed(&results)
+        .into_iter()
+        .filter_map(|(_, result)| result.as_ref().err())
         .collect();
     assert!(
         failures.is_empty(),
@@ -789,9 +788,9 @@ fn topology_histories_match_the_reference() {
     );
     eprintln!("topology: {} seeds in {:?}", seeds.len(), started.elapsed());
     if std::env::var_os("TM_HISTORY_SEED").is_none() {
-        let seen: BTreeSet<OpKind> = results
-            .iter()
-            .filter(|(seed, _)| **seed < COVERAGE_SEEDS)
+        let seen: rustc_hash::FxHashSet<OpKind> = by_seed(&results)
+            .into_iter()
+            .filter(|(seed, _)| *seed < COVERAGE_SEEDS)
             .flat_map(|(_, result)| result.as_ref().expect("checked above").iter().copied())
             .collect();
         let missing: Vec<OpKind> = WEIGHTS
@@ -1116,7 +1115,7 @@ const IN_PANE_COMMANDS: [&str; 7] = [
 const IN_PANE_TIMEOUT: Duration = Duration::from_secs(6);
 const PROMPT_COMMANDS: [&str; 5] = ["new-window", "rename-window", "split-window", "next-window", "rename-session"];
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum AttachedKind {
     Attach,
     DetachKey,
@@ -1170,9 +1169,9 @@ struct World {
     client_sizes: [Option<(u16, u16)>; 2],
     window_counts: std::collections::HashMap<String, usize>,
     active_window_sizes: std::collections::HashMap<String, (u16, u16)>,
-    scrolled_sessions: BTreeSet<String>,
-    split_sessions: BTreeSet<String>,
-    scrolled_windows: BTreeSet<String>,
+    scrolled_sessions: rustc_hash::FxHashSet<String>,
+    split_sessions: rustc_hash::FxHashSet<String>,
+    scrolled_windows: rustc_hash::FxHashSet<String>,
 }
 
 fn slot_of(width: u64) -> usize {
@@ -1183,6 +1182,13 @@ fn sort_lines(bytes: &[u8]) -> Vec<String> {
     let mut lines: Vec<String> = String::from_utf8_lossy(bytes).lines().map(str::to_owned).collect();
     lines.sort();
     lines
+}
+
+/// Seed order, so failure reports stay in the order the seeds were scheduled.
+fn by_seed<V>(results: &rustc_hash::FxHashMap<u64, V>) -> Vec<(u64, &V)> {
+    let mut seeds: Vec<u64> = results.keys().copied().collect();
+    seeds.sort_unstable();
+    seeds.into_iter().map(|seed| (seed, &results[&seed])).collect()
 }
 
 fn client_name(mux: &parity::Mux, slot: usize) -> Option<String> {
@@ -1220,9 +1226,9 @@ impl World {
             client_sizes: [None, None],
             window_counts: std::collections::HashMap::new(),
             active_window_sizes: std::collections::HashMap::new(),
-            scrolled_sessions: BTreeSet::new(),
-            split_sessions: BTreeSet::new(),
-            scrolled_windows: BTreeSet::new(),
+            scrolled_sessions: rustc_hash::FxHashSet::default(),
+            split_sessions: rustc_hash::FxHashSet::default(),
+            scrolled_windows: rustc_hash::FxHashSet::default(),
         };
         for name in ["a", "b"] {
             let command = ["new-session", "-d", "-s", name, "--", "sh", "-c", "echo hello-$0; exec sleep 300", name];
@@ -1747,7 +1753,7 @@ fn attached_histories_match_the_reference() {
     let started = Instant::now();
     let seeds = history::seeds(&(0..ATTACHED_SEEDS).collect::<Vec<_>>());
     let next = AtomicUsize::new(0);
-    let results = std::sync::Mutex::new(BTreeMap::new());
+    let results = std::sync::Mutex::new(rustc_hash::FxHashMap::default());
     std::thread::scope(|scope| {
         for _ in 0..WORKERS {
             scope.spawn(|| {
@@ -1763,9 +1769,9 @@ fn attached_histories_match_the_reference() {
         }
     });
     let results = results.into_inner().expect("results");
-    let failures: Vec<&String> = results
-        .values()
-        .filter_map(|result| result.as_ref().err())
+    let failures: Vec<&String> = by_seed(&results)
+        .into_iter()
+        .filter_map(|(_, result)| result.as_ref().err())
         .collect();
     assert!(
         failures.is_empty(),
@@ -1780,9 +1786,9 @@ fn attached_histories_match_the_reference() {
     );
     eprintln!("attached: {} seeds in {:?}", seeds.len(), started.elapsed());
     if std::env::var_os("TM_HISTORY_SEED").is_none() {
-        let seen: BTreeSet<AttachedKind> = results
-            .iter()
-            .filter(|(seed, _)| **seed < COVERAGE_SEEDS)
+        let seen: rustc_hash::FxHashSet<AttachedKind> = by_seed(&results)
+            .into_iter()
+            .filter(|(seed, _)| *seed < COVERAGE_SEEDS)
             .flat_map(|(_, result)| result.as_ref().expect("checked above").iter().copied())
             .collect();
         let missing: Vec<AttachedKind> = ATTACHED_WEIGHTS
