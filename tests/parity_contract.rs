@@ -1,7 +1,8 @@
 #![cfg(unix)]
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 const CONFIG: &str = include_str!("../src/config.rs");
 const COMMANDS: &str = include_str!("../src/command.rs");
@@ -15,7 +16,7 @@ struct Row {
 }
 
 struct Sources {
-    files: BTreeMap<String, String>,
+    files: FxHashMap<String, String>,
 }
 
 struct Citation {
@@ -82,7 +83,7 @@ fn cli_flag_rows_cover_every_command_the_parser_accepts() {
     let documented = rows
         .iter()
         .map(|row| row.command.as_str())
-        .collect::<BTreeSet<_>>();
+        .collect::<FxHashSet<_>>();
     let arms = dispatch_arms(COMMANDS);
     assert!(arms.len() > 60, "command dispatch inventory shrank to {}", arms.len());
     let missing = arms
@@ -153,7 +154,7 @@ fn rejects_flag(body: &str, _: &Sources) -> bool {
 
 fn validate_flag_rows(rows: &[FlagRow], sources: &Sources) -> Vec<String> {
     let mut errors = Vec::new();
-    let mut seen = BTreeSet::new();
+    let mut seen = FxHashSet::default();
     let mut generic = Vec::new();
     for row in rows {
         let name = format!("{} {}", row.command, row.flag);
@@ -199,21 +200,27 @@ fn assert_rows_cover(kind: &str, compiled: &[String], rows: &[Row]) {
     let documented = rows
         .iter()
         .map(|row| row.item.as_str())
-        .collect::<BTreeSet<_>>();
-    let expected = compiled.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        .collect::<FxHashSet<_>>();
+    let expected = compiled.iter().map(String::as_str).collect::<FxHashSet<_>>();
     assert_eq!(rows.len(), documented.len(), "duplicate {kind} rows");
-    for item in &expected {
+    for item in sorted(&expected) {
         assert!(
             documented.contains(item),
             "{kind} {item} has no parity row"
         );
     }
-    for item in &documented {
+    for item in sorted(&documented) {
         assert!(
             expected.contains(item),
             "{kind} row {item} is not in the compiled profile"
         );
     }
+}
+
+fn sorted<'a>(set: &FxHashSet<&'a str>) -> Vec<&'a str> {
+    let mut items = set.iter().copied().collect::<Vec<_>>();
+    items.sort_unstable();
+    items
 }
 
 fn assert_valid(rows: &[Row]) {
@@ -304,7 +311,7 @@ fn reaches_from(
     function: &str,
     wanted: fn(&str, &Sources) -> bool,
 ) -> bool {
-    let mut visited = BTreeSet::new();
+    let mut visited = FxHashSet::default();
     let mut pending = vec![(path.to_owned(), function.to_owned())];
     while let Some((path, function)) = pending.pop() {
         if !visited.insert((path.clone(), function.clone())) {
@@ -337,7 +344,7 @@ fn reaches_from(
 
 impl Sources {
     fn load() -> Self {
-        let mut files = BTreeMap::new();
+        let mut files = FxHashMap::default();
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         for directory in ["src", "tests"] {
             collect_sources(root, &root.join(directory), &mut files);
@@ -346,15 +353,18 @@ impl Sources {
     }
 
     fn helper_paths(&self, path: &str) -> Vec<String> {
-        self.files
+        let mut paths = self
+            .files
             .keys()
             .filter(|candidate| candidate.as_str() == path || candidate.starts_with("tests/support/"))
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        paths
     }
 }
 
-fn collect_sources(root: &Path, directory: &Path, files: &mut BTreeMap<String, String>) {
+fn collect_sources(root: &Path, directory: &Path, files: &mut FxHashMap<String, String>) {
     for entry in std::fs::read_dir(directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
     {
@@ -502,9 +512,9 @@ fn skip_string(bytes: &[u8], mut index: usize) -> usize {
     bytes.len()
 }
 
-fn called_names(body: &str) -> BTreeSet<String> {
+fn called_names(body: &str) -> FxHashSet<String> {
     let bytes = body.as_bytes();
-    let mut names = BTreeSet::new();
+    let mut names = FxHashSet::default();
     let mut index = 0;
     while index < bytes.len() {
         let next = skip_literal(bytes, index);
