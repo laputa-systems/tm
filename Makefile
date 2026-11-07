@@ -15,9 +15,11 @@ build:
 	$(call cargo,dev) build
 
 test:
+	tests/support/install-tmux-ref.sh
 	$(call cargo,test) test --quiet
 
 test-ci:
+	tests/support/install-tmux-ref.sh
 	$(call cargo,test) test --quiet --release
 
 lint:

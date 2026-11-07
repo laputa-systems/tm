@@ -331,7 +331,34 @@ fn child_setup(
             .filter(|value| !value.is_empty())
             .and_then(|value| CString::new(value).ok())
             .unwrap_or_else(|| CString::new("screen-256color").expect("static value is valid"));
+        #[cfg(target_os = "linux")]
         libc::clearenv();
+        #[cfg(target_os = "macos")]
+        {
+            // macOS does not provide clearenv(). Snapshot names and unset them so
+            // later setenv calls rebuild a valid environment.
+            unsafe extern "C" {
+                safe fn _NSGetEnviron() -> *mut *mut *mut libc::c_char;
+            }
+            let mut names = Vec::new();
+            let mut env = *_NSGetEnviron();
+            while !env.is_null() && !(*env).is_null() {
+                let entry = *env;
+                let mut len = 0usize;
+                while *entry.add(len) != 0 {
+                    if *entry.add(len) == b'=' as libc::c_char {
+                        names.push(std::slice::from_raw_parts(entry as *const u8, len).to_vec());
+                        break;
+                    }
+                    len += 1;
+                }
+                env = env.add(1);
+            }
+            for mut name in names {
+                name.push(0);
+                libc::unsetenv(name.as_ptr() as *const libc::c_char);
+            }
+        }
         for (name, value) in environment {
             libc::setenv(name.as_ptr(), value.as_ptr(), 1);
         }
