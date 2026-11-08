@@ -53,6 +53,14 @@ fn lock(monitor: &Monitor) -> MutexGuard<'_, Shared> {
 }
 
 fn open_pty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
+    #[cfg(target_os = "linux")]
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
@@ -61,13 +69,17 @@ fn open_pty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
     };
     let mut master = -1;
     let mut slave = -1;
+    #[cfg(target_os = "linux")]
+    let winp = &raw const size;
+    #[cfg(not(target_os = "linux"))]
+    let winp = &raw mut size;
     let result = unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            winp,
         )
     };
     assert_eq!(result, 0, "openpty: {}", std::io::Error::last_os_error());
