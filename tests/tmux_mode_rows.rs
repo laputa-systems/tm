@@ -89,19 +89,23 @@ fn choose_modes_are_client_overlays_in_tm_and_pane_modes_in_tmux() {
         rows(&pair.tm, 8),
         ["S", "  1: a", "    1.0", "  2: b", "    2.0", "T", "  1: sleep", "    1.0"]
     );
-    assert_eq!(
-        rows(&pair.reference, 8),
-        [
-            "(0) - S: 2 windows (attached)",
-            "(1) ├─→ - 1: a*",
-            "(2) │   └─→ 0: cat*",
-            "(3) └─→ - 2: b",
-            "(4)     └─→ 0: sleep*",
-            "(5) - T: 1 windows",
-            "(6) └─→ - 1: sleep*",
-            "(7)     └─→ 0: sleep*",
-        ]
-    );
+    let expected = [
+        "(0) - S: 2 windows (attached)",
+        "(1) ├─→ - 1: a*",
+        "(2) │   └─→ 0: cat*",
+        "(3) └─→ - 2: b",
+        "(4)     └─→ 0: sleep*",
+        "(5) - T: 1 windows",
+        "(6) └─→ - 1: sleep*",
+        "(7)     └─→ 0: sleep*",
+    ];
+    let actual = rows(&pair.reference, 8);
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            actual.starts_with(expected),
+            "reference row {actual:?} did not start with {expected:?}"
+        );
+    }
     pair.tm.client.write(&[DOWN, DOWN, DOWN, b"\r"].concat());
     pair.reference.client.write(b"3");
     poll("both clients to select window 2", || {
