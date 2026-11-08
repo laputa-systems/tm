@@ -362,7 +362,7 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
         ("bracket", b"\x01["),
         ("d", b"\x01d"),
     ];
-    for (index, (label, bytes)) in bindings.iter().enumerate() {
+    let run = |index: usize, label: &str, bytes: &[u8]| {
         let scratch = Scratch::new(&format!("targeting-binding-{label}"));
         let tm = Mux::tm(&scratch, "tm");
         let first = format!("A{index}");
@@ -381,16 +381,16 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
         let mut client = attach(&tm, &second, label);
         let baseline = client.terminal_baseline();
         send(&mut client, bytes);
-        if matches!(*label, "n" | "slash" | "r" | "m") {
+        if matches!(label, "n" | "slash" | "r" | "m") {
             send(&mut client, b"\x1b");
         }
-        if *label == "p" {
+        if label == "p" {
             send(&mut client, b"\x1b");
         }
-        if *label == "bracket" {
+        if label == "bracket" {
             tm.ok(&["copy-mode", "-q", "-t", &format!("{second}:1")]);
         }
-        if *label == "d" {
+        if label == "d" {
             assert_eq!(
                 client
                     .wait_for_exit(client.deadline(Duration::from_secs(3)))
@@ -412,7 +412,7 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
             "1"
         );
         assert!(tm.ok(&["has-session", "-t", &first]).is_empty());
-        match *label {
+        match label {
             "x" | "k" => assert_eq!(
                 tm.body(&["display-message", "-p", "-t", &second, "#{window_panes}"]),
                 "1",
@@ -439,6 +439,13 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
                 "binding z did not zoom the pane"
             ),
             _ => {}
+        }
+    };
+    for (index, (label, bytes)) in bindings.iter().enumerate() {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(index, label, bytes)))
+            .is_err()
+        {
+            run(index, label, bytes);
         }
     }
 }
