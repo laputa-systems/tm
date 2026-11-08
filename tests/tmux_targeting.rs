@@ -333,8 +333,6 @@ fn break_and_join_bindings_use_client_context() {
 
 #[test]
 fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone() {
-    let scratch = Scratch::new("targeting-all-bindings");
-    let tm = Mux::tm(&scratch, "tm");
     let bindings: &[(&str, &[u8])] = &[
         ("n", b"\x01n"),
         ("p", b"\x01p"),
@@ -365,6 +363,8 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
         ("d", b"\x01d"),
     ];
     for (index, (label, bytes)) in bindings.iter().enumerate() {
+        let scratch = Scratch::new(&format!("targeting-binding-{label}"));
+        let tm = Mux::tm(&scratch, "tm");
         let first = format!("A{index}");
         let second = format!("B{index}");
         create_windows(&tm, &first, &["one", "two"]);
@@ -440,8 +440,6 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
             ),
             _ => {}
         }
-        tm.ok(&["kill-session", "-t", &first]);
-        tm.ok(&["kill-session", "-t", &second]);
     }
 }
 
