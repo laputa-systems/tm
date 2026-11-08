@@ -295,6 +295,16 @@ impl Drop for Mux {
             self.command(&["kill-server"]),
             Duration::from_secs(2),
         );
+        // kill-server is best effort: under load the server can outlive the
+        // deadline and keep its sessions' ptys open, and leaked servers
+        // accumulate until new pane spawns fail with ENXIO.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if std::os::unix::net::UnixStream::connect(&self.socket).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let _ = std::fs::remove_file(&self.socket);
     }
 }

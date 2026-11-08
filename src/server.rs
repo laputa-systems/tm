@@ -1282,7 +1282,7 @@ struct AttachedClient {
     redraw_requested: bool,
     bell_pending: bool,
     chrome_observation: Vec<u8>,
-    clipboard: Option<(Vec<u8>, terminal::ClipboardTerminator)>,
+    clipboard: Option<Vec<u8>>,
     prefix_pending: bool,
     key_buffer: Vec<u8>,
     key_events: Vec<DecodedKey>,
@@ -6237,10 +6237,8 @@ impl ServerState {
                     .cloned()
                     .unwrap_or_default();
                 for client in self.clients.values_mut() {
-                    if let Some(terminator) =
-                        terminal::Capabilities::for_term(&client.term, &features).clipboard
-                    {
-                        client.clipboard = Some((data.clone(), terminator));
+                    if terminal::Capabilities::for_term(&client.term, &features).clipboard {
+                        client.clipboard = Some(data.clone());
                     }
                 }
             }
@@ -9394,8 +9392,7 @@ impl ServerState {
                 .and_then(|client| client.clipboard.take()),
             None => self
                 .clipboard_pending
-                .take()
-                .map(|data| (data, terminal::ClipboardTerminator::Bell)),
+                .take(),
         };
         let bell = client_id
             .and_then(|client_id| self.clients.get_mut(&client_id))
@@ -9406,10 +9403,10 @@ impl ServerState {
         } else {
             output.extend_from_slice(b"\x1b[?25l\x1b[H\x1b[0m");
         }
-        if let Some((data, terminator)) = clipboard {
+        if let Some(data) = clipboard {
             output.extend_from_slice(b"\x1b]52;;");
             output.extend_from_slice(base64_encode(&data).as_bytes());
-            output.extend_from_slice(terminator.bytes());
+            output.push(0x07);
         }
         if bell {
             output.push(0x07);
