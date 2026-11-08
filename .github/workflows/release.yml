@@ -85,6 +85,17 @@ jobs:
           cache-from: type=gha,scope=tm-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=tm-${{ matrix.target }}
       # rust-toolchain.toml selects the pinned nightly; rustup installs it, with rust-src, on the first cargo call.
+      - name: Install macOS reference dependencies
+        if: matrix.docker_platform == ''
+        run: brew install libevent utf8proc pkg-config
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.docker_platform == ''
+        with:
+          path: .work/ref
+          key: tmux-ref-${{ runner.os }}-${{ hashFiles('tests/support/install-tmux-ref.sh') }}
+      - name: Install tmux reference
+        if: matrix.docker_platform == ''
+        run: tests/support/install-tmux-ref.sh
       - name: Build macOS release
         if: matrix.docker_platform == ''
         run: make release TARGET="${{ matrix.target }}"
