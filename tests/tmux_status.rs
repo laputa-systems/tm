@@ -119,11 +119,12 @@ fn window_list_truncation_keeps_first_middle_and_last_active_visible() {
     }
     tm.ok(&["select-window", "-t", "S:1"]);
     tm.ok(&["resize-pane", "-Z", "-t", "S"]);
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while !status_row(&client, 8).contains("(Z)") {
-        assert!(std::time::Instant::now() < deadline, "zoom status frame missing (Z)");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    client
+        .wait_for_screen(client.deadline(Duration::from_secs(3)), "zoom status frame", |snapshot| {
+            snapshot.row(7).is_some_and(|row| row.contains("(Z)"))
+        })
+        .expect("zoom status frame");
+    assert!(status_row(&client, 8).contains("(Z)"));
     pty_harness::detach(&mut client, &baseline);
 }
 
