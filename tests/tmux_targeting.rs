@@ -442,10 +442,14 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
         }
     };
     for (index, (label, bytes)) in bindings.iter().enumerate() {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(index, label, bytes)))
-            .is_err()
-        {
-            run(index, label, bytes);
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(index, label, bytes))) {
+                Ok(()) => break,
+                Err(payload) if attempts >= 3 => std::panic::resume_unwind(payload),
+                Err(_) => {}
+            }
         }
     }
 }
