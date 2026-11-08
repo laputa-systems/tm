@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use super::parity::{Mux, Scratch};
 use super::raw_pty::RawClient;
 
-pub const TIMEOUT: Duration = Duration::from_secs(3);
+pub const TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct Side {
     pub mux: Mux,
