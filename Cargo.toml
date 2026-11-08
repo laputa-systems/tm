@@ -14,8 +14,8 @@ unicode-width = "0.2"
 vt100 = "0.16.2"
 
 [dev-dependencies]
-laputa-ptytest = "0.1"
-rustybench = "0.1"
+laputa-ptytest = "0.3"
+rustybench = "0.4"
 
 [features]
 parity = []
