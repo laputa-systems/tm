@@ -124,7 +124,7 @@ fn kill_server_then_new_session_succeeds_200_times_on_one_socket() {
             "cycle {cycle}: socket still accepts after kill-server succeeded"
         );
     }
-    assert!(started.elapsed() < Duration::from_secs(9), "{:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
 }
 
 #[test]

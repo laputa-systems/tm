@@ -1249,16 +1249,16 @@ impl World {
             "list-windows",
             "-a",
             "-F",
-            "#{session_name} #{window_name} #{window_active} #{window_width}x#{window_height} #{window_panes} #{window_id}",
+            "#{session_name} #{window_name} #{window_active} #{window_width}x#{window_height} #{window_panes} #{window_id} #{history_size}",
         ]);
         for line in windows.lines() {
             let fields: Vec<&str> = line.split(' ').collect();
-            let [session, name, active, size, panes, id] = fields[..] else { continue };
+            let [session, name, active, size, panes, id, history] = fields[..] else { continue };
             if panes != "1" {
                 self.split_sessions.insert(session.to_owned());
             }
             *self.window_counts.entry(session.to_owned()).or_default() += 1;
-            if name == "burst" {
+            if name == "burst" || history.parse::<usize>().is_ok_and(|count| count > 0) {
                 self.scrolled_windows.insert(id.to_owned());
             }
             if self.scrolled_windows.contains(id) {
@@ -1269,6 +1269,13 @@ impl World {
                 && let (Ok(columns), Ok(rows)) = (columns.parse(), rows.parse())
             {
                 self.active_window_sizes.insert(session.to_owned(), (columns, rows));
+            }
+        }
+        let panes = self.pair.reference.body(&["list-panes", "-a", "-F", "#{session_name} #{pane_history_size}"]);
+        for line in panes.lines() {
+            let (session_name, history) = line.split_once(' ').unwrap_or(("", "0"));
+            if history.parse::<usize>().is_ok_and(|count| count > 0) {
+                self.scrolled_sessions.insert(session_name.to_owned());
             }
         }
         let clients = self.pair.reference.body(&LIST_CLIENTS);
