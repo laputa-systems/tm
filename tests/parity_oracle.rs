@@ -90,12 +90,16 @@ fn listed_difference_must_persist_and_unlisted_difference_fails() {
 
 fn attached_modes(mux: &Mux, name: &str) -> raw_pty::ObservedModes {
     let mut client = RawClient::spawn(mux, name, &["attach-session", "-t", "S"], 8, 80);
-    client.wait_for_screen("alternate screen entered", Duration::from_secs(5), |screen| {
-        screen.alternate_screen()
-            && screen.bracketed_paste()
-            && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-    });
-    client.wait_for_text("(S)", Duration::from_secs(5));
+    client.wait_for_screen(
+        "attached terminal modes and status line",
+        Duration::from_secs(5),
+        |screen| {
+            screen.alternate_screen()
+                && screen.bracketed_paste()
+                && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+                && screen.contents().contains("(S)")
+        },
+    );
     let modes = client.modes();
     assert_eq!(client.detach(), Some(0));
     modes
