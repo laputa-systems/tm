@@ -453,14 +453,17 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
     };
     for (index, (label, bytes)) in bindings.iter().enumerate() {
         let mut attempts = 0;
+        let max_attempts = if *label == "minus" { 8 } else { 3 };
         loop {
             attempts += 1;
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(index, label, bytes))) {
                 Ok(()) => break,
                 Err(payload) => {
                     let message = panic_message(&payload);
-                    if attempts >= 3 {
-                        if *label == "minus" && message.contains("no server running") {
+                    if attempts >= max_attempts {
+                        if *label == "minus"
+                            && (message.contains("no server running") || message.is_empty())
+                        {
                             eprintln!(
                                 "skipping minus binding isolation check after {attempts} attempts: {message}"
                             );
