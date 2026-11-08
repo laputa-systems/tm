@@ -440,6 +440,8 @@ fn every_effective_binding_from_a_second_session_leaves_the_first_session_alone(
             ),
             _ => {}
         }
+        tm.ok(&["kill-session", "-t", &first]);
+        tm.ok(&["kill-session", "-t", &second]);
     }
 }
 
