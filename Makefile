@@ -16,11 +16,11 @@ build:
 
 test:
 	tests/support/install-tmux-ref.sh
-	$(call cargo,test) test --quiet
+	$(call cargo,test) test --quiet -- --test-threads=4
 
 test-ci:
 	tests/support/install-tmux-ref.sh
-	$(call cargo,test) test --quiet --release
+	$(call cargo,test) test --quiet --release -- --test-threads=4
 
 lint:
 	cargo clippy --all-targets --all-features -- --deny warnings
