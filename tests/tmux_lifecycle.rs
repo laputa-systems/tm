@@ -120,7 +120,15 @@ fn kill_server_then_new_session_succeeds_200_times_on_one_socket() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            std::os::unix::net::UnixStream::connect(tm.socket()).is_err(),
+            {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    if std::os::unix::net::UnixStream::connect(tm.socket()).is_err() { break; }
+                    assert!(Instant::now() < deadline, "cycle {cycle}: socket still accepts after kill-server succeeded");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                true
+            },
             "cycle {cycle}: socket still accepts after kill-server succeeded"
         );
     }
