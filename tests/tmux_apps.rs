@@ -133,6 +133,11 @@ fn less_survives_resize_detach_and_reattach_without_idle_frames() {
             output.to_str().expect("path"),
         ],
     );
+    let rendered = tm.capture_until("S", "LINE_001", Duration::from_secs(10));
+    assert!(
+        rendered.contains("LINE_001"),
+        "less did not draw before attach: {rendered:?}"
+    );
     let (mut client, baseline) = attach(&tm, "less", 80, 24);
     pty_harness::wait_for_text(&mut client, "LINE_001", Duration::from_secs(5));
     client
@@ -151,7 +156,20 @@ fn less_survives_resize_detach_and_reattach_without_idle_frames() {
 
     let (mut client, baseline) = attach(&tm, "less-again", 80, 24);
     pty_harness::wait_for_text(&mut client, "LINE_001", Duration::from_secs(5));
-    send(&mut client, b"q");
-    pty_harness::wait_for_text(&mut client, "LESS_DONE", Duration::from_secs(5));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        // less discards pending input while it reinitializes after a resize.
+        send(&mut client, b"q");
+        client
+            .wait_for_quiescence(
+                client.deadline(Duration::from_millis(300)),
+                Duration::from_millis(100),
+            )
+            .expect("wait for less after quit");
+        if client.screen().contains("LESS_DONE") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "less did not quit after reattach");
+    }
     pty_harness::detach(&mut client, &baseline);
 }
