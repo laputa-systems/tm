@@ -15,7 +15,7 @@ vt100 = "0.18.1"
 
 [dev-dependencies]
 laputa-ptytest = "0.4"
-rustybench = "0.4"
+rustybench = "0.5"
 
 [features]
 parity = []
