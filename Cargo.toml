@@ -11,10 +11,10 @@ libc = "0.2"
 rustc-hash = "2"
 rustix = { version = "1.1.4", features = ["termios"] }
 unicode-width = "0.2"
-vt100 = "0.16.2"
+vt100 = "0.18.1"
 
 [dev-dependencies]
-laputa-ptytest = "0.3"
+laputa-ptytest = "0.4"
 rustybench = "0.4"
 
 [features]
@@ -51,6 +51,20 @@ name = "tmux_bindings"
 path = "tests/tmux_bindings.rs"
 required-features = ["parity"]
 
+[[test]]
+name = "tmux_option_rows"
+path = "tests/tmux_option_rows.rs"
+required-features = ["parity"]
+
+[[test]]
+name = "tmux_mode_rows"
+path = "tests/tmux_mode_rows.rs"
+required-features = ["parity"]
+
+[[test]]
+name = "tmux_lifecycle_rows"
+path = "tests/tmux_lifecycle_rows.rs"
+required-features = ["parity"]
 [[bench]]
 name = "tm_performance"
 path = "benches/tm_performance.rs"
@@ -77,17 +91,3 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
-[[test]]
-name = "tmux_option_rows"
-path = "tests/tmux_option_rows.rs"
-required-features = ["parity"]
-
-[[test]]
-name = "tmux_mode_rows"
-path = "tests/tmux_mode_rows.rs"
-required-features = ["parity"]
-
-[[test]]
-name = "tmux_lifecycle_rows"
-path = "tests/tmux_lifecycle_rows.rs"
-required-features = ["parity"]
