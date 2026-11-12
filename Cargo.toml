@@ -51,20 +51,6 @@ name = "tmux_bindings"
 path = "tests/tmux_bindings.rs"
 required-features = ["parity"]
 
-[[test]]
-name = "tmux_option_rows"
-path = "tests/tmux_option_rows.rs"
-required-features = ["parity"]
-
-[[test]]
-name = "tmux_mode_rows"
-path = "tests/tmux_mode_rows.rs"
-required-features = ["parity"]
-
-[[test]]
-name = "tmux_lifecycle_rows"
-path = "tests/tmux_lifecycle_rows.rs"
-required-features = ["parity"]
 [[bench]]
 name = "tm_performance"
 path = "benches/tm_performance.rs"
@@ -91,3 +77,17 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
+[[test]]
+name = "tmux_option_rows"
+path = "tests/tmux_option_rows.rs"
+required-features = ["parity"]
+
+[[test]]
+name = "tmux_mode_rows"
+path = "tests/tmux_mode_rows.rs"
+required-features = ["parity"]
+
+[[test]]
+name = "tmux_lifecycle_rows"
+path = "tests/tmux_lifecycle_rows.rs"
+required-features = ["parity"]
