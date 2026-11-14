@@ -318,7 +318,7 @@ pub(crate) enum CopyAction {
 }
 
 fn page_rows(parser: &vt100::Parser) -> usize {
-    match usize::from(parser.screen().size().0) {
+    match usize::from(parser.screen().size().0.get()) {
         rows if rows > 2 => rows - 2,
         _ => 1,
     }
@@ -672,11 +672,11 @@ impl CopyModeState {
             CopyAction::ScrollDown => self.scroll_by(parser, repeat, false, &mut result),
             CopyAction::ScrollTop => self.scroll_cursor_to_viewport(parser, 0),
             CopyAction::ScrollBottom => {
-                let rows = usize::from(parser.screen().size().0).saturating_sub(1);
+                let rows = usize::from(parser.screen().size().0.get()).saturating_sub(1);
                 self.scroll_cursor_to_viewport(parser, rows);
             }
             CopyAction::ScrollMiddle => {
-                let rows = usize::from(parser.screen().size().0).saturating_sub(1) / 2;
+                let rows = usize::from(parser.screen().size().0.get()).saturating_sub(1) / 2;
                 self.scroll_cursor_to_viewport(parser, rows);
             }
             CopyAction::ScrollToMouse(Some(row)) => self.scroll_to_mouse(parser, row),
@@ -851,19 +851,19 @@ impl CopyModeState {
             CopyAction::SelectionMode(mode) => self.selection_mode = mode,
             CopyAction::TopLine => self.move_to_viewport_line(parser, 0),
             CopyAction::MiddleLine => {
-                let rows = usize::from(parser.screen().size().0);
+                let rows = usize::from(parser.screen().size().0.get());
                 self.move_to_viewport_line(parser, rows / 2);
             }
             CopyAction::BottomLine => {
-                let rows = usize::from(parser.screen().size().0);
+                let rows = usize::from(parser.screen().size().0.get());
                 self.move_to_viewport_line(parser, rows.saturating_sub(1));
             }
             CopyAction::CursorCentreVertical => {
-                let rows = usize::from(parser.screen().size().0).max(1);
+                let rows = usize::from(parser.screen().size().0.get()).max(1);
                 self.move_to_viewport_line(parser, rows / 2);
             }
             CopyAction::HalfPageUp => {
-                let rows = usize::from(parser.screen().size().0).max(1) / 2;
+                let rows = usize::from(parser.screen().size().0.get()).max(1) / 2;
                 self.scroll_by(
                     parser,
                     rows.max(1).saturating_mul(repeat),
@@ -872,7 +872,7 @@ impl CopyModeState {
                 );
             }
             CopyAction::HalfPageDown => {
-                let rows = usize::from(parser.screen().size().0).max(1) / 2;
+                let rows = usize::from(parser.screen().size().0.get()).max(1) / 2;
                 self.scroll_by(
                     parser,
                     rows.max(1).saturating_mul(repeat),
@@ -881,7 +881,7 @@ impl CopyModeState {
                 );
             }
             CopyAction::HalfPageDownAndCancel => {
-                let rows = usize::from(parser.screen().size().0).max(1) / 2;
+                let rows = usize::from(parser.screen().size().0.get()).max(1) / 2;
                 self.scroll_by(
                     parser,
                     rows.max(1).saturating_mul(repeat),
@@ -902,7 +902,7 @@ impl CopyModeState {
             }
             CopyAction::CursorCentreHorizontal => {
                 let width = self.line_width(parser, self.cursor.row);
-                let cols = usize::from(parser.screen().size().1);
+                let cols = usize::from(parser.screen().size().1.get());
                 self.cursor.col = self.cursor.col.saturating_sub(cols / 2).min(width);
             }
             CopyAction::ScrollDownAndCancel => {
@@ -1119,7 +1119,7 @@ impl CopyModeState {
     /// from retained history and viewport state rather than rendered styling,
     /// so mouse interaction remains testable without a terminal.
     pub(crate) fn scrollbar_hit(&self, parser: &mut Parser, row: usize) -> CopyScrollbarHit {
-        let viewport_rows = usize::from(parser.screen().size().0).max(1);
+        let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
         let total_rows = self.total_rows(parser);
         let max_scroll = self.max_scroll(parser);
         scrollbar_hit_for(
@@ -1132,7 +1132,7 @@ impl CopyModeState {
     }
 
     pub(crate) fn scrollbar_slider_offset(&self, parser: &mut Parser, row: usize) -> Option<usize> {
-        let viewport_rows = usize::from(parser.screen().size().0).max(1);
+        let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
         let total_rows = self.total_rows(parser);
         let max_scroll = self.max_scroll(parser);
         let (slider_top, slider_rows) =
@@ -1234,7 +1234,7 @@ impl CopyModeState {
     /// coordinates after `sync_parser` has selected the scrollback offset.
     pub(crate) fn cursor_viewport(&self, parser: &mut Parser) -> (usize, usize) {
         let viewport_start = self.viewport_start(parser);
-        let viewport_rows = usize::from(parser.screen().size().0).max(1);
+        let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
         let row = self
             .cursor
             .row
@@ -1245,7 +1245,7 @@ impl CopyModeState {
 
     pub(crate) fn viewport_start(&self, parser: &mut Parser) -> usize {
         let total_rows = self.total_rows(parser);
-        let viewport_rows = usize::from(parser.screen().size().0).max(1);
+        let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
         total_rows
             .saturating_sub(viewport_rows)
             .saturating_sub(self.scroll_offset)
@@ -1595,7 +1595,7 @@ impl CopyModeState {
 
     fn total_rows(&self, parser: &mut Parser) -> usize {
         self.history_len(parser)
-            .saturating_add(usize::from(parser.screen().size().0))
+            .saturating_add(usize::from(parser.screen().size().0.get()))
             .max(1)
     }
 
@@ -1643,7 +1643,7 @@ impl CopyModeState {
     }
 
     fn scroll_to_mouse(&mut self, parser: &mut Parser, row: usize) {
-        let viewport_rows = usize::from(parser.screen().size().0).max(1);
+        let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
         let total_rows = self.total_rows(parser);
         let max_scroll = self.max_scroll(parser);
         if max_scroll == 0 {
@@ -1674,7 +1674,7 @@ impl CopyModeState {
     }
 
     fn scroll_cursor_to_viewport(&mut self, parser: &mut Parser, line: usize) {
-        let rows = usize::from(parser.screen().size().0).max(1);
+        let rows = usize::from(parser.screen().size().0.get()).max(1);
         let total = self.total_rows(parser);
         let max_start = total.saturating_sub(rows);
         let desired_start = self.cursor.row.saturating_sub(line.min(rows - 1));
@@ -1962,7 +1962,7 @@ impl CopyModeState {
     fn move_cursor_right(&mut self, parser: &mut Parser, repeat: usize) {
         let row_count = self
             .history_len(parser)
-            .saturating_add(usize::from(parser.screen().size().0));
+            .saturating_add(usize::from(parser.screen().size().0.get()));
         for _ in 0..repeat {
             let width = self.line_width(parser, self.cursor.row);
             if self.cursor.col + 1 < width {
@@ -1986,8 +1986,8 @@ impl CopyModeState {
     }
 
     fn keep_cursor_visible(&mut self, parser: &mut Parser) {
-        let (_, cols) = parser.screen().size();
-        let rows = usize::from(parser.screen().size().0);
+        let cols = parser.screen().size().1.get();
+        let rows = usize::from(parser.screen().size().0.get());
         let total = self.total_rows(parser);
         let max_scroll = self.max_scroll(parser);
         let mut start = total.saturating_sub(rows.saturating_add(self.scroll_offset));
@@ -2008,7 +2008,7 @@ impl CopyModeState {
     }
 
     fn move_to_viewport_line(&mut self, parser: &mut Parser, line: usize) {
-        let rows = usize::from(parser.screen().size().0).max(1);
+        let rows = usize::from(parser.screen().size().0.get()).max(1);
         let start = self
             .total_rows(parser)
             .saturating_sub(rows.saturating_add(self.scroll_offset));
@@ -2232,7 +2232,7 @@ impl CopyModeState {
     }
 
     fn row_text(&self, parser: &mut Parser, row: usize) -> Option<String> {
-        let (live_rows, cols) = parser.screen().size();
+        let (live_rows, cols) = { let (rows_nz, cols_nz) = parser.screen().size(); (rows_nz.get(), cols_nz.get()) };
         let stored = parser_history_len(parser);
         let skipped = self.history_floor.min(stored);
         let history = stored - skipped;
@@ -2379,7 +2379,7 @@ fn parser_history_len(parser: &mut Parser) -> usize {
 
 pub(crate) fn history_rows(parser: &mut Parser) -> (Vec<String>, Vec<String>) {
     let saved = parser.screen().scrollback();
-    let (rows, cols) = parser.screen().size();
+    let (rows, cols) = { let (rows_nz, cols_nz) = parser.screen().size(); (rows_nz.get(), cols_nz.get()) };
     parser.screen_mut().set_scrollback(usize::MAX);
     let max_scroll = parser.screen().scrollback();
     let page_rows = usize::from(rows).max(1);
@@ -2400,7 +2400,7 @@ pub(crate) fn history_rows(parser: &mut Parser) -> (Vec<String>, Vec<String>) {
 
 fn wrapped_rows(parser: &mut Parser) -> (Vec<bool>, Vec<bool>) {
     let saved = parser.screen().scrollback();
-    let rows = parser.screen().size().0;
+    let rows = parser.screen().size().0.get();
     parser.screen_mut().set_scrollback(usize::MAX);
     let max_scroll = parser.screen().scrollback();
     let page_rows = usize::from(rows).max(1);

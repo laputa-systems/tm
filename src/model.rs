@@ -641,7 +641,7 @@ impl Pane {
                 cols: size.cols,
                 rows: size.rows,
             },
-            parser: Parser::new(size.rows, size.cols, 10_000),
+            parser: Parser::new(std::num::NonZeroU16::new(size.rows).unwrap(), std::num::NonZeroU16::new(size.cols).unwrap(), 10_000),
             pty,
             command,
             command_args,
@@ -690,7 +690,7 @@ impl Pane {
             .map_or(options.history_floor, |source| source.history_floor);
         let mut source_parser = source
             .as_ref()
-            .map(|_| Parser::new(self.rect.rows.max(1), self.rect.cols.max(1), history_limit));
+            .map(|_| Parser::new(std::num::NonZeroU16::new(self.rect.rows.max(1)).unwrap(), std::num::NonZeroU16::new(self.rect.cols.max(1)).unwrap(), history_limit));
         if let Some(parser) = source_parser.as_mut() {
             terminal::replay(parser, &raw_output);
         }
@@ -711,7 +711,7 @@ impl Pane {
     }
 
     pub(crate) fn linked_clone(&self) -> Self {
-        let mut parser = Parser::new(self.rect.rows.max(1), self.rect.cols.max(1), 10_000);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(self.rect.rows.max(1)).unwrap(), std::num::NonZeroU16::new(self.rect.cols.max(1)).unwrap(), 10_000);
         terminal::replay(&mut parser, &self.raw_output);
         Self {
             id: self.id,
@@ -836,6 +836,9 @@ impl Window {
                     // PTY stream normalizer so its wrap/REP state cannot refer
                     // to bytes that were only used to restore the screen.
                     pane.output_state.reset_transient();
+                }
+                if let Some(scroll_offset) = pane.copy_mode.as_ref().map(|copy_mode| copy_mode.scroll_offset) {
+                    pane.parser.screen_mut().set_scrollback(scroll_offset);
                 }
             }
         }
@@ -967,9 +970,9 @@ impl Window {
 /// rendered between the resize and that redraw still represents the pane.
 fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
     let screen = parser.screen();
-    let (old_rows, old_cols) = screen.size();
+    let (old_rows, old_cols) = { let (rows_nz, cols_nz) = screen.size(); (rows_nz.get(), cols_nz.get()) };
     if old_rows <= rows {
-        parser.screen_mut().set_size(rows, cols);
+        parser.screen_mut().set_size(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap());
         return false;
     }
 
@@ -993,12 +996,12 @@ fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
     let cursor_hidden = screen.hide_cursor();
     let attributes = screen.attributes_formatted();
 
-    parser.screen_mut().set_size(rows, cols);
+    parser.screen_mut().set_size(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap());
 
     let mut redraw = Vec::new();
     for (row, contents) in saved_rows.into_iter().enumerate() {
         redraw.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
-        redraw.extend_from_slice(&contents);
+        redraw.extend_from_slice(contents.as_bytes());
         redraw.extend_from_slice(b"\x1b[K");
     }
     let mapped_row = usize::from(cursor_row)
@@ -1014,7 +1017,7 @@ fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
         )
         .as_bytes(),
     );
-    redraw.extend_from_slice(&attributes);
+    redraw.extend_from_slice(attributes.as_bytes());
     parser.process(&redraw);
     true
 }

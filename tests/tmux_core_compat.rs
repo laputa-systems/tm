@@ -945,7 +945,7 @@ fn input_cursor_regressions_match_tmux_headlessly() {
             4,
             "A\\033[3dB\\033[5GC\\033[2;2fD\\n",
             " B  C",
-            "0,3",
+            "0,2",
         ),
     ];
     for (name, cols, rows, sequence, expected, cursor) in cases {

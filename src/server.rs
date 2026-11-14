@@ -872,7 +872,7 @@ fn attach_client(
         .ok();
 
     let mut previous = Vec::new();
-    let mut terminal = vt100::Parser::new(size.rows().max(1), size.cols().max(1), 10_000);
+    let mut terminal = vt100::Parser::new(std::num::NonZeroU16::new(size.rows().max(1)).unwrap(), std::num::NonZeroU16::new(size.cols().max(1)).unwrap(), 10_000);
     let mut previous_screen = None;
     let mut last_size = None;
     let mut observed_revision = None;
@@ -950,7 +950,7 @@ fn attach_client(
         observed_chrome = Some(chrome);
         last_render_at = Instant::now();
         if redraw || last_size != Some(render_size) {
-            terminal = vt100::Parser::new(render_size.rows().max(1), render_size.cols().max(1), 10_000);
+            terminal = vt100::Parser::new(std::num::NonZeroU16::new(render_size.rows().max(1)).unwrap(), std::num::NonZeroU16::new(render_size.cols().max(1)).unwrap(), 10_000);
             previous_screen = None;
             previous.clear();
             last_size = Some(render_size);
@@ -1136,7 +1136,7 @@ impl RenderBenchmark {
             state,
             session_id,
             client_id,
-            terminal: vt100::Parser::new(size.rows(), size.cols(), 10_000),
+            terminal: vt100::Parser::new(std::num::NonZeroU16::new(size.rows()).unwrap(), std::num::NonZeroU16::new(size.cols()).unwrap(), 10_000),
             previous_screen: None,
         }
     }
@@ -2338,7 +2338,7 @@ impl ServerState {
         });
         if empty {
             let mut pane = Pane::empty(pane_id, index, size).map_err(|error| error.to_string())?;
-            pane.parser = Parser::new(size.rows().max(1), size.cols().max(1), self.history_limit);
+            pane.parser = Parser::new(std::num::NonZeroU16::new(size.rows().max(1)).unwrap(), std::num::NonZeroU16::new(size.cols().max(1)).unwrap(), self.history_limit);
             pane.current_path = None;
             pane.start_path = start_path;
             pane.command_args = command.to_vec();
@@ -2366,7 +2366,7 @@ impl ServerState {
             command.join(" "),
             command.to_vec(),
         );
-        pane.parser = Parser::new(size.rows().max(1), size.cols().max(1), self.history_limit);
+        pane.parser = Parser::new(std::num::NonZeroU16::new(size.rows().max(1)).unwrap(), std::num::NonZeroU16::new(size.cols().max(1)).unwrap(), self.history_limit);
         pane.current_path = None;
         pane.start_path = start_path;
         spawn_reader(Arc::clone(shared), pane_id, pid, reader);
@@ -3891,7 +3891,7 @@ impl ServerState {
             let (history, live) = history_rows(&mut parser);
             Some(scrollbar_hit_for(
                 history.len().saturating_add(live.len()),
-                usize::from(parser.screen().size().0),
+                usize::from(parser.screen().size().0.get()),
                 history.len(),
                 0,
                 local_row,
@@ -3907,7 +3907,7 @@ impl ServerState {
         }
         let (history, live) = history_rows(&mut parser);
         let total_rows = history.len().saturating_add(live.len());
-        let viewport_rows = usize::from(parser.screen().size().0).max(1);
+        let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
         let max_scroll = total_rows.saturating_sub(viewport_rows);
         let (slider_top, slider_rows) =
             scrollbar_geometry_for(total_rows, viewport_rows, max_scroll, 0);
@@ -3927,7 +3927,7 @@ impl ServerState {
                 replayed_copy_source_parser(pane, 10_000).unwrap_or_else(|| parser_for_pane(pane));
             let (history, live) = history_rows(&mut parser);
             let total_rows = history.len().saturating_add(live.len()).max(1);
-            let viewport_rows = usize::from(parser.screen().size().0).max(1);
+            let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
             let viewport_start = total_rows
                 .saturating_sub(viewport_rows)
                 .saturating_sub(mode.scroll_position());
@@ -8940,7 +8940,7 @@ impl ServerState {
             pane.pty.kill();
         }
         pane.pty = pty;
-        pane.parser = Parser::new(size.rows(), size.cols(), self.history_limit);
+        pane.parser = Parser::new(std::num::NonZeroU16::new(size.rows()).unwrap(), std::num::NonZeroU16::new(size.cols()).unwrap(), self.history_limit);
         pane.output_state = terminal::OutputState::default();
         pane.copy_mode = None;
         pane.copy_source = None;
@@ -10287,7 +10287,7 @@ fn mouse_binding_name(button: u16, release: bool, click_count: u8) -> Option<Str
 }
 
 fn parser_for_pane(pane: &Pane) -> Parser {
-    let mut parser = Parser::new(pane.rect.rows.max(1), pane.rect.cols.max(1), 10_000);
+    let mut parser = Parser::new(std::num::NonZeroU16::new(pane.rect.rows.max(1)).unwrap(), std::num::NonZeroU16::new(pane.rect.cols.max(1)).unwrap(), 10_000);
     if pane.raw_output.is_empty() {
         parser.process(pane.parser.screen().contents().as_bytes());
     } else {
@@ -10564,7 +10564,7 @@ fn copy_source_parser(
     let cached = match &mut source.parser {
         Some(cached) => cached,
         empty => {
-            let mut parser = Parser::new(rows, cols, history_limit);
+            let mut parser = Parser::new(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap(), history_limit);
             terminal::replay(&mut parser, &source.raw_output);
             empty.insert(CopySourceParser {
                 rows,
@@ -10580,7 +10580,7 @@ fn copy_source_parser(
 
 fn replayed_copy_source_parser(pane: &Pane, history_limit: usize) -> Option<Parser> {
     let source = pane.copy_source.as_ref()?;
-    let mut parser = Parser::new(pane.rect.rows.max(1), pane.rect.cols.max(1), history_limit);
+    let mut parser = Parser::new(std::num::NonZeroU16::new(pane.rect.rows.max(1)).unwrap(), std::num::NonZeroU16::new(pane.rect.cols.max(1)).unwrap(), history_limit);
     terminal::replay(&mut parser, &source.raw_output);
     Some(parser)
 }
@@ -10882,7 +10882,7 @@ fn render_copy_mode_position(
 fn copy_mode_line_number_width_from_mode(mode: &mut CopyModeState, parser: &mut Parser) -> usize {
     let lines = mode
         .position_limit(parser)
-        .saturating_add(usize::from(parser.screen().size().0))
+        .saturating_add(usize::from(parser.screen().size().0.get()))
         .saturating_add(1);
     let mut digits: usize = 1;
     let mut value = lines;
@@ -11026,7 +11026,7 @@ fn pane_scrollbar_layout(
         replayed_copy_source_parser(pane, history_limit).unwrap_or_else(|| parser_for_pane(pane));
     let (history, live) = history_rows(&mut parser);
     let total_rows = history.len().saturating_add(live.len());
-    let viewport_rows = usize::from(parser.screen().size().0).max(1);
+    let viewport_rows = usize::from(parser.screen().size().0.get()).max(1);
     let max_scroll = total_rows.saturating_sub(viewport_rows);
     if max_scroll == 0 {
         return None;
@@ -11362,7 +11362,7 @@ fn render_screen_delta(
     {
         return Err(());
     }
-    let (rows, cols) = current.size();
+    let (rows, cols) = { let (rows_nz, cols_nz) = current.size(); (rows_nz.get(), cols_nz.get()) };
     let changed_rows = (0..rows)
         .filter(|row| (0..cols).any(|col| previous.cell(*row, col) != current.cell(*row, col)))
         .collect::<Vec<_>>();
@@ -12246,8 +12246,8 @@ fn execute_request_inner(
             // later copy/format paths must reconstruct the same visible state
             // (including cursor and terminal modes) as the live parser.
             checkpoint_raw_output(pane);
-            let (rows, cols) = pane.parser.screen().size();
-            let mut parser = Parser::new(rows, cols, history_limit);
+            let (rows, cols) = { let (rows_nz, cols_nz) = pane.parser.screen().size(); (rows_nz.get(), cols_nz.get()) };
+            let mut parser = Parser::new(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap(), history_limit);
             terminal::replay(&mut parser, &pane.raw_output);
             pane.parser = parser;
             pane.copy_mode = None;
@@ -12796,7 +12796,7 @@ fn raw_output_budget(cols: u16, history_limit: usize) -> usize {
 
 fn retain_raw_output(pane: &mut Pane, bytes: &[u8], history_limit: usize) {
     pane.raw_output.extend_from_slice(bytes);
-    let (_, cols) = pane.parser.screen().size();
+    let cols = pane.parser.screen().size().1.get();
     if pane.raw_output.len() > raw_output_budget(cols, history_limit) {
         checkpoint_raw_output(pane);
     }
@@ -12805,7 +12805,7 @@ fn retain_raw_output(pane: &mut Pane, bytes: &[u8], history_limit: usize) {
 fn checkpoint_raw_output(pane: &mut Pane) {
     let (rows, alternate) = {
         let screen = pane.parser.screen();
-        let (rows, _) = screen.size();
+        let rows = screen.size().0.get();
         (rows, screen.alternate_screen())
     };
     let wrap = pane.output_state.wrap_enabled();
@@ -12841,8 +12841,8 @@ fn checkpoint_raw_output(pane: &mut Pane) {
         checkpoint.extend_from_slice(b"\x1b[?1049h");
     }
     let screen = pane.parser.screen();
-    checkpoint.extend_from_slice(&screen.state_formatted());
-    checkpoint.extend_from_slice(&screen.cursor_state_formatted());
+    checkpoint.extend_from_slice(screen.state_formatted().as_bytes());
+    checkpoint.extend_from_slice(screen.cursor_state_formatted().as_bytes());
     if pane.output_state.focus_events() {
         checkpoint.extend_from_slice(b"\x1b[?1004h");
     }
@@ -14503,7 +14503,7 @@ fn pane_content_for_format(pane: &Pane) -> String {
     if pane.raw_output.is_empty() {
         return pane.parser.screen().contents();
     }
-    let mut parser = Parser::new(pane.rect.rows.max(1), pane.rect.cols.max(1), 10_000);
+    let mut parser = Parser::new(std::num::NonZeroU16::new(pane.rect.rows.max(1)).unwrap(), std::num::NonZeroU16::new(pane.rect.cols.max(1)).unwrap(), 10_000);
     terminal::replay(&mut parser, &pane.raw_output);
     let (mut history, live) = history_rows(&mut parser);
     let floor = pane.history_floor.min(history.len());
@@ -14730,7 +14730,7 @@ fn format_pane(options: FormatPaneOptions<'_>) -> String {
             // scrollback viewport. Rebuild a private parser from the retained
             // PTY stream so format expansion cannot mutate the live pane.
             let mut parser = replayed_copy_source_parser(pane, 10_000).unwrap_or_else(|| {
-                let mut parser = Parser::new(pane.rect.rows.max(1), pane.rect.cols.max(1), 10_000);
+                let mut parser = Parser::new(std::num::NonZeroU16::new(pane.rect.rows.max(1)).unwrap(), std::num::NonZeroU16::new(pane.rect.cols.max(1)).unwrap(), 10_000);
                 if pane.raw_output.is_empty() {
                     parser.process(pane.parser.screen().contents().as_bytes());
                 } else {
@@ -16408,7 +16408,7 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render split session");
-        let mut terminal = Parser::new(6, 20, 100);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(6).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         terminal.process(&rendered);
         let screen = terminal.screen();
         let colored = screen.cell(0, 0).expect("colored cell");
@@ -16484,7 +16484,7 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render cursor session");
-        let mut terminal = Parser::new(6, 20, 100);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(6).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         terminal.process(&rendered);
 
         assert_eq!(
@@ -16500,9 +16500,9 @@ mod tests {
 
     #[test]
     fn incremental_render_hides_cursor_before_changed_rows_headlessly() {
-        let mut previous = Parser::new(2, 20, 0);
+        let mut previous = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 0);
         previous.process(b"old");
-        let mut current = Parser::new(2, 20, 0);
+        let mut current = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 0);
         current.process(b"new");
 
         let delta = render_screen_delta(previous.screen(), current.screen())
@@ -16754,7 +16754,7 @@ mod tests {
         let pane = &state.sessions[0].windows[0].panes[0];
         assert_eq!(pane.rect.y, 0);
         assert_eq!(pane.rect.rows, 5);
-        assert_eq!(pane.parser.screen().size(), (5, 20));
+        { let size = pane.parser.screen().size(); assert_eq!((size.0.get(), size.1.get()), (5, 20)); }
 
         state
             .set_global_option("status-position", "top")
@@ -16762,7 +16762,7 @@ mod tests {
         let pane = &state.sessions[0].windows[0].panes[0];
         assert_eq!(pane.rect.y, 1);
         assert_eq!(pane.rect.rows, 5);
-        assert_eq!(pane.parser.screen().size(), (5, 20));
+        { let size = pane.parser.screen().size(); assert_eq!((size.0.get(), size.1.get()), (5, 20)); }
 
         state
             .set_global_option("status", "off")
@@ -16770,7 +16770,7 @@ mod tests {
         let pane = &state.sessions[0].windows[0].panes[0];
         assert_eq!(pane.rect.y, 0);
         assert_eq!(pane.rect.rows, 6);
-        assert_eq!(pane.parser.screen().size(), (6, 20));
+        { let size = pane.parser.screen().size(); assert_eq!((size.0.get(), size.1.get()), (6, 20)); }
     }
 
     #[test]
@@ -17083,7 +17083,7 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render long redraw row");
-        let mut terminal = Parser::new(5, 30, 10_000);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(5).unwrap(), std::num::NonZeroU16::new(30).unwrap(), 10_000);
         terminal.process(&rendered);
         assert!(
             terminal
@@ -17100,7 +17100,7 @@ mod tests {
         let rendered = state
             .render_session(session_id, None)
             .expect("render short redraw row");
-        let mut terminal = Parser::new(5, 30, 10_000);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(5).unwrap(), std::num::NonZeroU16::new(30).unwrap(), 10_000);
         terminal.process(&rendered);
         let first_row = terminal
             .screen()
@@ -17828,7 +17828,7 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
                 .windows(b"name of new window:".len())
                 .any(|window| window == b"name of new window:")
         );
-        let mut prompt_terminal = Parser::new(8, 40, 0);
+        let mut prompt_terminal = Parser::new(std::num::NonZeroU16::new(8).unwrap(), std::num::NonZeroU16::new(40).unwrap(), 0);
         prompt_terminal.process(&prompt_render);
         assert_eq!(
             prompt_terminal.screen().cursor_position(),
@@ -17921,7 +17921,7 @@ bind n command-prompt -p "name of new window:" "new-window -n '%%'"
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render three vertical panes");
-        let mut terminal = Parser::new(8, 40, 0);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(8).unwrap(), std::num::NonZeroU16::new(40).unwrap(), 0);
         terminal.process(&rendered);
         assert_eq!(terminal.screen().cell(0, 13).map(|cell| cell.contents()), Some("│"));
         assert_eq!(terminal.screen().cell(0, 27).map(|cell| cell.contents()), Some("│"));
@@ -18107,7 +18107,7 @@ bind p command-prompt -P -p "pane: " "set -g @pane '%%'"
         let rendered = state
             .render_session(session_id, Some(client_id))
             .expect("render pane prompt");
-        let mut terminal = Parser::new(8, 40, 0);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(8).unwrap(), std::num::NonZeroU16::new(40).unwrap(), 0);
         terminal.process(&rendered);
         let pane_row = terminal.screen().rows(0, 40).nth(6).unwrap_or_default();
         let status_row = terminal.screen().rows(0, 40).nth(7).unwrap_or_default();
@@ -18358,7 +18358,7 @@ bind -T copy-mode C-a send -X end-of-line
                 .windows(b"(search) ZabXcdY".len())
                 .any(|window| window == b"(search) ZabXcdY")
         );
-        let mut prompt_terminal = Parser::new(8, 40, 0);
+        let mut prompt_terminal = Parser::new(std::num::NonZeroU16::new(8).unwrap(), std::num::NonZeroU16::new(40).unwrap(), 0);
         prompt_terminal.process(&rendered);
         assert_eq!(
             prompt_terminal.screen().cursor_position(),
@@ -19385,7 +19385,7 @@ bind -r Right next-window
             .execute_copy_action(pane_id, CopyAction::HistoryTop, 1)
             .expect("move copy scrollbar to history top");
         let session_id = state.sessions[0].id;
-        let mut terminal = Parser::new(6, 20, 10_000);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(6).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 10_000);
         terminal.process(
             &state
                 .render_session(session_id, None)
@@ -19404,7 +19404,7 @@ bind -r Right next-window
         state
             .execute_copy_action(pane_id, CopyAction::HistoryBottom, 1)
             .expect("move copy scrollbar to history bottom");
-        let mut terminal = Parser::new(6, 20, 10_000);
+        let mut terminal = Parser::new(std::num::NonZeroU16::new(6).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 10_000);
         terminal.process(
             &state
                 .render_session(session_id, None)
@@ -19472,7 +19472,7 @@ bind -r Right next-window
         let rendered = state
             .render_session(session_id, None)
             .expect("render left scrollbar session");
-        let mut parser = Parser::new(6, 20, 10_000);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(6).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 10_000);
         parser.process(&rendered);
         let first_row = parser
             .screen()
@@ -20219,7 +20219,7 @@ bind -r Right next-window
         let expected_contents = pane.parser.screen().contents_formatted();
         checkpoint_raw_output(pane);
 
-        let mut replayed = Parser::new(5, 20, 10_000);
+        let mut replayed = Parser::new(std::num::NonZeroU16::new(5).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 10_000);
         terminal::replay(&mut replayed, &pane.raw_output);
         let (history, live) = history_rows(&mut replayed);
         assert_eq!(history, expected_history);
@@ -20265,7 +20265,7 @@ bind -r Right next-window
             retain_raw_output(pane, chunk, 100);
         }
 
-        let mut replayed = Parser::new(4, 12, 100);
+        let mut replayed = Parser::new(std::num::NonZeroU16::new(4).unwrap(), std::num::NonZeroU16::new(12).unwrap(), 100);
         terminal::replay(&mut replayed, &pane.raw_output);
         assert_eq!(
             replayed.screen().contents_formatted(),
@@ -20304,7 +20304,7 @@ bind -r Right next-window
         retain_raw_output(pane, output, 100);
         checkpoint_raw_output(pane);
 
-        let mut replayed = Parser::new(4, 12, 100);
+        let mut replayed = Parser::new(std::num::NonZeroU16::new(4).unwrap(), std::num::NonZeroU16::new(12).unwrap(), 100);
         terminal::replay(&mut replayed, &pane.raw_output);
         assert!(replayed.screen().alternate_screen());
         assert_eq!(
@@ -20346,18 +20346,18 @@ bind -r Right next-window
         checkpoint_raw_output(pane);
 
         assert!(!pane.raw_output.is_empty());
-        let mut replayed = Parser::new(4, 20, 100);
+        let mut replayed = Parser::new(std::num::NonZeroU16::new(4).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         terminal::replay(&mut replayed, &pane.raw_output);
         assert_eq!(replayed.screen().contents(), expected_contents);
         assert_eq!(replayed.screen().cursor_position(), expected_cursor);
 
         pane.history_floor = 7;
         pane.parser.process(b"\x1b[2J\x1b[Hcheckpoint");
-        let budget = raw_output_budget(pane.parser.screen().size().1, 10_000);
+        let budget = raw_output_budget(pane.parser.screen().size().1.get(), 10_000);
         retain_raw_output(pane, &vec![b'x'; budget + 1], 10_000);
         assert!(pane.raw_output.len() < budget);
         assert_eq!(pane.history_floor, 0);
-        let mut replayed = Parser::new(4, 20, 100);
+        let mut replayed = Parser::new(std::num::NonZeroU16::new(4).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         terminal::replay(&mut replayed, &pane.raw_output);
         assert_eq!(
             replayed.screen().contents(),
@@ -20402,7 +20402,7 @@ bind -r Right next-window
         .expect("clear history");
 
         let pane = state.find_pane(pane_id).expect("cleared pane");
-        let mut replayed = Parser::new(4, 20, 100);
+        let mut replayed = Parser::new(std::num::NonZeroU16::new(4).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         terminal::replay(&mut replayed, &pane.raw_output);
         assert_eq!(
             replayed.screen().contents(),

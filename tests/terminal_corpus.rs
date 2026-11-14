@@ -164,7 +164,7 @@ fn vt100_corpus_rendering_matches_the_reference() {
 }
 
 fn rendered_state(capture: &str) -> String {
-    let mut parser = vt100::Parser::new(24, 80, 0);
+    let mut parser = vt100::Parser::new(std::num::NonZeroU16::new(24).unwrap(), std::num::NonZeroU16::new(80).unwrap(), 0);
     parser.process(capture.trim_end_matches('\n').replace('\n', "\r\n").as_bytes());
     let screen = parser.screen();
     let mut cells = Vec::new();
