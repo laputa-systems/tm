@@ -64,7 +64,7 @@ pub(crate) fn capture_row(
     previous: &mut CaptureStyle,
 ) -> CapturedRow {
     let saved = parser.screen().scrollback();
-    let (rows, cols) = parser.screen().size();
+    let (rows, cols) = { let (rows_nz, cols_nz) = parser.screen().size(); (rows_nz.get(), cols_nz.get()) };
     let (offset, visible_row) = if row < history_rows {
         (history_rows - row, 0)
     } else {

@@ -601,7 +601,7 @@ pub const INTENTIONAL_DIFFERENCES: &[IntentionalDifference] = &[
         command: &["capture-pane", "-p", "-e", "-J", "-S", "-", "-t", "S"],
         limit: GridLimit::NoResizeReflow,
         field: Field::Stdout,
-        tm: "READY\nabcdefghi\n中Z\nabcdefgh中Y\nabcdefghi\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
+        tm: "READY\nabcdefghi\n中Z\nabcdefgh中\nY\nabcdefghi\n😀Z\nabcdefg\nY\n0123456\ne\u{301}中\nM01\n\n",
         reference: "READY\nabcdefghi中Z\nabcdefgh中Y\nabcdefghi😀Z\nabcdefgh😀Y\n0123456789\ne\u{301}中\nM01\n\n",
     },
     IntentionalDifference {

@@ -140,7 +140,7 @@ impl RawClient {
         let monitor: Monitor = Arc::new((
             Mutex::new(Shared {
                 bytes: Vec::new(),
-                parser: vt100::Parser::new(rows, cols, 0),
+                parser: vt100::Parser::new(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap(), 0),
                 closed: false,
             }),
             Condvar::new(),
@@ -212,14 +212,14 @@ impl RawClient {
     pub fn screen_rows(&self) -> Vec<String> {
         let shared = lock(&self.monitor);
         let screen = shared.parser.screen();
-        let (_, columns) = screen.size();
+        let columns = screen.size().1.get();
         screen.rows(0, columns).collect()
     }
 
     pub fn screen_cells(&self) -> Vec<(String, vt100::Color, vt100::Color, bool)> {
         let shared = lock(&self.monitor);
         let screen = shared.parser.screen();
-        let (rows, columns) = screen.size();
+        let (rows, columns) = { let (rows_nz, cols_nz) = screen.size(); (rows_nz.get(), cols_nz.get()) };
         (0..rows)
             .flat_map(|row| (0..columns).map(move |column| (row, column)))
             .map(|(row, column)| {
@@ -232,7 +232,7 @@ impl RawClient {
     pub fn styled_row(&self, row: u16) -> String {
         let shared = lock(&self.monitor);
         let screen = shared.parser.screen();
-        let (_, columns) = screen.size();
+        let columns = screen.size().1.get();
         let color = |color: vt100::Color| match color {
             vt100::Color::Default => "default".to_owned(),
             vt100::Color::Idx(index) => format!("c{index}"),
@@ -273,7 +273,7 @@ impl RawClient {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        lock(&self.monitor).parser.screen_mut().set_size(rows, columns);
+        lock(&self.monitor).parser.screen_mut().set_size(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(columns).unwrap());
         let result = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &size) };
         assert_eq!(result, 0, "set window size: {}", std::io::Error::last_os_error());
         self.signal(libc::SIGWINCH);

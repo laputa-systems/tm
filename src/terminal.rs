@@ -242,7 +242,7 @@ fn replay_terminal_bytes(parser: &mut Parser, bytes: &[u8], state: &mut ReplaySt
             } else if let Some(count) = repeat_count(sequence) {
                 if let Some(character) = state.last_printed.as_ref() {
                     let (_, column) = parser.screen().cursor_position();
-                    let (_, columns) = parser.screen().size();
+                    let columns = parser.screen().size().1.get();
                     let limit = usize::from(columns.saturating_sub(column));
                     for _ in 0..count.min(limit) {
                         write_terminal_character(parser, character, *state.wrap);
@@ -339,7 +339,7 @@ fn wrap_mode(sequence: &[u8]) -> Option<bool> {
 
 fn write_terminal_character(parser: &mut Parser, character: &[u8], wrap: bool) {
     let (row, col) = parser.screen().cursor_position();
-    let cols = parser.screen().size().1;
+    let cols = parser.screen().size().1.get();
     parser.process(character);
     if !wrap && col.saturating_add(1) >= cols {
         restore_no_wrap_cursor(parser, row);
@@ -347,7 +347,7 @@ fn write_terminal_character(parser: &mut Parser, character: &[u8], wrap: bool) {
 }
 
 fn restore_no_wrap_cursor(parser: &mut Parser, row: u16) {
-    let (rows, cols) = parser.screen().size();
+    let (rows, cols) = { let (rows_nz, cols_nz) = parser.screen().size(); (rows_nz.get(), cols_nz.get()) };
     if cols == 0 || rows == 0 {
         return;
     }
@@ -361,7 +361,7 @@ fn restore_no_wrap_cursor(parser: &mut Parser, row: u16) {
 }
 
 fn screen_alignment(parser: &Parser) -> Vec<u8> {
-    let (rows, cols) = parser.screen().size();
+    let (rows, cols) = { let (rows_nz, cols_nz) = parser.screen().size(); (rows_nz.get(), cols_nz.get()) };
     let (cursor_row, cursor_col) = parser.screen().cursor_position();
     let mut output = Vec::new();
     output.extend_from_slice(b"\x1b[2J");
@@ -706,7 +706,7 @@ mod tests {
 
     #[derive(Debug, Eq, PartialEq)]
     struct ScreenSnapshot {
-        contents: Vec<u8>,
+        contents: String,
         cursor: (u16, u16),
         alternate: bool,
         scrollback: usize,
@@ -722,7 +722,7 @@ mod tests {
 
     fn snapshot(parser: &Parser) -> ScreenSnapshot {
         let screen = parser.screen();
-        let (rows, _) = screen.size();
+        let rows = screen.size().0.get();
         ScreenSnapshot {
             contents: screen.contents_formatted(),
             cursor: screen.cursor_position(),
@@ -743,14 +743,14 @@ mod tests {
     /// PTY reads can split an escape, UTF-8 scalar, OSC, or REP sequence at
     /// any position, so this is the deterministic oracle for OutputState.
     fn assert_chunk_invariant(bytes: &[u8], rows: u16, cols: u16) {
-        let mut expected_parser = Parser::new(rows, cols, 100);
+        let mut expected_parser = Parser::new(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap(), 100);
         let mut expected_state = OutputState::default();
         expected_state.process(&mut expected_parser, bytes);
         expected_state.finish(&mut expected_parser);
         let expected = snapshot(&expected_parser);
 
         for chunk_size in 1..=bytes.len().max(1) {
-            let mut parser = Parser::new(rows, cols, 100);
+            let mut parser = Parser::new(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap(), 100);
             let mut state = OutputState::default();
             for chunk in bytes.chunks(chunk_size) {
                 state.process(&mut parser, chunk);
@@ -759,14 +759,14 @@ mod tests {
             assert_eq!(snapshot(&parser), expected, "chunk size {chunk_size}");
         }
 
-        let mut replay_parser = Parser::new(rows, cols, 100);
+        let mut replay_parser = Parser::new(std::num::NonZeroU16::new(rows).unwrap(), std::num::NonZeroU16::new(cols).unwrap(), 100);
         replay(&mut replay_parser, bytes);
         assert_eq!(snapshot(&replay_parser), expected, "replay diverged");
     }
 
     #[test]
     fn output_state_clamps_dec_repeat_to_the_remaining_row() {
-        let mut parser = Parser::new(3, 10, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(3).unwrap(), std::num::NonZeroU16::new(10).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"X\x1b[1000000b");
         assert_eq!(parser.screen().rows(0, 10).next(), Some("XXXXXXXXXX".to_owned()));
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn output_state_caps_an_incomplete_sequence() {
-        let mut parser = Parser::new(3, 10, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(3).unwrap(), std::num::NonZeroU16::new(10).unwrap(), 100);
         let mut state = OutputState::default();
         let mut bytes = b"\x1b]52;c;".to_vec();
         bytes.resize(MAX_PENDING_BYTES * 2, b'A');
@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn output_state_expands_split_dec_repeat_sequences() {
-        let mut parser = Parser::new(3, 10, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(3).unwrap(), std::num::NonZeroU16::new(10).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"A\x1b[4");
         state.process(&mut parser, b"bB");
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn output_state_expands_split_screen_alignment_sequences() {
-        let mut parser = Parser::new(3, 4, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(3).unwrap(), std::num::NonZeroU16::new(4).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"\x1b#");
         state.process(&mut parser, b"8");
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn output_state_honors_split_no_wrap_mode_sequences() {
-        let mut parser = Parser::new(3, 5, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(3).unwrap(), std::num::NonZeroU16::new(5).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"\x1b[?7");
         state.process(&mut parser, b"labcdeF");
@@ -812,7 +812,7 @@ mod tests {
 
     #[test]
     fn output_state_tracks_wrap_in_combined_private_mode_sequences() {
-        let mut parser = Parser::new(3, 5, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(3).unwrap(), std::num::NonZeroU16::new(5).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"\x1b[?7;25labcdeF");
         assert_eq!(parser.screen().rows(0, 5).next(), Some("abcdF".to_owned()));
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn output_state_honors_split_utf8_characters() {
-        let mut parser = Parser::new(3, 10, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(3).unwrap(), std::num::NonZeroU16::new(10).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"\xe3");
         state.process(&mut parser, b"\x81\x82");
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn output_state_does_not_treat_esc_b_as_dec_repeat() {
-        let mut parser = Parser::new(2, 8, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(8).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"A\x1bbB");
         state.finish(&mut parser);
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn output_state_ris_resets_local_wrap_and_repeat_state() {
-        let mut parser = Parser::new(2, 5, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(5).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"A\x1b[?7lbcde\x1bc\x1b[2bF");
         state.finish(&mut parser);
@@ -863,7 +863,7 @@ mod tests {
         let bytes = b"\x1b[?7labcde\x1b[?1049h12345F\x1b[?1049lZ";
         assert_chunk_invariant(bytes, 2, 5);
 
-        let mut parser = Parser::new(2, 5, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(5).unwrap(), 100);
         replay(&mut parser, bytes);
         assert!(!parser.screen().alternate_screen());
         assert_eq!(parser.screen().rows(0, 5).next(), Some("abcdZ".to_owned()));
@@ -890,7 +890,7 @@ mod tests {
 
     #[test]
     fn output_state_replies_to_pane_terminal_queries() {
-        let mut parser = Parser::new(2, 20, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"\x1b[c\x1b[>c\x1bP$qm\x1b\\");
         assert_eq!(
@@ -901,7 +901,7 @@ mod tests {
 
     #[test]
     fn output_state_tracks_focus_and_extended_key_requests() {
-        let mut parser = Parser::new(2, 20, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"\x1b[?1004h\x1b[>4;2m");
         assert!(state.focus_events());
@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn output_state_reports_only_standalone_audible_bells() {
-        let mut parser = Parser::new(2, 20, 100);
+        let mut parser = Parser::new(std::num::NonZeroU16::new(2).unwrap(), std::num::NonZeroU16::new(20).unwrap(), 100);
         let mut state = OutputState::default();
         state.process(&mut parser, b"\x1b]2;title\x07");
         assert!(!state.take_audible_bell());

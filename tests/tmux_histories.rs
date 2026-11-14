@@ -1504,8 +1504,8 @@ impl World {
                 for client in [&mut seat.tm, &mut seat.reference] {
                     client.write(b"\x01/");
                     client.wait_for_screen("command prompt", SPAWN_TIMEOUT, |screen| {
-                        let rows = screen.size().0;
-                        screen.rows(0, screen.size().1).nth(usize::from(rows) - 1).is_some_and(|row| row.starts_with(':'))
+                        let rows = screen.size().0.get();
+                        screen.rows(0, screen.size().1.get()).nth(usize::from(rows) - 1).is_some_and(|row| row.starts_with(':'))
                     });
                     client.write(&bytes);
                 }

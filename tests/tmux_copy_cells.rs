@@ -156,7 +156,7 @@ fn emacs_copy_actions_move_search_and_copy_with_the_cell_model() {
 }
 
 fn rendered_state(capture: &str) -> String {
-    let mut parser = vt100::Parser::new(6, 40, 0);
+    let mut parser = vt100::Parser::new(std::num::NonZeroU16::new(6).unwrap(), std::num::NonZeroU16::new(40).unwrap(), 0);
     parser.process(capture.trim_end_matches('\n').replace('\n', "\r\n").as_bytes());
     let screen = parser.screen();
     let mut cells = Vec::new();
