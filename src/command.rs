@@ -1374,7 +1374,7 @@ fn key_bytes(key: &str) -> Vec<u8> {
     }
 }
 
-fn usage() -> &'static str {
+pub(crate) fn usage() -> &'static str {
     "usage: tm [-S socket] [command]\n\ncommands: sessions/clients, new/split/new-pane/resize/swap/break/join/respawn, select/kill/rename, send-keys, capture-pane, copy-mode, choose-tree/choose-buffer/choose-client, buffers, options, run-shell, attach/detach/switch, kill-server"
 }
 

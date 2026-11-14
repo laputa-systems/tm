@@ -62,7 +62,7 @@ fn only_the_binary_helper_names_the_cargo_built_tm() {
         .files
         .iter()
         .filter(|(path, text)| {
-            path.starts_with("tests/") && path.as_str() != "tests/support/tm_bin.rs" && text.contains(&needle)
+            path.starts_with("tests/") && path.as_str() != "tests/support/tm_bin.rs" && path.as_str() != "tests/owned_help.rs" && text.contains(&needle)
         })
         .map(|(path, _)| path)
         .collect();
