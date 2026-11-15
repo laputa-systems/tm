@@ -1,9 +1,9 @@
 size: columns=40 rows=6
 cursor: row=4 column=0 visible=true
 modes: alternate-screen=true application-cursor=false application-keypad=false bracketed-paste=true
-00│SCROLL_15··········[5/24]│VT_FIXTURE_REA
-01│SCROLL_16················│··············
-02│SCROLL_17················│··············
-03│SCROLL_18················│··············
-04│SCROLL_19················│··············
+00│SCROLL_20··········[5/24]│VT_FIXTURE_REA
+01│SCROLL_21················│··············
+02│SCROLL_22················│··············
+03│SCROLL_23················│··············
+04│·························│··············
 05│0:tm-pty-fixture························

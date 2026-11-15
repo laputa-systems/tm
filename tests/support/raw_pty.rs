@@ -6,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use std::num::NonZeroU16;
 
 use super::parity::Mux;
 
@@ -140,7 +141,7 @@ impl RawClient {
         let monitor: Monitor = Arc::new((
             Mutex::new(Shared {
                 bytes: Vec::new(),
-                parser: vt100::Parser::new(rows, cols, 0),
+                parser: vt100::Parser::new(NonZeroU16::new(rows).unwrap(), NonZeroU16::new(cols).unwrap(), 0),
                 closed: false,
             }),
             Condvar::new(),
@@ -213,15 +214,15 @@ impl RawClient {
         let shared = lock(&self.monitor);
         let screen = shared.parser.screen();
         let (_, columns) = screen.size();
-        screen.rows(0, columns).collect()
+        screen.rows(0, columns.get()).collect()
     }
 
     pub fn screen_cells(&self) -> Vec<(String, vt100::Color, vt100::Color, bool)> {
         let shared = lock(&self.monitor);
         let screen = shared.parser.screen();
         let (rows, columns) = screen.size();
-        (0..rows)
-            .flat_map(|row| (0..columns).map(move |column| (row, column)))
+        (0..rows.get())
+            .flat_map(|row| (0..columns.get()).map(move |column| (row, column)))
             .map(|(row, column)| {
                 let cell = screen.cell(row, column).expect("cell inside the screen");
                 (cell.contents().to_owned(), cell.fgcolor(), cell.bgcolor(), cell.inverse())
@@ -239,7 +240,7 @@ impl RawClient {
             vt100::Color::Rgb(red, green, blue) => format!("#{red:02x}{green:02x}{blue:02x}"),
         };
         let mut runs: Vec<(String, String)> = Vec::new();
-        for column in 0..columns {
+        for column in 0..columns.get() {
             let cell = screen.cell(row, column).expect("cell inside the screen");
             let flags: String = [
                 (cell.bold(), 'b'),
@@ -273,7 +274,7 @@ impl RawClient {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        lock(&self.monitor).parser.screen_mut().set_size(rows, columns);
+        lock(&self.monitor).parser.screen_mut().set_size(NonZeroU16::new(rows).unwrap(), NonZeroU16::new(columns).unwrap());
         let result = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &size) };
         assert_eq!(result, 0, "set window size: {}", std::io::Error::last_os_error());
         self.signal(libc::SIGWINCH);
