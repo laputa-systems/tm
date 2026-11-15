@@ -68,12 +68,12 @@ pub(crate) fn capture_row(
     let (offset, visible_row) = if row < history_rows {
         (history_rows - row, 0)
     } else {
-        (0, (row - history_rows).min(usize::from(rows).saturating_sub(1)))
+        (0, (row - history_rows).min(usize::from(rows.get()).saturating_sub(1)))
     };
     parser.screen_mut().set_scrollback(offset);
     let visible_row = u16::try_from(visible_row).unwrap_or(u16::MAX);
     let screen = parser.screen();
-    let cells = (0..cols)
+    let cells = (0..cols.get())
         .filter_map(|column| screen.cell(visible_row, column).cloned())
         .collect::<Vec<_>>();
     let wrapped = screen.row_wrapped(visible_row);
