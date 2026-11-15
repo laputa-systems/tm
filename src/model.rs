@@ -1,3 +1,4 @@
+use std::num::NonZeroU16;
 use std::collections::HashMap;
 
 use vt100::Parser;
@@ -641,7 +642,7 @@ impl Pane {
                 cols: size.cols,
                 rows: size.rows,
             },
-            parser: Parser::new(size.rows, size.cols, 10_000),
+            parser: Parser::new(NonZeroU16::new(size.rows).unwrap(), NonZeroU16::new(size.cols).unwrap(), 10_000),
             pty,
             command,
             command_args,
@@ -690,7 +691,7 @@ impl Pane {
             .map_or(options.history_floor, |source| source.history_floor);
         let mut source_parser = source
             .as_ref()
-            .map(|_| Parser::new(self.rect.rows.max(1), self.rect.cols.max(1), history_limit));
+            .map(|_| Parser::new(NonZeroU16::new(self.rect.rows.max(1)).unwrap(), NonZeroU16::new(self.rect.cols.max(1)).unwrap(), history_limit));
         if let Some(parser) = source_parser.as_mut() {
             terminal::replay(parser, &raw_output);
         }
@@ -711,7 +712,7 @@ impl Pane {
     }
 
     pub(crate) fn linked_clone(&self) -> Self {
-        let mut parser = Parser::new(self.rect.rows.max(1), self.rect.cols.max(1), 10_000);
+        let mut parser = Parser::new(NonZeroU16::new(self.rect.rows.max(1)).unwrap(), NonZeroU16::new(self.rect.cols.max(1)).unwrap(), 10_000);
         terminal::replay(&mut parser, &self.raw_output);
         Self {
             id: self.id,
@@ -968,16 +969,16 @@ impl Window {
 fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
     let screen = parser.screen();
     let (old_rows, old_cols) = screen.size();
-    if old_rows <= rows {
-        parser.screen_mut().set_size(rows, cols);
+    if old_rows.get() <= rows {
+        parser.screen_mut().set_size(NonZeroU16::new(rows.max(1)).unwrap(), NonZeroU16::new(cols.max(1)).unwrap());
         return false;
     }
 
-    let width = cols.min(old_cols);
-    let bottom_offset = old_rows.saturating_sub(rows);
+    let width = cols.min(old_cols.get());
+    let bottom_offset = old_rows.get().saturating_sub(rows);
     let (cursor_row, cursor_col) = screen.cursor_position();
     let blank_rows_below_cursor = screen
-        .rows(0, old_cols)
+        .rows(0, old_cols.get())
         .skip(usize::from(cursor_row) + 1)
         .collect::<Vec<_>>()
         .iter()
@@ -993,12 +994,12 @@ fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
     let cursor_hidden = screen.hide_cursor();
     let attributes = screen.attributes_formatted();
 
-    parser.screen_mut().set_size(rows, cols);
+    parser.screen_mut().set_size(NonZeroU16::new(rows.max(1)).unwrap(), NonZeroU16::new(cols.max(1)).unwrap());
 
     let mut redraw = Vec::new();
     for (row, contents) in saved_rows.into_iter().enumerate() {
         redraw.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
-        redraw.extend_from_slice(&contents);
+        redraw.extend_from_slice(contents.as_bytes());
         redraw.extend_from_slice(b"\x1b[K");
     }
     let mapped_row = usize::from(cursor_row)
@@ -1014,7 +1015,7 @@ fn resize_parser_to_rect(parser: &mut Parser, rows: u16, cols: u16) -> bool {
         )
         .as_bytes(),
     );
-    redraw.extend_from_slice(&attributes);
+    redraw.extend_from_slice(attributes.as_bytes());
     parser.process(&redraw);
     true
 }
