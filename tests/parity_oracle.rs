@@ -121,10 +121,10 @@ fn comparator_detects_a_flipped_terminal_mode_of_an_attached_client() {
     );
 
     let mut flipped = observed.clone();
-    flipped.alternate_screen = !flipped.alternate_screen;
+    flipped.alternate_screen.toggle();
     assert!(parity::observation_difference("terminal modes", &flipped, &expected).is_some());
     let mut flipped = observed.clone();
-    flipped.bracketed_paste = !flipped.bracketed_paste;
+    flipped.bracketed_paste.toggle();
     assert!(parity::observation_difference("terminal modes", &flipped, &expected).is_some());
     let mut flipped = observed.clone();
     flipped.mouse_mode.push('x');
