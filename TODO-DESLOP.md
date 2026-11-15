@@ -1,5 +1,5 @@
 Prefix: DSLP
-Next: 6
+Next: 7
 
 Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/main/docs/campaigns/deslop.md), tier C). One agent works this file with the `deslop` skill: take the lowest-numbered open ticket whose area does not start with `Needs owner ·`. After DSLP-5, work the open P1 and P2 findings, then fill in `## Report` below.
 
@@ -53,4 +53,14 @@ Not started.
 - **Recommendation:** Run the deslop Dead code step. Accept: tools clean or allowlisted with reasons; walk-backs filed as Needs owner tickets.
 - **Fix with:** deslop
 - **Effort:** M
+
+
+### DSLP-6 · P2 · window_navigation_bindings_repeat_like_the_reference fails intermittently on macOS
+
+- **Area:** Tests
+- **Where:** the test window_navigation_bindings_repeat_like_the_reference (CI job CI (xcode-27))
+- **Problem:** On the docs-only seeding PR (tm#32) the macOS CI job failed this test (9 passed, 1 failed) and passed on rerun with no code change, while main was green; a flaky test hides real failures and blocks unattended merges.
+- **Recommendation:** Root-cause it (run it in a loop on macOS; look for timing, terminal-size, or ordering assumptions), fix the cause rather than retrying, and keep the test as the regression.
+- **Fix with:** root-cause
+- **Effort:** S
 
