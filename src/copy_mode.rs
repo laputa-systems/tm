@@ -1063,7 +1063,7 @@ impl CopyModeState {
             }
             CopyAction::LineNumbersOff => self.line_numbers = false,
             CopyAction::LineNumbersToggle => {
-                self.line_numbers = !self.line_numbers;
+                self.line_numbers.toggle();
                 if self.line_numbers && self.line_number_mode == CopyLineNumberMode::Off {
                     self.line_number_mode = CopyLineNumberMode::Default;
                 }
