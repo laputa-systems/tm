@@ -45,22 +45,71 @@ fn windows(names: &'static [&'static str]) -> impl Fn(&Mux, &Path) {
 
 #[test]
 fn window_navigation_bindings_repeat_like_the_reference() {
-    let mut pair = Pair::new("bindings-navigate", windows(&["a", "b", "c"]));
-    pair.press(&[PREFIX, CTRL_RIGHT], "prefix C-Right");
-    pair.press(&[CTRL_RIGHT], "repeated C-Right");
-    pair.press(&[CTRL_RIGHT], "repeated C-Right wrapping");
-    pair.press(&[PREFIX, CTRL_LEFT], "prefix C-Left");
-    pair.press(&[CTRL_LEFT], "repeated C-Left");
-    pair.press(&[PREFIX, RIGHT], "prefix Right swaps forward");
-    pair.press(&[RIGHT], "repeated Right");
-    pair.press(&[PREFIX, LEFT], "prefix Left swaps back");
-    pair.press(&[LEFT], "repeated Left");
+    struct Case {
+        step: &'static str,
+        names: &'static [&'static str],
+        start: &'static str,
+        keys: &'static [&'static [u8]],
+        expected: &'static str,
+    }
+    let cases = [
+        Case {
+            step: "prefix C-Right", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_RIGHT], expected: "1 a 0\n2 b 1\n3 c 0",
+        },
+        Case {
+            step: "repeated C-Right", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_RIGHT, CTRL_RIGHT], expected: "1 a 0\n2 b 0\n3 c 1",
+        },
+        Case {
+            step: "repeated C-Right wrapping", names: &["a", "b", "c"], start: "S:2",
+            keys: &[PREFIX, CTRL_RIGHT, CTRL_RIGHT], expected: "1 a 1\n2 b 0\n3 c 0",
+        },
+        Case {
+            step: "prefix C-Left", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_LEFT], expected: "1 a 0\n2 b 0\n3 c 1",
+        },
+        Case {
+            step: "repeated C-Left", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_LEFT, CTRL_LEFT], expected: "1 a 0\n2 b 1\n3 c 0",
+        },
+        Case {
+            step: "prefix Right swaps forward", names: &["a", "b", "c"], start: "S:2",
+            keys: &[PREFIX, RIGHT], expected: "1 a 0\n2 c 0\n3 b 1",
+        },
+        Case {
+            step: "repeated Right", names: &["a", "b", "c"], start: "S:2",
+            keys: &[PREFIX, RIGHT, RIGHT], expected: "1 b 1\n2 c 0\n3 a 0",
+        },
+        Case {
+            step: "prefix Left swaps back", names: &["b", "c", "a"], start: "S:1",
+            keys: &[PREFIX, LEFT], expected: "1 a 0\n2 c 0\n3 b 1",
+        },
+        Case {
+            step: "repeated Left", names: &["b", "c", "a"], start: "S:1",
+            keys: &[PREFIX, LEFT, LEFT], expected: "1 a 0\n2 b 1\n3 c 0",
+        },
+    ];
+    for case in cases {
+        let mut pair = Pair::new(case.step, windows(case.names));
+        pair.both(|side| { side.mux.ok(&["select-window", "-t", case.start]); });
+        pair.press(case.keys, case.step);
+        pair.both(|side| {
+            assert_eq!(side.mux.body(&["list-windows", "-t", "S", "-F", "#{window_index} #{window_name} #{window_active}"]), case.expected, "{} {:?}", case.step, side.mux.implementation());
+        });
+    }
+
+    let mut pair = Pair::new("bindings-expiry", windows(&["a", "b", "c"]));
+    pair.press(&[PREFIX, CTRL_RIGHT], "start expiry case");
     std::thread::sleep(REPEAT_TIME + Duration::from_millis(150));
     pair.press_unchanged(
         &[CTRL_RIGHT],
-        &[PREFIX, b"c"],
+        &[PREFIX, RIGHT],
         "C-Right after repeat-time reaches the pane",
     );
+    pair.both(|side| {
+        assert_eq!(side.mux.body(&["list-windows", "-t", "S", "-F", "#{window_index} #{window_name} #{window_active}"]), "1 a 0\n2 c 0\n3 b 1", "expired repeat {:?}", side.mux.implementation());
+    });
 }
 
 #[test]

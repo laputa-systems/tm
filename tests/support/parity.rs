@@ -19,14 +19,15 @@ pub struct Scratch {
 
 impl Scratch {
     pub fn new(label: &str) -> Self {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(".work/tmp")
-            .join(format!(
-                "parity-{}-{}-{label}",
+        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".work/tmp");
+        std::fs::create_dir_all(&parent).expect("create parity scratch parent");
+        let root = parent.join(format!(
+                "p{}-{}",
                 std::process::id(),
                 NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
             ));
-        std::fs::create_dir_all(&root).expect("create parity scratch");
+        std::fs::create_dir(&root)
+            .unwrap_or_else(|error| panic!("create parity scratch for {label}: {error}"));
         Self { root }
     }
 
