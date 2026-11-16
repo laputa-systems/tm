@@ -45,27 +45,76 @@ fn windows(names: &'static [&'static str]) -> impl Fn(&Mux, &Path) {
 
 #[test]
 fn window_navigation_bindings_repeat_like_the_reference() {
-    let mut pair = Pair::new("nav", windows(&["a", "b", "c"]));
-    pair.press(&[PREFIX, CTRL_RIGHT], "prefix C-Right");
-    pair.press(&[CTRL_RIGHT], "repeated C-Right");
-    pair.press(&[CTRL_RIGHT], "repeated C-Right wrapping");
-    pair.press(&[PREFIX, CTRL_LEFT], "prefix C-Left");
-    pair.press(&[CTRL_LEFT], "repeated C-Left");
-    pair.press(&[PREFIX, RIGHT], "prefix Right swaps forward");
-    pair.press(&[RIGHT], "repeated Right");
-    pair.press(&[PREFIX, LEFT], "prefix Left swaps back");
-    pair.press(&[LEFT], "repeated Left");
+    struct Case {
+        step: &'static str,
+        names: &'static [&'static str],
+        start: &'static str,
+        keys: &'static [&'static [u8]],
+        expected: &'static str,
+    }
+    let cases = [
+        Case {
+            step: "prefix C-Right", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_RIGHT], expected: "1 a 0\n2 b 1\n3 c 0",
+        },
+        Case {
+            step: "repeated C-Right", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_RIGHT, CTRL_RIGHT], expected: "1 a 0\n2 b 0\n3 c 1",
+        },
+        Case {
+            step: "repeated C-Right wrapping", names: &["a", "b", "c"], start: "S:2",
+            keys: &[PREFIX, CTRL_RIGHT, CTRL_RIGHT], expected: "1 a 1\n2 b 0\n3 c 0",
+        },
+        Case {
+            step: "prefix C-Left", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_LEFT], expected: "1 a 0\n2 b 0\n3 c 1",
+        },
+        Case {
+            step: "repeated C-Left", names: &["a", "b", "c"], start: "S:1",
+            keys: &[PREFIX, CTRL_LEFT, CTRL_LEFT], expected: "1 a 0\n2 b 1\n3 c 0",
+        },
+        Case {
+            step: "prefix Right swaps forward", names: &["a", "b", "c"], start: "S:2",
+            keys: &[PREFIX, RIGHT], expected: "1 a 0\n2 c 0\n3 b 1",
+        },
+        Case {
+            step: "repeated Right", names: &["a", "b", "c"], start: "S:2",
+            keys: &[PREFIX, RIGHT, RIGHT], expected: "1 b 1\n2 c 0\n3 a 0",
+        },
+        Case {
+            step: "prefix Left swaps back", names: &["b", "c", "a"], start: "S:1",
+            keys: &[PREFIX, LEFT], expected: "1 a 0\n2 c 0\n3 b 1",
+        },
+        Case {
+            step: "repeated Left", names: &["b", "c", "a"], start: "S:1",
+            keys: &[PREFIX, LEFT, LEFT], expected: "1 a 0\n2 b 1\n3 c 0",
+        },
+    ];
+    for case in cases {
+        let mut pair = Pair::new(case.step, windows(case.names));
+        pair.both(|side| { side.mux.ok(&["select-window", "-t", case.start]); });
+        pair.press(case.keys, case.step);
+        pair.both(|side| {
+            assert_eq!(side.mux.body(&["list-windows", "-t", "S", "-F", "#{window_index} #{window_name} #{window_active}"]), case.expected, "{} {:?}", case.step, side.mux.implementation());
+        });
+    }
+
+    let mut pair = Pair::new("bindings-expiry", windows(&["a", "b", "c"]));
+    pair.press(&[PREFIX, CTRL_RIGHT], "start expiry case");
     std::thread::sleep(REPEAT_TIME + Duration::from_millis(150));
     pair.press_unchanged(
         &[CTRL_RIGHT],
-        &[PREFIX, b"c"],
+        &[PREFIX, RIGHT],
         "C-Right after repeat-time reaches the pane",
     );
+    pair.both(|side| {
+        assert_eq!(side.mux.body(&["list-windows", "-t", "S", "-F", "#{window_index} #{window_name} #{window_active}"]), "1 a 0\n2 c 0\n3 b 1", "expired repeat {:?}", side.mux.implementation());
+    });
 }
 
 #[test]
 fn window_lifecycle_bindings_match_the_reference() {
-    let mut pair = Pair::new("windows", windows(&["a"]));
+    let mut pair = Pair::new("bindings-windows", windows(&["a"]));
     pair.both(|side| split_in_work(side));
     pair.assert_same_state("setup");
     pair.press(&[PREFIX, b"\x0e"], "prefix C-n breaks the pane out");
@@ -75,7 +124,7 @@ fn window_lifecycle_bindings_match_the_reference() {
 
 #[test]
 fn pane_bindings_match_the_reference() {
-    let mut pair = Pair::new("panes", windows(&["a", "b"]));
+    let mut pair = Pair::new("bindings-panes", windows(&["a", "b"]));
     for (keys, step) in [
         (&[PREFIX, b"%"][..], "prefix %"),
         (&[PREFIX, b"\""], "prefix \""),
@@ -92,7 +141,7 @@ fn pane_bindings_match_the_reference() {
 
 #[test]
 fn directory_splits_keep_the_current_path_and_even_layouts() {
-    let mut pair = Pair::new("splits", |mux, cwd| {
+    let mut pair = Pair::new("bindings-splits", |mux, cwd| {
         windows(&["a", "b"])(mux, cwd);
         let sub = cwd.join("sub");
         let sub = sub.to_str().expect("utf-8 path");
@@ -110,7 +159,7 @@ fn directory_splits_keep_the_current_path_and_even_layouts() {
 
 #[test]
 fn kill_pane_with_message_matches_the_reference() {
-    let mut pair = Pair::new("kill", windows(&["a"]));
+    let mut pair = Pair::new("bindings-kill", windows(&["a"]));
     pair.both(|side| split_in_work(side));
     pair.press(&[PREFIX, b"k"], "prefix k");
     pair.screens_after("pane killed.", "prefix k");
@@ -118,7 +167,7 @@ fn kill_pane_with_message_matches_the_reference() {
 
 #[test]
 fn prompt_bindings_match_the_reference() {
-    let mut pair = Pair::new("prompts", windows(&["a", "b"]));
+    let mut pair = Pair::new("bindings-prompts", windows(&["a", "b"]));
     pair.both(|side| split_in_work(side));
     pair.both(|side| side.client.write(&[PREFIX, b"/"].concat()));
     pair.both(|side| side.client.wait_for_screen("command prompt", TIMEOUT, |screen| {
@@ -135,7 +184,7 @@ fn prompt_bindings_match_the_reference() {
 
 #[test]
 fn message_and_overlay_bindings_match_the_reference() {
-    let mut pair = Pair::new("messages", windows(&["a"]));
+    let mut pair = Pair::new("bindings-messages", windows(&["a"]));
     pair.both(|side| side.client.write(&[PREFIX, b"\r"].concat()));
     pair.screens_after("tm configuration is compiled in.", "prefix Enter");
     pair.both(|side| {
@@ -148,7 +197,7 @@ fn message_and_overlay_bindings_match_the_reference() {
 
 #[test]
 fn display_panes_binding_is_a_client_overlay_where_the_reference_has_a_pane_mode() {
-    let mut pair = Pair::new("display", windows(&["a"]));
+    let mut pair = Pair::new("bindings-display-panes", windows(&["a"]));
     pair.both(|side| split_in_work(side));
     pair.assert_same_state("setup");
     let before = styled_rows(&pair.tm.client);
@@ -188,14 +237,14 @@ fn display_panes_binding_is_a_client_overlay_where_the_reference_has_a_pane_mode
 
 #[test]
 fn copy_mode_binding_matches_the_reference() {
-    let mut pair = Pair::new("copy", windows(&["a"]));
+    let mut pair = Pair::new("bindings-copy-mode", windows(&["a"]));
     pair.press(&[PREFIX, b"["], "prefix [");
     pair.screens_after("[0/0]", "prefix [");
 }
 
 #[test]
 fn detach_binding_matches_the_reference() {
-    let mut pair = Pair::new("detach", windows(&["a"]));
+    let mut pair = Pair::new("bindings-detach", windows(&["a"]));
     pair.both(|side| side.client.write(&[PREFIX, b"d"].concat()));
     let tm = pair.tm.client.finish(TIMEOUT);
     let reference = pair.reference.client.finish(TIMEOUT);

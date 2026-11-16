@@ -5,7 +5,14 @@ Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/mai
 
 ## Report
 
-Not started.
+The broader pass remains open. DSLP-6's navigation fixture now delivers each
+prefix/repeat sequence before state probes, keeps all nine full-state
+observations and checks literal window states. A delayed-probe control fails
+the old test and passes the new one. The expiry barrier now detects a five-second
+runtime expiry fault that the old barrier missed. A real Unix-socket regression
+guards short, exclusive fixture paths. Native full tests and lint pass; the
+historical CI log lacks timestamps, and quiet-host test cost remains unqualified.
+See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
@@ -53,14 +60,3 @@ Not started.
 - **Recommendation:** Run the deslop Dead code step. Accept: tools clean or allowlisted with reasons; walk-backs filed as Needs owner tickets.
 - **Fix with:** deslop
 - **Effort:** M
-
-
-### DSLP-6 · P2 · window_navigation_bindings_repeat_like_the_reference fails intermittently on macOS
-
-- **Area:** Tests
-- **Where:** the test window_navigation_bindings_repeat_like_the_reference (CI job CI (xcode-27))
-- **Problem:** On the docs-only seeding PR (tm#32) the macOS CI job failed this test (9 passed, 1 failed) and passed on rerun with no code change, while main was green; a flaky test hides real failures and blocks unattended merges.
-- **Recommendation:** Root-cause it (run it in a loop on macOS; look for timing, terminal-size, or ordering assumptions), fix the cause rather than retrying, and keep the test as the regression.
-- **Fix with:** root-cause
-- **Effort:** S
-
