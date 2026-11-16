@@ -45,7 +45,7 @@ fn windows(names: &'static [&'static str]) -> impl Fn(&Mux, &Path) {
 
 #[test]
 fn window_navigation_bindings_repeat_like_the_reference() {
-    let mut pair = Pair::new("bindings-navigate", windows(&["a", "b", "c"]));
+    let mut pair = Pair::new("nav", windows(&["a", "b", "c"]));
     pair.press(&[PREFIX, CTRL_RIGHT], "prefix C-Right");
     pair.press(&[CTRL_RIGHT], "repeated C-Right");
     pair.press(&[CTRL_RIGHT], "repeated C-Right wrapping");
@@ -65,7 +65,7 @@ fn window_navigation_bindings_repeat_like_the_reference() {
 
 #[test]
 fn window_lifecycle_bindings_match_the_reference() {
-    let mut pair = Pair::new("bindings-windows", windows(&["a"]));
+    let mut pair = Pair::new("windows", windows(&["a"]));
     pair.both(|side| split_in_work(side));
     pair.assert_same_state("setup");
     pair.press(&[PREFIX, b"\x0e"], "prefix C-n breaks the pane out");
@@ -75,7 +75,7 @@ fn window_lifecycle_bindings_match_the_reference() {
 
 #[test]
 fn pane_bindings_match_the_reference() {
-    let mut pair = Pair::new("bindings-panes", windows(&["a", "b"]));
+    let mut pair = Pair::new("panes", windows(&["a", "b"]));
     for (keys, step) in [
         (&[PREFIX, b"%"][..], "prefix %"),
         (&[PREFIX, b"\""], "prefix \""),
@@ -92,7 +92,7 @@ fn pane_bindings_match_the_reference() {
 
 #[test]
 fn directory_splits_keep_the_current_path_and_even_layouts() {
-    let mut pair = Pair::new("bindings-splits", |mux, cwd| {
+    let mut pair = Pair::new("splits", |mux, cwd| {
         windows(&["a", "b"])(mux, cwd);
         let sub = cwd.join("sub");
         let sub = sub.to_str().expect("utf-8 path");
@@ -110,7 +110,7 @@ fn directory_splits_keep_the_current_path_and_even_layouts() {
 
 #[test]
 fn kill_pane_with_message_matches_the_reference() {
-    let mut pair = Pair::new("bindings-kill", windows(&["a"]));
+    let mut pair = Pair::new("kill", windows(&["a"]));
     pair.both(|side| split_in_work(side));
     pair.press(&[PREFIX, b"k"], "prefix k");
     pair.screens_after("pane killed.", "prefix k");
@@ -118,7 +118,7 @@ fn kill_pane_with_message_matches_the_reference() {
 
 #[test]
 fn prompt_bindings_match_the_reference() {
-    let mut pair = Pair::new("bindings-prompts", windows(&["a", "b"]));
+    let mut pair = Pair::new("prompts", windows(&["a", "b"]));
     pair.both(|side| split_in_work(side));
     pair.both(|side| side.client.write(&[PREFIX, b"/"].concat()));
     pair.both(|side| side.client.wait_for_screen("command prompt", TIMEOUT, |screen| {
@@ -135,7 +135,7 @@ fn prompt_bindings_match_the_reference() {
 
 #[test]
 fn message_and_overlay_bindings_match_the_reference() {
-    let mut pair = Pair::new("bindings-messages", windows(&["a"]));
+    let mut pair = Pair::new("messages", windows(&["a"]));
     pair.both(|side| side.client.write(&[PREFIX, b"\r"].concat()));
     pair.screens_after("tm configuration is compiled in.", "prefix Enter");
     pair.both(|side| {
@@ -148,7 +148,7 @@ fn message_and_overlay_bindings_match_the_reference() {
 
 #[test]
 fn display_panes_binding_is_a_client_overlay_where_the_reference_has_a_pane_mode() {
-    let mut pair = Pair::new("bindings-display-panes", windows(&["a"]));
+    let mut pair = Pair::new("display", windows(&["a"]));
     pair.both(|side| split_in_work(side));
     pair.assert_same_state("setup");
     let before = styled_rows(&pair.tm.client);
@@ -188,14 +188,14 @@ fn display_panes_binding_is_a_client_overlay_where_the_reference_has_a_pane_mode
 
 #[test]
 fn copy_mode_binding_matches_the_reference() {
-    let mut pair = Pair::new("bindings-copy-mode", windows(&["a"]));
+    let mut pair = Pair::new("copy", windows(&["a"]));
     pair.press(&[PREFIX, b"["], "prefix [");
     pair.screens_after("[0/0]", "prefix [");
 }
 
 #[test]
 fn detach_binding_matches_the_reference() {
-    let mut pair = Pair::new("bindings-detach", windows(&["a"]));
+    let mut pair = Pair::new("detach", windows(&["a"]));
     pair.both(|side| side.client.write(&[PREFIX, b"d"].concat()));
     let tm = pair.tm.client.finish(TIMEOUT);
     let reference = pair.reference.client.finish(TIMEOUT);

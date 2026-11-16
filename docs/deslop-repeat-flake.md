@@ -16,6 +16,10 @@ env -u TMUX -u TMUX_PANE -u TM_SOCKET -u TM_CONFIG \
   window_navigation_bindings_repeat_like_the_reference -- --exact --nocapture
 ```
 
-Both runs reported `error connecting to .../reference/server.sock (File name too long)` during reference `new-session`. `Scratch::new` constructs the socket root from `CARGO_MANIFEST_DIR` in `tests/support/parity.rs:21`, and `Mux::reference` appends `reference/server.sock` at line 101. That fixture is outside the assigned writable paths. The test did not reproduce the CI failure, and no fix was attempted.
+Both runs reported `error connecting to .../reference/server.sock (File name too long)` during reference `new-session`. `Scratch::new` constructs the socket root from `CARGO_MANIFEST_DIR` in `tests/support/parity.rs:21`, and `Mux::reference` appends `reference/server.sock` at line 101. Shortening the bindings suite's private fixture labels resolved that setup failure without changing the scenarios.
+
+After that correction, the focused command passed. Twelve further native runs, instrumented to show the C-Left writes, all passed. A diagnostic fault inserted a 650 ms delay after `prefix C-Left`. The focused command then exited 101 with the same `timed out waiting for the reference to react to repeated C-Left` message as CI. The diagnostic delay and instrumentation were removed. Expiry can produce the observed failure, but the original log does not establish that expiry occurred in CI. No flake fix was attempted.
+
+The bindings suite passed all 10 tests with `cargo test --features parity --test tmux_bindings -- --test-threads=4` under the same isolation prefix, build settings, and CPU guard. The other suites, full `make test`, and lint were not run after the investigation stopped with the cause unknown.
 
 The remaining gates are a native reproduction or deterministic fault tied to the original failure, a cause-based fix preserving each observable assertion and reference behavior, the affected PTY and helper suites, native `make test`, lint, and a private-daemon cleanup check. No performance conclusion was drawn.
