@@ -17,7 +17,7 @@ fn run(socket: &str, arguments: &[&str]) -> Output {
 #[test]
 fn daemon_socket_is_private_and_missing_parent_is_private() {
     let base = std::env::temp_dir().join(format!(
-        "tm-perm-{}-{}",
+        "p{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
