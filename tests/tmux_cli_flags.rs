@@ -1528,6 +1528,15 @@ mod panes {
         text
     }
 
+    fn wait_pane_exit(mux: &Mux, id: &str, mut while_present: impl FnMut()) {
+        let deadline = Instant::now() + TIMEOUT;
+        while mux.body(&["list-panes", "-a", "-F", "#{pane_id}"]).lines().any(|line| line == id) {
+            while_present();
+            assert!(Instant::now() < deadline, "pane {id} did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn probe(test: &str, label: &str, steps: &[&[&str]]) {
         let pair = fixture("pan");
         for arguments in steps {
@@ -2244,7 +2253,18 @@ mod panes {
         ] {
             let pair = fixture("resp");
             for arguments in steps {
-                compare_commands(test, &pair.tm, &pair.reference, &[arguments, &starts]);
+                if arguments.last() == Some(&"") {
+                    let ids: Vec<_> = pair.both().iter().map(|mux| {
+                        mux.body(&["display-message", "-p", "-t", "S:1.1", "#{pane_id}"])
+                    }).collect();
+                    compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+                    for (mux, id) in pair.both().iter().zip(&ids) {
+                        wait_pane_exit(mux, id, || {});
+                    }
+                    compare_commands(test, &pair.tm, &pair.reference, &[&starts]);
+                } else {
+                    compare_commands(test, &pair.tm, &pair.reference, &[arguments, &starts]);
+                }
                 assert_eq!(
                     observation_difference(
                         &format!("{test}: topology after {arguments:?}"),
@@ -2271,6 +2291,30 @@ mod panes {
         ] {
             compare_commands(test, &pair.tm, &pair.reference, &[arguments, &starts]);
         }
+    }
+
+    #[test]
+    fn pane_exit_barrier_handles_delayed_exit() {
+        let pair = fixture("exitbarrier");
+        let arguments = ["respawn-pane", "-k", "-t", "S:1.1", "sh", "-c", "stty -echo; printf ready; read line"];
+        let ids: Vec<_> = pair.both().iter().map(|mux| mux.body(&["display-message", "-p", "-t", "S:1.1", "#{pane_id}"])).collect();
+        compare_commands("exit barrier", &pair.tm, &pair.reference, &[&arguments]);
+        for mux in pair.both() {
+            assert!(mux.capture_until("S:1.1", "ready", TIMEOUT).contains("ready"));
+        }
+        pair.reference.ok(&["send-keys", "-t", &ids[1], "Enter"]);
+        wait_pane_exit(&pair.reference, &ids[1], || {});
+        let mut released = false;
+        wait_pane_exit(&pair.tm, &ids[0], || {
+            if !released {
+                pair.tm.ok(&["send-keys", "-t", &ids[0], "Enter"]);
+                released = true;
+            }
+        });
+        let starts = ["list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_start_command} #{pane_dead} #{pane_start_path}"];
+        compare_commands("exit barrier", &pair.tm, &pair.reference, &[&starts]);
+        assert_eq!(observation_difference("exit barrier topology", &pane_topology(&pair.tm), &pane_topology(&pair.reference)), None);
+        assert!(released, "the held pane was not observed");
     }
 
     #[test]
@@ -2318,15 +2362,39 @@ mod panes {
         mux.root().join(name)
     }
 
-    fn wait_file(path: &std::path::Path, expected: &str) -> String {
+    fn wait_file(path: &std::path::Path, marker: &str) -> String {
+        wait_file_observing(path, marker, |_| {})
+    }
+
+    fn wait_file_observing(path: &std::path::Path, marker: &str, mut observed: impl FnMut(&str)) -> String {
         let deadline = Instant::now() + TIMEOUT;
+        let expected = format!("{marker}\r\n{marker}\r\n");
         loop {
             let text = std::fs::read_to_string(path).unwrap_or_default();
-            if text.contains(expected) || Instant::now() >= deadline {
+            observed(&text);
+            if text.ends_with(&expected) {
                 return text;
             }
+            assert!(Instant::now() < deadline, "incomplete pipe output: {text:?}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn pipe_file_waits_for_fragmented_output() {
+        let scratch = Scratch::new("pipe-fragments");
+        let path = scratch.root().join("output");
+        std::fs::write(&path, b"m1").unwrap();
+        let mut released = false;
+        let text = wait_file_observing(&path, "m1", |partial| {
+            if !released {
+                assert_eq!(partial, "m1");
+                std::fs::write(&path, b"m1\r\nm1\r\n").unwrap();
+                released = true;
+            }
+        });
+        assert_eq!(text.as_bytes(), b"m1\r\nm1\r\n");
+        assert!(released);
     }
 
     fn wait_pipe_flag(mux: &Mux, expected: &str) {
