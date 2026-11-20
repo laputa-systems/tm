@@ -62,3 +62,23 @@ mutation, their before/after counts, and survivor dispositions are
 **Needs environment** under the owner's ruling; no tools or CI lane were
 installed. The test-pyramid tool is unavailable; the unit and process-level
 tiers and the observed CLI cost are recorded above. No test was removed.
+
+## Dead code
+
+`cargo clippy --bin tm -- -W dead_code -W unreachable_pub` completed with
+no diagnostics in `command.rs` or `protocol.rs`. Its five `unreachable_pub`
+warnings are in `server.rs`'s `RenderBenchmark` and methods, outside this
+component; the benchmark imports that module. No component finding was
+allowlisted, and no behavior-preserving cut was established, so no code or
+dependency was removed and no public-contract walk-back was proposed.
+
+Entry points and consumers checked: `src/main.rs` registers both modules and
+calls the parser; `src/client.rs` and `src/server.rs` consume the wire codec
+and requests; the server also calls the parser and error helper; and
+`benches/tm_performance.rs` registers both modules. The manifest declares the
+binary and benchmark. The scoped CLI, protocol, and unit tests are listed
+above. The available scan ran on macOS arm64 with default binary features;
+`make lint` checks all targets and features on that host. Other platforms were
+not exercised. `cargo-machete`, `cargo-udeps`, and `debloat` are unavailable,
+so their whole-package findings are **Needs environment**. No package-wide
+clean result is claimed.

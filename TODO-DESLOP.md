@@ -16,15 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-5 · P2 · Dead code: command and protocol component
-
-- **Area:** deslop · dead code
-- **Where:** src/command.rs, src/protocol.rs; their callers and tests
-- **Problem:** No dead-code scan has settled the command and protocol component (about 4.1k lines). CLI users, clients and the server consume its parsing and wire contracts.
-- **Recommendation:** Run the deslop Dead code step on this component, preserving CLI flags, errors, protocol version and wire bytes. Accept: findings clean or allowlisted with reasons and walk-backs filed; run cargo test --test tmux_cli_flags, cargo test --test protocol_version, make test and make lint through the isolation prefix.
-- **Fix with:** deslop
-- **Effort:** M
-
 ### DSLP-11 · P2 · Types: server lifecycle and dispatch component
 
 - **Area:** deslop · types
