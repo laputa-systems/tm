@@ -16,15 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-4 · P2 · Tests: command and protocol component
-
-- **Area:** deslop · tests
-- **Where:** src/command.rs, src/protocol.rs, tests/tmux_cli_flags.rs, tests/protocol_version.rs
-- **Problem:** Coverage and mutation of CLI parsing and protocol contracts are unmeasured for this bounded component (about 9k lines). CLI users, clients and the server consume these contracts.
-- **Recommendation:** Run the deslop Tests step on this component, covering flags, exit behavior, protocol version and wire bytes. Accept: critical survivors dispositioned and cost budget met; run cargo test --test tmux_cli_flags, cargo test --test protocol_version, make test and make lint through the isolation prefix.
-- **Fix with:** deslop
-- **Effort:** L
-
 ### DSLP-5 · P2 · Dead code: command and protocol component
 
 - **Area:** deslop · dead code
