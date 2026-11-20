@@ -102,3 +102,27 @@ No candidate was adopted. The deslop escape-hatch expression matched 528
 lines in the second server slice (including its large test module) and 9 in
 model. Neither code nor the count changed. These counts do not establish that
 every assertion or cast is safe. No public contract changed.
+
+## Targeting and remaining functions: tests (DSLP-15)
+
+| Contract | Guard | Gap and disposition |
+| --- | --- | --- |
+| Session and window names, IDs, prefixes, patterns, relative and last targets | `session_and_window_target_tokens_match_headless_tmux` | Retain: literal names and stable IDs distinguish each target. Ambiguous/malformed cases are not exhaustively inventoried by a coverage tool. |
+| Pane IDs, index, directional and marked targets | `targets_and_pane_ops_port_the_stable_pane_target_flow`, `pane_target_tokens_match_headless_tmux_geometry` | Retain: check pane identity and geometry through the CLI. |
+| Omitted targets and invoking client context | `commands_in_a_pane_resolve_omitted_targets_from_that_pane_like_the_reference`, `two_clients_keep_binding_context_independent` | Retain differential process and attached-client checks. |
+| Request dispatch and error/exit mapping | `session_ops_port_the_tmux_session_lifecycle`, `commands_without_a_server_fail_like_the_reference`, `tests/tmux_cli_flags.rs` | Retain: success and failure paths assert visible outcomes; no claim of exhaustive request-arm mutation. |
+| Input and attached rendering | `tests/tmux_input.rs`, `tests/attached_client_pty.rs`, `tests/terminal_corpus.rs` | Retain: terminal and PTY observations, not private-call assertions. |
+| Format expansion, copy, buffers, topology | `tests/tmux_core_compat.rs`, `tests/tmux_copy_mode_compat.rs`, `tests/tmux_buffers_compat.rs` | Retain the boundary cases; broader branch coverage remains unmeasured. |
+
+`cargo-llvm-cov`, `cargo-mutants`, and `test-pyramid` are unavailable, so
+coverage, a systematic bounded mutation run and survivor dispositions are
+**Needs environment**. No test or runtime code was changed, and no added
+suite cost is claimed. The host is busy, so a controlled warm before/after
+cost remains unverified.
+
+A hand-injected fault made `{next}` resolve backward. `cargo test --test
+ tmux_core_compat session_and_window_target_tokens_match_headless_tmux --
+--exact` failed (101), observing `logs` instead of `editing`. The original
+source was restored and its SHA-256 matched. The unchanged focused targeting
+and lifecycle suites passed 8 and 10 tests, respectively; `make test` passed
+504 and ignored one across 33 result summaries, and `make lint` passed.
