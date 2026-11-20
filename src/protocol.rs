@@ -2408,6 +2408,17 @@ mod tests {
     }
 
     #[test]
+    fn messages_reject_trailing_frame_data() {
+        let frame = [2, 0, 0, 0, 3, 0];
+        let client_error = read_client_message(&mut frame.as_slice()).expect_err("client trailing data");
+        assert_eq!(client_error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(client_error.to_string(), "trailing frame data");
+        let server_error = read_server_message(&mut frame.as_slice()).expect_err("server trailing data");
+        assert_eq!(server_error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(server_error.to_string(), "trailing frame data");
+    }
+
+    #[test]
     fn version_preamble_is_never_a_valid_frame_length_for_an_older_daemon() {
         assert!(PROTOCOL_VERSION as usize > MAX_FRAME);
         let mut bytes = Vec::new();

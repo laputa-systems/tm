@@ -16,33 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-3 · P2 · Types: command and protocol component
-
-- **Area:** deslop · types
-- **Where:** src/command.rs, src/protocol.rs; their unit tests
-- **Problem:** Strict-profile candidates are unmeasured for the command and protocol component (about 4.1k lines). CLI clients and the server consume its request and wire contracts.
-- **Recommendation:** Run the deslop Types step on this component; preserve CLI parsing, errors, protocol version and wire bytes. Accept: adopted profile clean, escape hatches not increased, witnesses recorded; run cargo test --bin tm command::tests, cargo test --bin tm protocol::tests, cargo test --test protocol_version, make test and make lint through the isolation prefix.
-- **Fix with:** deslop
-- **Effort:** M
-
-### DSLP-4 · P2 · Tests: command and protocol component
-
-- **Area:** deslop · tests
-- **Where:** src/command.rs, src/protocol.rs, tests/tmux_cli_flags.rs, tests/protocol_version.rs
-- **Problem:** Coverage and mutation of CLI parsing and protocol contracts are unmeasured for this bounded component (about 9k lines). CLI users, clients and the server consume these contracts.
-- **Recommendation:** Run the deslop Tests step on this component, covering flags, exit behavior, protocol version and wire bytes. Accept: critical survivors dispositioned and cost budget met; run cargo test --test tmux_cli_flags, cargo test --test protocol_version, make test and make lint through the isolation prefix.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-5 · P2 · Dead code: command and protocol component
-
-- **Area:** deslop · dead code
-- **Where:** src/command.rs, src/protocol.rs; their callers and tests
-- **Problem:** No dead-code scan has settled the command and protocol component (about 4.1k lines). CLI users, clients and the server consume its parsing and wire contracts.
-- **Recommendation:** Run the deslop Dead code step on this component, preserving CLI flags, errors, protocol version and wire bytes. Accept: findings clean or allowlisted with reasons and walk-backs filed; run cargo test --test tmux_cli_flags, cargo test --test protocol_version, make test and make lint through the isolation prefix.
-- **Fix with:** deslop
-- **Effort:** M
-
 ### DSLP-11 · P2 · Types: server lifecycle and dispatch component
 
 - **Area:** deslop · types
