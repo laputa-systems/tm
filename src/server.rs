@@ -9,7 +9,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -315,7 +315,7 @@ fn run_daemon_inner(path: &Path, log: &mut DaemonLog) -> io::Result<()> {
             break;
         });
 
-    let result = serve(&listener, &state, &gate, path);
+    let result = serve(&listener, &state, &gate, path, log);
     gate.mark_closed();
     drop(listener);
     gate.wait_idle(IN_FLIGHT_EXIT_GRACE);
@@ -489,17 +489,49 @@ impl ShutdownGate {
     }
 }
 
+const MAX_PENDING_HANDSHAKES: usize = 32;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+struct PendingHandshake(Arc<AtomicUsize>);
+
+impl Drop for PendingHandshake {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct DeadlineReader<'a> {
+    stream: &'a mut UnixStream,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.deadline.checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "handshake deadline expired"))?;
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(buffer)
+    }
+}
+
+fn transient_accept_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE | libc::ECONNABORTED | libc::EINTR | libc::ENOBUFS | libc::ENOMEM))
+}
+
 fn spawn_connection(
     stream: UnixStream,
     state: &SharedState,
     gate: &Arc<ShutdownGate>,
+    pending: PendingHandshake,
 ) -> io::Result<()> {
     let state = Arc::clone(state);
     let gate = Arc::clone(gate);
     let in_flight = gate.enter();
     thread::Builder::new()
         .name("tm-client".to_owned())
-        .spawn(move || handle_connection(stream, state, gate, in_flight))
+        .spawn(move || handle_connection(stream, state, gate, in_flight, pending))
         .map(drop)
         .map_err(io::Error::other)
 }
@@ -509,7 +541,9 @@ fn serve(
     state: &SharedState,
     gate: &Arc<ShutdownGate>,
     path: &Path,
+    log: &mut DaemonLog,
 ) -> io::Result<()> {
+    let pending = Arc::new(AtomicUsize::new(0));
     listener.set_nonblocking(true)?;
     let outcome = 'serving: loop {
         if gate.is_closing() {
@@ -541,12 +575,24 @@ fn serve(
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(error) = spawn_connection(stream, state, gate) {
-                        break 'serving Err(error);
+                    if pending.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        (count < MAX_PENDING_HANDSHAKES).then_some(count + 1)
+                    }).is_err() {
+                        continue;
+                    }
+                    let permit = PendingHandshake(Arc::clone(&pending));
+                    if let Err(error) = spawn_connection(stream, state, gate, permit) {
+                        log.write(&format!("client thread: {error}"));
+                        thread::sleep(ACCEPT_BACKOFF);
+                        break;
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if transient_accept_error(&error) => {
+                    log.write(&format!("transient accept error: {error}"));
+                    thread::sleep(ACCEPT_BACKOFF);
+                    break;
+                }
                 Err(error) => break 'serving Err(error),
             }
         }
@@ -557,9 +603,19 @@ fn serve(
     listener.set_nonblocking(true)?;
     loop {
         match listener.accept() {
-            Ok((stream, _)) => spawn_connection(stream, state, gate)?,
+            Ok((stream, _)) => {
+                if pending.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < MAX_PENDING_HANDSHAKES).then_some(count + 1)
+                }).is_ok() {
+                    let permit = PendingHandshake(Arc::clone(&pending));
+                    if let Err(error) = spawn_connection(stream, state, gate, permit) {
+                        log.write(&format!("client thread during shutdown: {error}"));
+                        break;
+                    }
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock || transient_accept_error(&error) => break,
             Err(error) => return Err(error),
         }
     }
@@ -571,14 +627,18 @@ fn handle_connection(
     shared: SharedState,
     gate: Arc<ShutdownGate>,
     in_flight: InFlight,
+    pending: PendingHandshake,
 ) {
     // The shutdown drain sets the listener nonblocking. On
     // platforms where accepted Unix sockets inherit that flag, an attached
     // client's input reader would observe EAGAIN before the first key and
     // tear down an otherwise healthy session. Requests and the long-lived
     // attach stream are intentionally blocking at this boundary.
-    let _ = stream.set_nonblocking(false);
-    match read_version(&mut stream) {
+    if stream.set_nonblocking(false).is_err() || stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).is_err() {
+        return;
+    }
+    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    match read_version(&mut DeadlineReader { stream: &mut stream, deadline }) {
         Ok(PROTOCOL_VERSION) => {}
         Ok(_) => {
             let _ = write_version(&mut stream);
@@ -589,10 +649,14 @@ fn handle_connection(
     if write_version(&mut stream).is_err() {
         return;
     }
-    let (request, caller_pane) = match read_request(&mut stream) {
+    let (request, caller_pane) = match read_request(&mut DeadlineReader { stream: &mut stream, deadline }) {
         Ok(call) => call,
         Err(_) => return,
     };
+    drop(pending);
+    if stream.set_read_timeout(None).is_err() || stream.set_write_timeout(None).is_err() {
+        return;
+    }
     if gate.is_closing() {
         let _ = write_server_message(
             &mut stream,
@@ -15926,6 +15990,14 @@ impl PaneSize for Pane {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accept_retry_categories_are_structured_os_errors() {
+        for code in [libc::EMFILE, libc::ENFILE, libc::ECONNABORTED, libc::EINTR, libc::ENOBUFS, libc::ENOMEM] {
+            assert!(super::transient_accept_error(&std::io::Error::from_raw_os_error(code)));
+        }
+        assert!(!super::transient_accept_error(&std::io::Error::from_raw_os_error(libc::EBADF)));
+    }
+
     use super::*;
 
     #[test]
