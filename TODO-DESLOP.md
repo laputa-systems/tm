@@ -43,15 +43,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 - **Fix with:** deslop
 - **Effort:** M
 
-### DSLP-8 · P2 · Daemon exits and drops every session when accept fails on descriptor exhaustion
-
-- **Area:** deslop · diagnose · server sockets
-- **Where:** src/server.rs serve, spawn_connection, handle_connection
-- **Problem:** Any accept error other than Interrupted or WouldBlock, and any failed connection-thread spawn, ends the daemon; connections have no read deadline or limit. Reproduced at 6cf0b94: (ulimit -n 256; tm -S $S new-session -d 'sleep 60'), then hold about 250 idle AF_UNIX connections to $S; tm -S $S list-sessions then reports no server running and the log ends 'daemon: Too many open files (os error 24)'. All sessions and panes are lost. See docs/deslop-diagnose.md.
-- **Recommendation:** Treat EMFILE, ENFILE, ENOBUFS, ENOMEM and ECONNABORTED as transient (log, back off, keep serving); give the handshake and first request read a deadline and cap concurrent connection threads. Accept: a test that exhausts descriptors with idle connections and still lists the session afterwards, and a test that a silent connection is dropped; make test and make lint.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** M
-
 ### DSLP-11 · P2 · Types: server lifecycle and dispatch component
 
 - **Area:** deslop · types
