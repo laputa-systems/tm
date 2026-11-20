@@ -16,15 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-3 · P2 · Types: command and protocol component
-
-- **Area:** deslop · types
-- **Where:** src/command.rs, src/protocol.rs; their unit tests
-- **Problem:** Strict-profile candidates are unmeasured for the command and protocol component (about 4.1k lines). CLI clients and the server consume its request and wire contracts.
-- **Recommendation:** Run the deslop Types step on this component; preserve CLI parsing, errors, protocol version and wire bytes. Accept: adopted profile clean, escape hatches not increased, witnesses recorded; run cargo test --bin tm command::tests, cargo test --bin tm protocol::tests, cargo test --test protocol_version, make test and make lint through the isolation prefix.
-- **Fix with:** deslop
-- **Effort:** M
-
 ### DSLP-4 · P2 · Tests: command and protocol component
 
 - **Area:** deslop · tests
