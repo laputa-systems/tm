@@ -1,5 +1,5 @@
 Prefix: DSLP
-Next: 26
+Next: 28
 
 Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/main/docs/campaigns/deslop.md), tier C). One agent works this file with the `deslop` skill: take the lowest-numbered open ticket whose area does not start with `Needs owner ·`. After DSLP-5, work the open P1 and P2 findings, then fill in `## Report` below.
 
@@ -15,87 +15,6 @@ historical CI log lacks timestamps, and quiet-host test cost remains unqualified
 See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
-
-### DSLP-17 · P2 · Types: terminal and rendering component
-
-- **Area:** deslop · types
-- **Where:** src/pty.rs, src/terminal.rs, src/cells.rs, src/capture.rs; rendering functions in src/server.rs
-- **Problem:** Types work is unmeasured for this bounded slice; pane processes and attached clients consume terminal bytes, screen state, and render budgets.
-- **Recommendation:** Run the deslop Types step on this slice, preserving its consumer contracts. Accept: adopted profile clean, escape hatches not increased, and witnesses recorded; run cargo test --test attached_client_pty; cargo test --test terminal_corpus; make perf if the hot path changes; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-18 · P2 · Tests: terminal and rendering component
-
-- **Area:** deslop · tests
-- **Where:** src/pty.rs, src/terminal.rs, src/cells.rs, src/capture.rs; rendering functions in src/server.rs
-- **Problem:** Tests work is unmeasured for this bounded slice; pane processes and attached clients consume terminal bytes, screen state, and render budgets.
-- **Recommendation:** Run the deslop Tests step on this slice, preserving its consumer contracts. Accept: critical mutation survivors dispositioned and cost budget met; run cargo test --test attached_client_pty; cargo test --test terminal_corpus; make perf if the hot path changes; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-19 · P2 · Dead code: terminal and rendering component
-
-- **Area:** deslop · dead code
-- **Where:** src/pty.rs, src/terminal.rs, src/cells.rs, src/capture.rs; rendering functions in src/server.rs
-- **Problem:** Dead code work is unmeasured for this bounded slice; pane processes and attached clients consume terminal bytes, screen state, and render budgets.
-- **Recommendation:** Run the deslop Dead code step on this slice, preserving its consumer contracts. Accept: findings removed or allowlisted with reasons and walk-backs filed; run cargo test --test attached_client_pty; cargo test --test terminal_corpus; make perf if the hot path changes; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-20 · P2 · Types: copy and input component
-
-- **Area:** deslop · types
-- **Where:** src/copy_mode.rs, src/config.rs, src/options.rs; input functions in src/server.rs
-- **Problem:** Types work is unmeasured for this bounded slice; server and attached clients consume bindings, selections, buffers, and compiled settings.
-- **Recommendation:** Run the deslop Types step on this slice, preserving its consumer contracts. Accept: adopted profile clean, escape hatches not increased, and witnesses recorded; run cargo test --test tmux_copy_mode_compat; cargo test --features parity --test tmux_bindings; cargo test --test tmux_config_compat; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-21 · P2 · Tests: copy and input component
-
-- **Area:** deslop · tests
-- **Where:** src/copy_mode.rs, src/config.rs, src/options.rs; input functions in src/server.rs
-- **Problem:** Tests work is unmeasured for this bounded slice; server and attached clients consume bindings, selections, buffers, and compiled settings.
-- **Recommendation:** Run the deslop Tests step on this slice, preserving its consumer contracts. Accept: critical mutation survivors dispositioned and cost budget met; run cargo test --test tmux_copy_mode_compat; cargo test --features parity --test tmux_bindings; cargo test --test tmux_config_compat; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-22 · P2 · Dead code: copy and input component
-
-- **Area:** deslop · dead code
-- **Where:** src/copy_mode.rs, src/config.rs, src/options.rs; input functions in src/server.rs
-- **Problem:** Dead code work is unmeasured for this bounded slice; server and attached clients consume bindings, selections, buffers, and compiled settings.
-- **Recommendation:** Run the deslop Dead code step on this slice, preserving its consumer contracts. Accept: findings removed or allowlisted with reasons and walk-backs filed; run cargo test --test tmux_copy_mode_compat; cargo test --features parity --test tmux_bindings; cargo test --test tmux_config_compat; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-23 · P2 · Types: harness and parity component
-
-- **Area:** deslop · types
-- **Where:** tests/support/*.rs and their integration-suite callers
-- **Problem:** Types work is unmeasured for this bounded slice; integration suites consume private sockets, PTY lifecycle, cleanup, and reference comparisons.
-- **Recommendation:** Run the deslop Types step on this slice, preserving its consumer contracts. Accept: adopted profile clean, escape hatches not increased, and witnesses recorded; run cargo test --test parity_contract; cargo test --test parity_scratch; make parity; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-24 · P2 · Tests: harness and parity component
-
-- **Area:** deslop · tests
-- **Where:** tests/support/*.rs and their integration-suite callers
-- **Problem:** Tests work is unmeasured for this bounded slice; integration suites consume private sockets, PTY lifecycle, cleanup, and reference comparisons.
-- **Recommendation:** Run the deslop Tests step on this slice, preserving its consumer contracts. Accept: critical mutation survivors dispositioned and cost budget met; run cargo test --test parity_contract; cargo test --test parity_scratch; make parity; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
-### DSLP-25 · P2 · Dead code: harness and parity component
-
-- **Area:** deslop · dead code
-- **Where:** tests/support/*.rs and their integration-suite callers
-- **Problem:** Dead code work is unmeasured for this bounded slice; integration suites consume private sockets, PTY lifecycle, cleanup, and reference comparisons.
-- **Recommendation:** Run the deslop Dead code step on this slice, preserving its consumer contracts. Accept: findings removed or allowlisted with reasons and walk-backs filed; run cargo test --test parity_contract; cargo test --test parity_scratch; make parity; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
 
 ### DSLP-7 · P3 · Linux CI failure in commands_from_a_killed_pane_fall_back_like_the_reference is unexplained
 
@@ -123,3 +42,22 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 - **Recommendation:** Open both sidecars with O_CREAT|O_NOFOLLOW and mode 0600, set permissions through the open descriptor, and reopen the log for rotation the same way, refusing a symlink with a clear error. Accept: socket_permissions tests that a symlinked .log and .lock are refused and their targets unchanged; make test and make lint.
 - **Fix with:** os-boundaries
 - **Effort:** S
+
+### DSLP-26 · P3 · Oversized control sequence recovery test flakes in CI
+
+- **Area:** Needs environment · deslop · terminal
+- **Where:** tests/terminal_bounds.rs:92
+- **Problem:** CI has intermittently failed oversized_control_sequences_recover_at_the_next_boundary; the cause is not established. The test waits for a pane to emit and process over one megabyte before a deadline, so a timeout alone does not distinguish fixture timing from parser failure.
+- **Recommendation:** Reproduce on the affected CI platform with pane output and daemon diagnostics on failure; identify the cause and fix the fixture or runtime with a regression test.
+- **Fix with:** root-cause
+- **Effort:** M
+
+### DSLP-27 · P3 · External stop signal parity test flakes in CI
+
+- **Area:** Needs environment · deslop · parity
+- **Where:** tests/tmux_lifecycle_rows.rs:63
+- **Problem:** CI has intermittently failed external_stop_signal_suspends_tm_and_is_ignored_by_tmux; the cause and failing observation are not established. Signal delivery and screen transitions are asynchronous.
+- **Recommendation:** Reproduce on the affected CI platform with signal and terminal-state diagnostics; identify the cause and fix the fixture or runtime with a regression test.
+- **Fix with:** root-cause
+- **Effort:** M
+
