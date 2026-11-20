@@ -16,15 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-11 · P2 · Types: server lifecycle and dispatch component
-
-- **Area:** deslop · types
-- **Where:** src/server.rs:1 through ServerState::window_index_for_creation (ending before ServerState::window_index), src/model.rs
-- **Problem:** Types work is unmeasured for this bounded slice; CLI and attached clients consume session lifecycle, command dispatch, and layouts.
-- **Recommendation:** Run the deslop Types step on this slice, preserving its consumer contracts. Accept: adopted profile clean, escape hatches not increased, and witnesses recorded; run cargo test --test tmux_core_compat; cargo test --test tmux_lifecycle; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
 ### DSLP-12 · P2 · Tests: server lifecycle and dispatch component
 
 - **Area:** deslop · tests
