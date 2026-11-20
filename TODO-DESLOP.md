@@ -78,4 +78,3 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 - **Recommendation:** Open both sidecars with O_CREAT|O_NOFOLLOW and mode 0600, set permissions through the open descriptor, and reopen the log for rotation the same way, refusing a symlink with a clear error. Accept: socket_permissions tests that a symlinked .log and .lock are refused and their targets unchanged; make test and make lint.
 - **Fix with:** os-boundaries
 - **Effort:** S
-
