@@ -126,3 +126,18 @@ A hand-injected fault made `{next}` resolve backward. `cargo test --test
 source was restored and its SHA-256 matched. The unchanged focused targeting
 and lifecycle suites passed 8 and 10 tests, respectively; `make test` passed
 504 and ignored one across 33 result summaries, and `make lint` passed.
+
+## Targeting and remaining functions: dead code (DSLP-16)
+
+The same compiler scan described under DSLP-13 reported no `dead_code` or
+`unreachable_pub` diagnostics in this server slice or `model.rs`. The only
+five warnings belong to the first slice's live benchmark fixture and are
+dispositioned there. Entry points and registrations checked are `src/main.rs`,
+`execute_request_inner` in `src/server.rs`, the CLI and attached-client
+consumers, and `benches/tm_performance.rs` as declared in `Cargo.toml`.
+The focused targeting and lifecycle suites, full test suite and all-target
+lint passed. The scan covered macOS arm64 and default binary features; lint
+covered all targets and features on that host. Other platforms were not
+exercised. `cargo-machete`, `cargo-udeps`, and `debloat` are unavailable, so
+their findings are **Needs environment**. No code or dependency was removed,
+and no public-contract walk-back was proposed.

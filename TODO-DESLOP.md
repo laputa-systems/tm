@@ -16,15 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-16 · P2 · Dead code: server targeting and remaining functions component
-
-- **Area:** deslop · dead code
-- **Where:** src/server.rs: ServerState::window_index through end, at function boundaries, src/model.rs
-- **Problem:** Dead code work is unmeasured for this bounded slice; CLI and attached clients consume targeting, topology, input, and lifecycle behavior.
-- **Recommendation:** Run the deslop Dead code step on this slice, preserving its consumer contracts. Accept: findings removed or allowlisted with reasons and walk-backs filed; run cargo test --test tmux_targeting; cargo test --test tmux_lifecycle; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
 ### DSLP-17 · P2 · Types: terminal and rendering component
 
 - **Area:** deslop · types
