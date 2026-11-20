@@ -16,14 +16,10 @@ fn run(socket: &str, arguments: &[&str]) -> Output {
 
 #[test]
 fn daemon_socket_is_private_and_missing_parent_is_private() {
-    let base = std::env::temp_dir().join(format!(
-        "p{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    // Keep the path short: a checkout under `.work/wt/` plus the isolated
+    // TMPDIR leaves little of the Unix socket path limit (SUN_LEN).
+    let base = std::env::temp_dir().join(format!("p{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let socket = base
         .join("nested")
@@ -61,7 +57,7 @@ fn daemon_socket_is_private_and_missing_parent_is_private() {
 fn default_socket_scratch(label: &str) -> std::path::PathBuf {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(".work/tmp")
-        .join(format!("default-socket-{}-{label}", std::process::id()));
+        .join(format!("d{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     root
@@ -153,7 +149,7 @@ fn default_socket_directory_that_is_a_symlink_is_refused() {
 
 #[test]
 fn explicit_socket_naming_a_regular_file_leaves_the_file_intact() {
-    let tmpdir = default_socket_scratch("regular-file");
+    let tmpdir = default_socket_scratch("file");
     let precious = tmpdir.join("precious.txt");
     std::fs::write(&precious, "keep me").unwrap();
     let refused = run(

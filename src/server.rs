@@ -16879,14 +16879,27 @@ mod tests {
             let session_id = state.sessions[0].id;
             state.write_active(session_id, b"hello\r");
         }
-        thread::sleep(Duration::from_millis(150));
-        let mut state = shared.lock().expect("server state lock");
-        let left_capture = state
-            .capture_pane(Some("sync:0.0"), None, None, false, false, false)
-            .expect("capture left pane");
-        let right_capture = state
-            .capture_pane(Some("sync:0.1"), None, None, false, false, false)
-            .expect("capture right pane");
+        // Wait for each pane's own output marker, not a fixed settle time.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (left_capture, right_capture) = loop {
+            let (left_capture, right_capture) = {
+                let mut state = shared.lock().expect("server state lock");
+                (
+                    state
+                        .capture_pane(Some("sync:0.0"), None, None, false, false, false)
+                        .expect("capture left pane"),
+                    state
+                        .capture_pane(Some("sync:0.1"), None, None, false, false, false)
+                        .expect("capture right pane"),
+                )
+            };
+            if (left_capture.contains("left:hello") && right_capture.contains("right:hello"))
+                || Instant::now() >= deadline
+            {
+                break (left_capture, right_capture);
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
         assert!(
             left_capture.contains("left:hello"),
             "left: {left_capture:?}"

@@ -2285,11 +2285,23 @@ mod panes {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
-        for arguments in [
-            &["respawn-pane", "-t", "S:dead"][..],
-            &["respawn-pane", "-t", "S:dead", "--", "sleep", "305"],
+        for (arguments, exits_again) in [
+            (&["respawn-pane", "-t", "S:dead"][..], true),
+            (&["respawn-pane", "-t", "S:dead", "--", "sleep", "305"], false),
         ] {
-            compare_commands(test, &pair.tm, &pair.reference, &[arguments, &starts]);
+            compare_commands(test, &pair.tm, &pair.reference, &[arguments]);
+            if exits_again {
+                // The respawned `true` exits on its own schedule in each server;
+                // wait for both to record it before comparing their state.
+                for mux in pair.both() {
+                    let deadline = Instant::now() + TIMEOUT;
+                    while mux.body(&["display-message", "-p", "-t", "S:dead", "#{pane_dead}"]) != "1" {
+                        assert!(Instant::now() < deadline, "respawned pane never died");
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                }
+            }
+            compare_commands(test, &pair.tm, &pair.reference, &[&starts]);
         }
     }
 
