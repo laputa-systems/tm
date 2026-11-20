@@ -16,15 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-14 · P2 · Types: server targeting and remaining functions component
-
-- **Area:** deslop · types
-- **Where:** src/server.rs: ServerState::window_index through end, at function boundaries, src/model.rs
-- **Problem:** Types work is unmeasured for this bounded slice; CLI and attached clients consume targeting, topology, input, and lifecycle behavior.
-- **Recommendation:** Run the deslop Types step on this slice, preserving its consumer contracts. Accept: adopted profile clean, escape hatches not increased, and witnesses recorded; run cargo test --test tmux_targeting; cargo test --test tmux_lifecycle; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
 ### DSLP-15 · P2 · Tests: server targeting and remaining functions component
 
 - **Area:** deslop · tests

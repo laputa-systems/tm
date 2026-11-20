@@ -79,3 +79,26 @@ above. Other platforms were not exercised. `cargo-machete`, `cargo-udeps`,
 and `debloat` are unavailable: dependency and size-tool findings are **Needs
 environment**, not a package-wide clean result. There was no established
 behavior-preserving cut or proposed contract walk-back.
+
+## Targeting and remaining functions: types (DSLP-14)
+
+The same strict scan covers the second server slice and `model.rs`. Counts
+are binary diagnostics, excluding test-only code; model findings overlap the
+first table.
+
+| Candidate | Count | Disposition |
+| --- | ---: | --- |
+| `unsafe_code` | 4 | Reject: no safe replacement witness established. |
+| `wildcard_enum_match_arm` | 4 | Reject: no demonstrated defect or deleted trust. |
+| `match_wildcard_for_single_variants` | 0 | Reject: no witness. |
+| `cast_possible_truncation` | 6 | Reject: no demonstrated defect or deleted trust; includes the clamped model cast. |
+| `cast_sign_loss` | 3 | Reject: no demonstrated defect or deleted trust; positive window offsets are checked before conversion at `server.rs:10136`. |
+| `unwrap_used` | 20 | Reject: no demonstrated defect or deletion. |
+| `expect_used` | 4 | Reject: no demonstrated defect or deletion. |
+| `redundant_clone` | 0 | Reject: no typing witness. |
+| `needless_pass_by_value` | 0 | Reject: no typing witness. |
+
+No candidate was adopted. The deslop escape-hatch expression matched 528
+lines in the second server slice (including its large test module) and 9 in
+model. Neither code nor the count changed. These counts do not establish that
+every assertion or cast is safe. No public contract changed.
