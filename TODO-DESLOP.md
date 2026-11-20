@@ -16,15 +16,6 @@ See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
 
 ## Tickets
 
-### DSLP-13 · P2 · Dead code: server lifecycle and dispatch component
-
-- **Area:** deslop · dead code
-- **Where:** src/server.rs:1 through ServerState::window_index_for_creation (ending before ServerState::window_index), src/model.rs
-- **Problem:** Dead code work is unmeasured for this bounded slice; CLI and attached clients consume session lifecycle, command dispatch, and layouts.
-- **Recommendation:** Run the deslop Dead code step on this slice, preserving its consumer contracts. Accept: findings removed or allowlisted with reasons and walk-backs filed; run cargo test --test tmux_core_compat; cargo test --test tmux_lifecycle; make test; make lint, all through the isolation prefix. Restrict server.rs work to the named functions, at function boundaries.
-- **Fix with:** deslop
-- **Effort:** L
-
 ### DSLP-14 · P2 · Types: server targeting and remaining functions component
 
 - **Area:** deslop · types

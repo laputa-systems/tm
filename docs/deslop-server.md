@@ -60,3 +60,22 @@ A hand-injected fault changed the response mapping of `Err` to success.
 The original source was restored and its SHA-256 matched. The unchanged
 focused suites passed 38 core, 10 lifecycle and 8 targeting tests; `make test`
 passed 504 and ignored one across 33 result summaries, and `make lint` passed.
+
+## Lifecycle slice: dead code (DSLP-13)
+
+`cargo clippy --bin tm -- -W dead_code -W unreachable_pub` exited 0 on
+macOS arm64 with default binary features. It emitted five `unreachable_pub`
+findings, allowlisted for this audit as one benchmark-fixture group:
+`RenderBenchmark`, `new`, `enter_copy_mode_with_history`, `render_frame`, and
+`render_delta_frame` (`src/server.rs:1138`). The binary's module is private,
+but `benches/tm_performance.rs` imports this source as a separate module and
+uses the fixture and methods. They are live benchmark entry points; none was
+removed. No other dead-code warning appeared in this slice or `model.rs`.
+
+`src/main.rs` registers server and model and calls `run_daemon`; the benchmark
+registers both modules, and the manifest declares the benchmark. The focused
+core and lifecycle suites and full test and lint runs passed as recorded
+above. Other platforms were not exercised. `cargo-machete`, `cargo-udeps`,
+and `debloat` are unavailable: dependency and size-tool findings are **Needs
+environment**, not a package-wide clean result. There was no established
+behavior-preserving cut or proposed contract walk-back.
