@@ -23,13 +23,15 @@ struct TestServer {
 }
 
 impl TestServer {
-    fn new(label: &str) -> Self {
+    fn new() -> Self {
         let scratch = TestEnv::hermetic().expect("create hermetic server environment");
         let number = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
         let socket = scratch
             .paths()
             .root()
-            .join(format!("tm-attached-{label}-{number}.sock"))
+            // The name stays short: a long checkout path plus the ptytest scratch
+            // directory must fit in a Unix socket path (SUN_LEN).
+            .join(format!("{number}.sock"))
             .to_string_lossy()
             .into_owned();
         Self {
@@ -87,7 +89,7 @@ fn run_tm<const N: usize>(socket: &str, args: [&str; N]) -> Output {
 
 #[test]
 fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
-    let server = TestServer::new("client");
+    let server = TestServer::new();
     let socket = server.socket.clone();
 
     server.create_fixture_session();
@@ -173,7 +175,7 @@ fn attached_client_uses_real_pty_and_semantic_screen_barriers() {
 
 #[test]
 fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
-    let server = TestServer::new("panes");
+    let server = TestServer::new();
     let socket = server.socket.clone();
     server.create_fixture_session();
     let fixture = env!("CARGO_BIN_EXE_tm-pty-fixture");
@@ -401,7 +403,7 @@ fn attached_client_captures_panes_colors_mouse_scroll_and_border_resize() {
 
 #[test]
 fn attached_client_forwards_application_mouse_events_without_entering_copy_mode() {
-    let server = TestServer::new("app-mouse");
+    let server = TestServer::new();
     let socket = server.socket.clone();
     server.create_fixture_session();
     let mouse = run_tm(&socket, ["set-option", "-g", "mouse", "on"]);
@@ -494,7 +496,7 @@ fn attached_client_forwards_application_mouse_events_without_entering_copy_mode(
 
 #[test]
 fn opening_pane_from_attached_client_preserves_existing_pane_contents() {
-    let server = TestServer::new("split");
+    let server = TestServer::new();
     let socket = server.socket.clone();
     server.create_fixture_session();
 

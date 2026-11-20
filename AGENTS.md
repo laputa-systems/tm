@@ -12,12 +12,14 @@ Build and release targets are in [release](docs/release.md).
 
 ## Verification
 
-- Use the isolation prefix in [testing](docs/testing.md#isolation) for every build, test, and manual invocation.
-- `make test` installs tmux 3.8 and runs the default suite with four test threads; `make lint` checks all targets and features.
-- Qualified cold and warm test costs and lint cost are pending; see [Ground](docs/deslop-ground.md).
-- CLI commands, flags, and exit behavior: `tests/tmux_cli_flags.rs` and `tests/tmux_core_compat.rs`; the parity matrix records exercised coverage.
-- Unix socket and wire format: `tests/socket_permissions.rs`, `tests/protocol_version.rs`, and the goldens in `src/protocol.rs`.
-- Terminal and PTY behavior: `tests/attached_client_pty.rs`, `tests/terminal_corpus.rs`, and `tests/tmux_input.rs`.
-- There is no public library API or persistent configuration file format. The daemon log and socket are local runtime artifacts.
-- Rendering and copy-mode workload: `make perf`; budgets and fixtures are in [performance](docs/performance.md).
-- Component boundaries and proposed bounded slices are in [Ground](docs/deslop-ground.md).
+- Commands: run each through the isolation prefix in [testing](docs/testing.md#isolation). `make test` installs tmux 3.8 and runs the default suite (500 tests, 33 binaries, one ignored) with four test threads; `make lint` is clippy with warnings denied; `make parity` runs the differential suites; PR CI runs `make test`, `make parity` and `make lint` (`.github/workflows/ci.yml`, `lint.yml`).
+- Costs, Apple M-series, `CARGO_BUILD_JOBS=4`, host busy (load 15-37 on 18 cores), so observations only: cold `make test` 447 s, warm 436-445 s, `make lint` 200-233 s. Quiet-host costs are `Needs environment`; evidence in [Ground](docs/deslop-ground.md).
+- Test paths must stay short: a socket path is limited to about 103 bytes, and `.work/wt/<name>/.work/tmp` already uses 67.
+- CLI flags, commands and exit codes: `tests/tmux_cli_flags.rs` (every `## CLI flags` row), `tests/tmux_core_compat.rs`; the parity matrix records exercised coverage.
+- Wire protocol and version preamble: `tests/protocol_version.rs` and the golden and round-trip tests in `src/protocol.rs`.
+- Daemon socket, private directory, mode and refusal of foreign files: `tests/socket_permissions.rs`. Sidecar `.lock` and `.log` symlink handling and descriptor exhaustion: none (filed in the backlog).
+- Terminal bytes, attached client and PTY lifecycle: `tests/attached_client_pty.rs`, `tests/terminal_corpus.rs`, `tests/terminal_bounds.rs`, `tests/tmux_liveness.rs`, `tests/tmux_input.rs`.
+- Compiled settings and bindings: `tests/tmux_config_compat.rs`, `tests/tmux_bindings.rs`. There is no public library API or persistent configuration file; the daemon log and socket are local runtime artifacts.
+- Performance workload: `make perf` (`benches/tm_performance.rs`): full and incremental attach rendering, 16 ms and 32 KiB budgets in [performance](docs/performance.md). CI does not run it; run it for changes to rendering or the attach path.
+- Vendored trees: none. The tmux 3.8 reference is built from `tests/reference/PROVENANCE` (upstream tarball and SHA-256).
+- Components (about 32k lines in `src/`, 22k in `tests/`; the tickets split them): command and protocol (`command.rs`, `protocol.rs`, 4.1k); server and topology (`server.rs` 20.5k, `model.rs`); terminal and rendering (`pty.rs`, `terminal.rs`, `cells.rs`, `capture.rs`); copy and input (`copy_mode.rs`, `config.rs`, `options.rs`); harness and parity (`tests/support`). See [Ground](docs/deslop-ground.md).
