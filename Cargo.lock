@@ -54,9 +54,9 @@ dependencies = [
 
 [[package]]
 name = "errno"
-version = "0.3.14"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
  "windows-sys",
@@ -70,12 +70,13 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "laputa-ptytest"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffc9fd2fa31b72e3631804b806e0db9a8046cba191e82d862d9e4c1740eec050"
+checksum = "7517a97d204c93f422baac74e1c6aeb4b65de7f5ad102b0da061d7b20805f433"
 dependencies = [
  "libc",
  "rustc-hash",
+ "rustix",
  "vt100",
 ]
 
@@ -148,9 +149,9 @@ dependencies = [
 
 [[package]]
 name = "rustybench"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51f626af27819f24b653b2487cc713ed0909d98623b34b9ced2f37ef8c940672"
+checksum = "954de1f2951536a67fae0039cbb69d8f69b354001dea884f429792bff8991ed3"
 dependencies = [
  "deser",
  "deser-json",
@@ -162,9 +163,9 @@ dependencies = [
 
 [[package]]
 name = "rustybench-macros"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "834b0e27a6f3d0a447981d3a00b2e37e035d7639b6d0afa23fe3d3a9c64e7c31"
+checksum = "cf2f68b33c515158f41a1be13f6d5cbc15727c8e07f7911ab522eb1b9301909c"
 dependencies = [
  "syn",
 ]
