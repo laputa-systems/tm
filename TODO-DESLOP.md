@@ -5,14 +5,54 @@ Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/mai
 
 ## Report
 
-The broader pass remains open. DSLP-6's navigation fixture now delivers each
-prefix/repeat sequence before state probes, keeps all nine full-state
-observations and checks literal window states. A delayed-probe control fails
-the old test and passes the new one. The expiry barrier now detects a five-second
-runtime expiry fault that the old barrier missed. A real Unix-socket regression
-guards short, exclusive fixture paths. Native full tests and lint pass; the
-historical CI log lacks timestamps, and quiet-host test cost remains unqualified.
-See [the repeat qualification](docs/deslop-repeat-flake.md) for exact proof.
+**Scope and status:** The broader pass was the Types, Tests and Dead code
+work across the remaining components mapped in [Ground](docs/deslop-ground.md).
+PRs #42, #43 and #44 completed the bounded audits for command and protocol,
+server lifecycle and targeting, terminal and rendering, copy and input, and
+harness and parity. The manual audits are complete; automated coverage,
+mutation and dependency scans remain **Needs environment**. DSLP-7 needs a
+Linux arm64 host and is owner/environment-gated. DSLP-26 and DSLP-27 need
+the affected CI environment. All five remaining tickets are P3.
+
+**Scorecard:** Rust lines in tracked `src/` and `tests/` at Ground base
+`6cf0b94` versus `4cc4bd1`: source 32,621 → 32,717; tests 21,876 →
+21,951. The deslop escape-hatch expression matched 1,116 → 1,123 lines
+across those Rust files; the count does not establish soundness. Ground's warm
+`make test` was 436–445 s under load; the current cold attempt exited 2 after 289.41 s when rustc received SIGKILL, and its retry exited 2 after 11.72 s with SIGKILL and SIGTERM. With `RUSTC_WRAPPER=` and two build jobs, subsequent attempts exited 2 after 711.01 s (147 CLI cases passed, 2 failed; load 38.05 → 30.00) and 973.05 s (139 passed, 10 failed; load 30.16 → 29.83). Failures included startup failures and tm and tmux timeouts; causes are unestablished. A passing current result is **Needs environment**. Line and branch coverage,
+and systematic mutants caught, missed, timed out and unviable: unmeasured
+before and after, **Needs environment**. The dead-code audits removed zero
+lines and zero dependencies. Findings: P1 zero; P2 DSLP-6 and DSLP-8 fixed;
+P3 DSLP-7, DSLP-9, DSLP-10, DSLP-26 and DSLP-27 remain open; P4 zero.
+The broader P2 step tickets were completed as bounded audits. No controlled
+runtime performance comparison was made; no hot rendering path changed in
+those audits. Quiet-host test cost remains **Needs environment**. Escaped
+regressions: CI flakes DSLP-26 and DSLP-27 remain unexplained; no runtime
+defect is established for either.
+
+**Per step:** Ground mapped boundaries and fixed socket-path and timing
+fixtures; cold test took 447 s, warm tests 436–445 s, and lint 200–233 s on
+the busy host. Diagnose reproduced descriptor exhaustion, unbounded mouse
+input and sidecar symlink behavior; DSLP-8 was fixed. Types found no candidate
+lint meeting the adoption rule. Tests inventoried boundary contracts and
+added the protocol trailing-data assertion, with injected controls across
+components. Dead code found no justified removal; five server warnings are
+live benchmark consumers. Per-step wall time and CI minutes were not recorded,
+except the Ground command observations above; current lint passed in 138.66 s on retry after a compiler interruption at 85.40 s. Other step costs cannot be reconstructed
+from these records. See [command and protocol](docs/deslop-command-protocol.md),
+[server](docs/deslop-server.md), and [terminal, input and harness](docs/deslop-terminal-input-harness.md).
+
+**Method feedback:** State probes between repeat keys could exhaust the
+reference's repeat window; send the input sequence before probing state. A
+fault control also exposed an expiry barrier that hid an incorrect selection.
+The compiler dead-code scan found no removable component code; unavailable
+coverage and mutation tools prevented systematic survivor analysis. See
+[repeat qualification](docs/deslop-repeat-flake.md).
+
+**Shared-file gaps:** The deslop tool recipes require available
+`cargo-llvm-cov`, `cargo-mutants`, `cargo-machete` and `cargo-udeps` to close
+the recorded automated gaps. The `gha-test-workflow` and test-pyramid tools
+were also unavailable. Qualifying and supplying those tools through the
+shared environment remains open; no shared-file change is established here.
 
 ## Tickets
 
