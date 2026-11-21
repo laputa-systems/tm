@@ -18,7 +18,7 @@ the affected CI environment. All five remaining tickets are P3.
 `6cf0b94` versus `4cc4bd1`: source 32,621 → 32,717; tests 21,876 →
 21,951. The deslop escape-hatch expression matched 1,116 → 1,123 lines
 across those Rust files; the count does not establish soundness. Ground's warm
-`make test` was 436–445 s under load; the current cold attempt exited 2 after 289.41 s when rustc received SIGKILL, and its retry exited 2 after 11.72 s with SIGKILL and SIGTERM. A current warm result is **Needs environment**. Line and branch coverage,
+`make test` was 436–445 s under load; the current cold attempt exited 2 after 289.41 s when rustc received SIGKILL, and its retry exited 2 after 11.72 s with SIGKILL and SIGTERM. With `RUSTC_WRAPPER=` and two build jobs, subsequent attempts exited 2 after 711.01 s (147 CLI cases passed, 2 failed; load 38.05 → 30.00) and 973.05 s (139 passed, 10 failed; load 30.16 → 29.83). Failures included startup failures and tm and tmux timeouts; causes are unestablished. A passing current result is **Needs environment**. Line and branch coverage,
 and systematic mutants caught, missed, timed out and unviable: unmeasured
 before and after, **Needs environment**. The dead-code audits removed zero
 lines and zero dependencies. Findings: P1 zero; P2 DSLP-6 and DSLP-8 fixed;
