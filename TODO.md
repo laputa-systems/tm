@@ -22,6 +22,7 @@ suites do not cover.
 - **Problem:** tmux 3.8 sets a new pane's title to the host name; tm leaves `#{pane_title}` empty until the program sets one.
 - **Recommendation:** Initialise the title from `gethostname` and add a `display-message -p '#{pane_title}'` probe against the reference.
 - **Fix with:** reference-parity
+- **Effort:** S
 
 ### TMUX-13 · P3 · pane_current_command reports the start command
 
@@ -30,6 +31,7 @@ suites do not cover.
 - **Problem:** tm reports the pane's start command; tmux 3.8 reports the pane's foreground process name, so it changes when the shell runs a program.
 - **Recommendation:** Read the foreground process group of the pane's PTY (`tcgetpgrp`) and its `/proc/<pid>/comm`; probe with a shell that execs `sleep`.
 - **Fix with:** reference-parity
+- **Effort:** M
 
 ### TMUX-15 · P3 · resize-pane differs with three or more panes along one axis
 
@@ -191,6 +193,7 @@ suites do not cover.
 - **Problem:** tmux 3.8 resolves a `%<pane id>` window target to the window holding that pane, so `kill-window -t %1` succeeds. tm exits 1 with `can't find window: %1`, while `display-message -t %1` accepts the same pane id.
 - **Recommendation:** Resolve a `%` window target through the pane's window, and add a differential probe for each window-targeting command.
 - **Fix with:** reference-parity
+- **Effort:** S
 
 ### TMUX-46 · P3 · The status window list omits a window that overflows the line
 
@@ -199,6 +202,7 @@ suites do not cover.
 - **Problem:** On a 30-column client in a session with four windows, tmux 3.8 draws `(b) 1:sh 2:inpane 3:sleep 4:i>`, truncating the last window with `>`; tm draws `(b) 1:sh 2:inpane 3:sleep` and drops the fourth window. Seen as a screen difference in attached history seed 33 before the in-pane shell window was shortened.
 - **Recommendation:** Reproduce on the raw-PTY runner with a differential screen test, then truncate the overflowing window entry as tmux does.
 - **Fix with:** reference-parity
+- **Effort:** M
 
 ### TMUX-47 · P3 · Short format aliases are not expanded in window names
 
@@ -297,6 +301,7 @@ suites do not cover.
 - **Problem:** After cross-window pane moves, tm keeps one previous pane per window; tmux 3.8 keeps a stack, so `select-pane -l` can pick a different pane after a moved or killed pane.
 - **Recommendation:** Replace the slot with a per-window recency list and add a differential history in H2.
 - **Fix with:** reference-parity
+- **Effort:** M
 
 ### TMUX-19 · P4 · pipe-pane -I and strftime expansion are missing
 
@@ -341,6 +346,7 @@ suites do not cover.
 - **Problem:** When the current window of a session with two or more windows is removed (for example a window created, selected, and then exited), tmux returns to the window before it and keeps the older window as the last window; tm clears the last window.
 - **Recommendation:** Replace the slot with a recency list, like TMUX-14, and drop the `WindowRemovalFromHistoryStack` exclusion.
 - **Fix with:** reference-parity
+- **Effort:** M
 
 ### TMUX-48 · P4 · Ctrl+Shift+letter in a legacy pane reaches it as a control character
 
