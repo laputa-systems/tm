@@ -61,3 +61,10 @@ install: release
 
 perf:
 	cargo bench --bench tm_performance -- --sample-count 20 --sample-size 10 --format terse
+
+.PHONY: clean
+clean:
+	@if test -L ./target || { test -e ./target && ! test -d ./target; }; then \
+	  printf '%s\n' 'make clean: ./target must be a local build directory' >&2; exit 1; \
+	fi
+	rm -rf -- ./target

@@ -110,10 +110,13 @@ fn window_list_truncation_keeps_first_middle_and_last_active_visible() {
     for (index, name) in [(1, "A-first"), (4, "D-middle"), (7, "F-last")] {
         tm.ok(&["select-window", "-t", &format!("S:{index}")]);
         client
-            .wait_for_quiescence(client.deadline(Duration::from_secs(3)), Duration::from_millis(50))
+            .wait_for_screen(
+                client.deadline(Duration::from_secs(3)),
+                format!("{name} on status row"),
+                |screen| screen.row(7).is_some_and(|row| row.contains(name)),
+            )
             .expect("window status frame");
         let row = status_row(&client, 8);
-        assert!(row.contains(name), "active {name} missing from {row:?}");
         assert!(row.chars().count() <= 30, "status row too wide: {row:?}");
         assert_eq!(client.screen().row_wrapped(7), Some(false));
     }

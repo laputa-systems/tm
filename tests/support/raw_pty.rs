@@ -304,6 +304,28 @@ impl RawClient {
         assert_eq!(result, 0, "signal client: {}", std::io::Error::last_os_error());
     }
 
+    pub fn wait_for_stop(&self, expected_signal: i32, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let pid = self.child.id() as libc::pid_t;
+        loop {
+            let mut status = 0;
+            // SAFETY: pid belongs to this child and status is valid writable storage.
+            let result = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED | libc::WNOHANG) };
+            if result == pid {
+                assert!(libc::WIFSTOPPED(status), "{}: exited before stopping: {status:#x}", self.label);
+                assert_eq!(libc::WSTOPSIG(status), expected_signal);
+                return;
+            }
+            if result == -1 {
+                let error = std::io::Error::last_os_error();
+                assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{}: waitpid: {error}", self.label);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "{}: timed out waiting for child to stop", self.label);
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+        }
+    }
+
     pub fn wait_until<T>(
         &self,
         what: &str,

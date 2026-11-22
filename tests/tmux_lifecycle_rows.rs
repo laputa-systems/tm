@@ -72,6 +72,7 @@ fn external_stop_signal_suspends_tm_and_is_ignored_by_tmux() {
     client.wait_for_screen("the alternate screen to close", TIMEOUT, |screen| {
         !screen.alternate_screen()
     });
+    client.wait_for_stop(libc::SIGSTOP, TIMEOUT);
     client.signal(libc::SIGCONT);
     client.wait_for_screen("the screen to be redrawn", TIMEOUT, |screen| {
         screen.alternate_screen() && screen.contents().contains("SIGNAL_READY")

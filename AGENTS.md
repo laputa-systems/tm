@@ -12,6 +12,8 @@ Build and release targets are in [release](docs/release.md).
 
 ## Verification
 
+`make clean` removes the checkout's ordinary `./target` directory. It refuses a file or symlink at that path.
+
 - Commands: run each through the isolation prefix in [testing](docs/testing.md#isolation). `make test` installs tmux 3.8 and runs the default suite (500 tests, 33 binaries, one ignored) with four test threads; `make lint` is clippy with warnings denied; `make parity` runs the differential suites; PR CI runs `make test`, `make parity` and `make lint` (`.github/workflows/ci.yml`, `lint.yml`).
 - Costs, Apple M-series, `CARGO_BUILD_JOBS=4`, host busy (load 15-37 on 18 cores), so observations only: cold `make test` 447 s, warm 436-445 s, `make lint` 200-233 s. On 2026-11-20 in a fresh worktree without `cpu-guard`, `make test` exited 2 after 289.41 s when a compiler was killed (SIGKILL); a retry exited 2 after 11.72 s with SIGKILL and SIGTERM. One-minute load was 45.21 at start, 54.81 at first exit, 54.51 at retry start and 57.88 at retry exit. `make lint` exited 2 after 85.40 s with SIGKILL and SIGTERM (load 57.97 → 47.49); its retry passed in 138.66 s (load 46.33 → 49.36). With `RUSTC_WRAPPER=` and `CARGO_BUILD_JOBS=2`, two subsequent `make test` attempts exited 2: 711.01 s (load 38.05 → 30.00), with 147 CLI cases passed and 2 failed, and 973.05 s (load 30.16 → 29.83), with 139 CLI cases passed and 10 failed. The latter included daemon startup failures and 10-second tm and tmux timeouts; their causes are unestablished. A passing current test cost and quiet-host costs are `Needs environment`; evidence in [Ground](docs/deslop-ground.md).
 - Test paths must stay short: a socket path is limited to about 103 bytes, and `.work/wt/<name>/.work/tmp` already uses 67.
