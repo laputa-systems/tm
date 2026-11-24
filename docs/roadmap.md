@@ -5,7 +5,7 @@ This is the single plan for this repository: all current and future work, and th
 ## Status
 
 - **State:** idle; no active campaign or slice is recorded.
-- **Last accepted revision:** parity's final gate passed at `eb58f2d` on 2026-11-06; the current integration branch's full gate is not established. Later test attempts and their environment are documented in [Ground](deslop-ground.md).
+- **Last accepted revision:** parity's final gate passed at `eb58f2d` on 2026-11-06; the current integration branch's full gate is not established. Full verification remains open in TMUX-80.
 - **Parked branches:** none recorded for an active roadmap item.
 - **Next slice:** none planned; select and plan work from Later.
 

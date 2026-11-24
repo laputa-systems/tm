@@ -1,5 +1,5 @@
 Prefix: TMUX
-Next: 77
+Next: 81
 
 TMUX-1, TMUX-2, TMUX-3, TMUX-5, TMUX-6, TMUX-7, TMUX-8, TMUX-9, TMUX-10, TMUX-16, TMUX-29, TMUX-38, TMUX-39, TMUX-40, TMUX-50, TMUX-51, TMUX-52, TMUX-53, TMUX-54, TMUX-57, TMUX-55, TMUX-56, TMUX-58, and TMUX-59 are closed
 with tests and commits recorded in git history. TMUX-41, TMUX-42, and TMUX-43 are accepted as intentional differences
@@ -244,8 +244,8 @@ suites do not cover.
 
 - **Area:** Operability
 - **Where:** `src/client.rs:194-196`, `src/server.rs:106-154`, `src/server.rs:148`, `src/server.rs:182`, `src/server.rs:387-396`, `src/client.rs:411-425`, `src/main.rs:13`
-- **Problem:** Panics abort and daemon stderr goes to `/dev/null` with no panic hook, so a crash loses every session and its message. The log is truncated at each start before the flock, so a racing second start truncates a live daemon's log. A transient `accept` error (EMFILE) or thread-spawn failure ends `serve`. Attach errors returned early skip the client's screen restore. Non-UTF-8 argv aborts the client (proven: SIGABRT, rc 134 from `std::env::args()`).
-- **Recommendation:** Install a panic hook that writes to the daemon log, open the log after the flock and in append mode, retry transient accept errors, restore the screen on every attach exit, and read argv with `args_os`.
+- **Problem:** Panics abort and daemon stderr goes to /dev/null with no panic hook, so a crash loses every session and its message. The log is truncated at each start before the flock, so a racing second start truncates a live daemon's log. A transient accept error (EMFILE) or thread-spawn failure ends serve; descriptor exhaustion was reproduced by holding idle Unix socket connections until the daemon exited and sessions were lost. Attach errors returned early skip the client's screen restore. Non-UTF-8 argv aborts the client (SIGABRT, rc 134 from std::env::args()).
+- **Recommendation:** Install a panic hook that writes to the daemon log, open the log after the flock and in append mode, retry transient accept errors with descriptor-exhaustion regression coverage, restore the screen on every attach exit, and read argv with args_os.
 - **Fix with:** error-model
 - **Effort:** S
 
@@ -296,34 +296,34 @@ suites do not cover.
 
 ### TMUX-72 · P3 · Linux CI failure in commands_from_a_killed_pane_fall_back_like_the_reference is unexplained (was DSLP-7)
 
-- **Area:** Needs environment · deslop · ground
+- **Area:** Test reliability · Linux
 - **Where:** tests/tmux_core_compat.rs; .github/workflows/ci.yml (ubuntu-26.04-arm)
-- **Problem:** The base push CI run 43983198066 failed on Ubuntu in this test (tm's in-pane output did not finish within six seconds); macOS passed and the log does not give the cause. It does not reproduce on macOS arm64 at base 6cf0b94 (the test passed in every full run during Ground). No runtime defect is established.
+- **Problem:** The base push CI run 43983198066 failed on Ubuntu in this test (tm's in-pane output did not finish within six seconds); macOS passed and the log does not give the cause. It did not reproduce on macOS arm64 at base 6cf0b94 during full test runs. No runtime defect is established.
 - **Recommendation:** On a Linux arm64 host, run cargo test --test tmux_core_compat commands_from_a_killed_pane_fall_back_like_the_reference 50 times, capture the pane and daemon log on failure, and decide between a fixture wait and a runtime defect. Accept: root cause named, and a test or fix lands.
 - **Fix with:** root-cause
 - **Effort:** M
 
 ### TMUX-73 · P3 · Attached client's unterminated SGR mouse prefix grows daemon memory without bound (was DSLP-9)
 
-- **Area:** deslop · diagnose · input
+- **Area:** Input
 - **Where:** src/server.rs feed_client_mouse, ClientState.mouse_buffer
-- **Problem:** After input begins with ESC [ < the daemon appends every byte to mouse_buffer until an M or m arrives; real reports are under 20 bytes. Reproduced at 6cf0b94 with mouse on and a PTY-attached client sending ESC [ < then 64 MiB of '1': daemon RSS 4.7 MiB to 117 MiB, still growing. See docs/deslop-diagnose.md.
+- **Problem:** After input begins with ESC [ < the daemon appends every byte to mouse_buffer until an M or m arrives; real reports are under 20 bytes. With mouse on, a PTY-attached client sending ESC [ < then 64 MiB of '1' increased daemon RSS from 4.7 MiB to 117 MiB, and it continued growing.
 - **Recommendation:** Cap the buffer at a small multiple of the longest valid report (for example 32 bytes) and flush the bytes as ordinary input when it overflows, as an invalid prefix already is. Accept: a unit test that feeds 1 MiB after ESC [ < and asserts the buffer stays at the cap and the bytes reach the pane; make test and make lint.
 - **Fix with:** lifecycle-concurrency
 - **Effort:** S
 
 ### TMUX-74 · P3 · Daemon log and lock files follow symlinks: truncation and chmod of the target (was DSLP-10)
 
-- **Area:** deslop · diagnose · socket sidecars
+- **Area:** Socket sidecars
 - **Where:** src/server.rs DaemonLog::create and DaemonLog::write rotation, run_daemon_inner lock file
-- **Problem:** The .log and .lock sidecars are opened without O_NOFOLLOW and then chmodded by path. Reproduced at 6cf0b94: with $D/s.sock.log a symlink to a file, tm -S $D/s.sock new-session -d overwrote that file with the daemon log; with $D/s.sock.lock a symlink to a mode 644 file, the target became mode 600. It matters when -S names a path in a shared writable directory; the default directory is private. See docs/deslop-diagnose.md.
+- **Problem:** The .log and .lock sidecars are opened without O_NOFOLLOW and then chmodded by path. With $D/s.sock.log a symlink to a file, tm -S $D/s.sock new-session -d overwrote that file with the daemon log; with $D/s.sock.lock a symlink to a mode 644 file, the target became mode 600. It matters when -S names a path in a shared writable directory; the default directory is private.
 - **Recommendation:** Open both sidecars with O_CREAT|O_NOFOLLOW and mode 0600, set permissions through the open descriptor, and reopen the log for rotation the same way, refusing a symlink with a clear error. Accept: socket_permissions tests that a symlinked .log and .lock are refused and their targets unchanged; make test and make lint.
 - **Fix with:** os-boundaries
 - **Effort:** S
 
 ### TMUX-75 · P3 · Oversized control sequence recovery test flakes in CI (was DSLP-26)
 
-- **Area:** Needs environment · deslop · terminal
+- **Area:** Test reliability · terminal
 - **Where:** tests/terminal_bounds.rs:92
 - **Problem:** CI has intermittently failed oversized_control_sequences_recover_at_the_next_boundary; the cause is not established. The test waits for a pane to emit and process over one megabyte before a deadline, so a timeout alone does not distinguish fixture timing from parser failure.
 - **Recommendation:** Reproduce on the affected CI platform with pane output and daemon diagnostics on failure; identify the cause and fix the fixture or runtime with a regression test.
@@ -332,11 +332,38 @@ suites do not cover.
 
 ### TMUX-76 · P3 · External stop signal parity test flakes in CI (was DSLP-27)
 
-- **Area:** Needs environment · deslop · parity
+- **Area:** Test reliability · parity
 - **Where:** tests/tmux_lifecycle_rows.rs:63
 - **Problem:** CI has intermittently failed external_stop_signal_suspends_tm_and_is_ignored_by_tmux; the cause and failing observation are not established. Signal delivery and screen transitions are asynchronous.
 - **Recommendation:** Reproduce on the affected CI platform with signal and terminal-state diagnostics; identify the cause and fix the fixture or runtime with a regression test.
 - **Fix with:** root-cause
+- **Effort:** M
+
+### TMUX-77 · P3 · Malformed protocol message rejection lacks direct coverage
+
+- **Area:** Protocol tests
+- **Where:** src/protocol.rs decoder and protocol tests
+- **Problem:** Client and server message decoders reject unknown tags, invalid booleans, invalid UTF-8 and truncated fields, but direct assertions for these malformed inputs were not found; existing round trips and goldens do not establish these rejection paths.
+- **Recommendation:** Add focused malformed-frame tests for client and server tags and representative invalid values and truncated fields; verify that each rejection is observable.
+- **Fix with:** test-audit
+- **Effort:** M
+
+### TMUX-78 · P3 · Test coverage and mutation gaps remain unmeasured
+
+- **Area:** Testing
+- **Where:** src/protocol.rs, src/server.rs, tests/support and integration suites
+- **Problem:** Systematic coverage and mutation analysis of protocol, server, terminal, input and parity tests was not performed because the relevant tools were unavailable; ambiguous targeting and request dispatch coverage remains unmeasured.
+- **Recommendation:** On a suitable host, inspect coverage and run bounded mutation checks across these contracts, then address meaningful surviving gaps.
+- **Fix with:** test-audit
+- **Effort:** L
+
+### TMUX-80 · P3 · Full verification costs and Linux fixture fixes need qualification
+
+- **Area:** Verification
+- **Where:** Makefile, tests/tmux_cli_flags.rs and docs/testing.md
+- **Problem:** Quiet-host cold and warm test and lint costs remain unqualified; the pane fixture fixes were verified on macOS but not rerun on Linux ARM. The current integration branch full gate is not established.
+- **Recommendation:** On suitable quiet hosts measure the test and lint costs, run the affected pane fixtures on Linux ARM, and establish the full integration gate.
+- **Fix with:** none
 - **Effort:** M
 
 ### TMUX-14 · P4 · Last pane is a single slot, not tmux's history
@@ -437,4 +464,13 @@ suites do not cover.
 - **Recommendation:** Keep hyperlink and tab state beside the parser (or in an upgraded or patched `vt100`, see TMUX-67) and retire the raw-stream retention; until then, stop cloning it per read.
 - **Fix with:** make-it-fast
 - **Effort:** L
+
+### TMUX-79 · P4 · Dependency and binary size audits remain unperformed
+
+- **Area:** Dependencies
+- **Where:** Cargo.toml and Cargo.lock
+- **Problem:** Dependency usage and binary size were not assessed with cargo-machete, cargo-udeps or debloat because those tools were unavailable; compiler warnings alone do not establish a package-wide result.
+- **Recommendation:** Run suitable dependency and size analysis on a supported host and investigate actionable findings.
+- **Fix with:** none
+- **Effort:** M
 
