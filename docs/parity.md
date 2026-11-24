@@ -1,5 +1,12 @@
 # Parity matrix
 
+The selected contract covers tm's compiled profile. Each accepted command or
+flag must match tmux 3.8, be rejected, or be identified as tm-only; an accepted
+flag must not silently have a different meaning. Broader tmux configuration,
+plugins, hooks, control mode, floating panes, full terminfo, Windows, and tmux's
+`imsg` protocol are outside this profile. Formal proofs, pure-core extraction,
+and controlled scheduling were outside the completed parity work.
+
 The contract is pinned to tmux 3.8, built by
 [`tests/support/install-tmux-ref.sh`](../tests/support/install-tmux-ref.sh) from
 the verified release tarball recorded in

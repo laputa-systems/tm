@@ -23,6 +23,13 @@ not run it: it runs the tests only in the macOS job and only `make release`
 and `make verify-release` for Linux. Run `make qualify` by hand before you
 dispatch a release. See [testing](testing.md).
 
+For macOS arm64 qualification use `make qualify TARGET=aarch64-apple-darwin`.
+For native Linux arm64 qualification, build the arm64 image below and run
+`make qualify TARGET=aarch64-unknown-linux-musl` inside it; the image needs the
+reference dependencies, or use a host build with those dependencies installed.
+Run build and qualification commands through the isolation prefix in
+[testing](testing.md#isolation).
+
 ## Cargo registry mirror
 
 [`.cargo/config.toml`](../.cargo/config.toml) replaces crates.io with the

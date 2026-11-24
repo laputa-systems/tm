@@ -33,6 +33,17 @@ mirrors tm's compiled profile. Never point the tests at another tmux.
 
 Without the reference, the differential tests fail instead of skipping.
 
+The raw-PTY runner exists because the released ptytest rejects intermediate-byte
+escapes such as `ESC ( B`; the `/proc` scan retry in `tests/support/pty_reap.rs`
+handles a process exiting during a scan. Once both fixes are released, TMUX-67
+tracks upgrading ptytest and revisiting these helpers.
+
+Automated terminal checks assert OSC 52 and BEL bytes; checking the actual
+clipboard and audible bell requires a person. For interactive qualification,
+exercise shell editing, the editor and coding-agent TUIs, paste, copy, resize,
+detach and reattach, and suspend and resume in Ghostty using a private socket
+outside the owner's tmux.
+
 Linux PTY coverage runs in the release container with the platform and Rust
 target that match the host CPU. On an arm64 Mac use `--platform linux/arm64`
 and `aarch64-unknown-linux-musl`; the amd64 image is emulated and much slower.
