@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "tools": {
+    "llvm": {
+      "assets": {
+        "aarch64-unknown-linux-musl": {
+          "name": "llvm-23.1.5-aarch64-unknown-linux-musl.tar.xz",
+          "sha256": "4d8b637d65ed0299c8b7852c1e7e1d41f7141346ce31e707f0975ff67460121e",
+          "size": 94369760
+        },
+        "x86_64-unknown-linux-musl": {
+          "name": "llvm-23.1.5-x86_64-unknown-linux-musl.tar.xz",
+          "sha256": "de3f6d0ad089391482147c61648c511c500b25289132fe7f2c446a0905406d2a",
+          "size": 101344736
+        }
+      },
+      "product": "llvm",
+      "repository": "laputa-systems/llvm-prebuilt-musl",
+      "tag": "release-b29e4d07a2b9a5e72319b37429cf375149212755",
+      "version": "23.1.5"
+    }
+  }
+}
