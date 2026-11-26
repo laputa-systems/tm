@@ -29,11 +29,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: laputa-systems/buildlib/setup@4ed2e0a1e0a5d23911ffccdd97349d30a7885f01 # v0.3.2
-        if: runner.os == 'Linux'
-        with:
-          tools: llvm
-          lock: .github/tools.lock.json
       - name: Install Linux reference dependencies
         if: runner.os == 'Linux'
         run: |
@@ -49,8 +44,6 @@ jobs:
           path: .work/ref
           key: tmux-ref-${{ runner.os }}-${{ hashFiles('tests/support/install-tmux-ref.sh') }}
       - name: Install tmux reference
-        env:
-          CC: clang
         run: tests/support/install-tmux-ref.sh
       - name: Test
         run: make test
