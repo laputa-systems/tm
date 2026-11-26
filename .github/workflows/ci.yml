@@ -41,9 +41,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libc6-dev make libevent-dev libncurses-dev libutf8proc-dev \
             pkg-config vim less
-      - name: Link cc to owned clang
-        if: runner.os == 'Linux'
-        run: sudo ln -sf "$(command -v clang)" /usr/local/bin/cc
       - name: Install macOS reference dependencies
         if: runner.os == 'macOS'
         run: brew install libevent utf8proc pkg-config
@@ -52,6 +49,8 @@ jobs:
           path: .work/ref
           key: tmux-ref-${{ runner.os }}-${{ hashFiles('tests/support/install-tmux-ref.sh') }}
       - name: Install tmux reference
+        env:
+          CC: clang
         run: tests/support/install-tmux-ref.sh
       - name: Test
         run: make test
