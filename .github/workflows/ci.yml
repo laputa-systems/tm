@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential libevent-dev libncurses-dev libutf8proc-dev \
+            libc6-dev make libevent-dev libncurses-dev libutf8proc-dev \
             pkg-config vim less
       - name: Install macOS reference dependencies
         if: runner.os == 'macOS'
